@@ -1,0 +1,82 @@
+problem:
+  # Problem name to prefix output files with
+  name: Example
+  # The base OpenFOAM case; this needs to be fully functional case one paramters/files are substituted.
+  template_case: 'template'
+  # Experiment paramters
+  parameters:
+    Sv:
+      type: range
+      value_type: float
+      bounds: [1e-5, 1e-3]
+      log_scale: False
+    xmin:
+      type: choice
+      value_type: float
+      values: [0.01, 0.02, 0.03, 0.04]
+      is_ordered: True
+    xmax:
+      type: choice
+      value_type: float
+      values: [0.05, 0.06, 0.07, 0.09]
+      is_ordered: True
+    ymin:
+      type: choice
+      value_type: float
+      values: [0.01, 0.02, 0.03, 0.04]
+      is_ordered: True
+    ymax:
+      type: choice
+      value_type: float
+      values: [0.05, 0.06, 0.07, 0.09]
+      is_ordered: True
+    numberOfSubdomains:
+      type: range
+      value_type: int
+      bounds: [4, 8]
+      log_scale: False
+  # Experiment objectives. Metric values are fetched through shell commands in the working directory of
+  # the specific trial
+  objectives:
+    MaxError:
+      command: ['awk', '/^Max/{print($6+0)}', 'log.pvpython']
+      threshold: 1e-6
+      minimize: True
+
+meta:
+  # When clonging template case, specify extra files/dirs to clone
+  case_subdirs_to_clone: ["0.orig", "dynamicCode", "error.py", "plotK.py"]
+  # How should we run your case? alsospecify a timeout in case it gets stuck
+  # This should command should be blocking for now, and delivering metric values
+  # which are then extracted through problem.objectives.*.command
+  case_run_command: ['./Allrun']
+  case_command_timeout: 1000
+  # Number of trials to generate:
+  # Using SOBOL for paramter variation
+  # Model is automatically chosen for optimization studies
+  n_trials: 8
+  # Number of pareto front points to generate
+  n_pareto_points: 25
+  # Paramters can be substitued as whole case files
+  # There are done first if present
+  #file_copies:
+  #modelType:
+  #  template: "/constant/transportProperties"
+  # Parameters can also be substituted per-file
+  scopes:
+    "/system/fvOptions":
+      Sv: "codedSource.Sv"
+      xmin: "codedSource.xmin"
+      xmax: "codedSource.xmax"
+      ymin: "codedSource.ymin"
+      ymax: "codedSource.ymax"
+    "/system/decomposeParDict":
+      numberOfSubdomains: "numberOfSubdomains"
+
+# Evaluate how the optimization algorithm did
+verify:
+  var1:
+    - Sv: 1e-4
+    - xmax: 0.06
+    - ymax: 0.06
+    - numberOfSubdomains: 4
