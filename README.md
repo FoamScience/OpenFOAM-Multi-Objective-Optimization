@@ -110,3 +110,8 @@ verify:
     - maxY: 0.07
     - numberOfProcesses: 4
 ```
+
+## Contribution is welcome!
+
+By either filing issues or opening pull requests, you can contribute to the development
+of this project, which I would appreciate.
