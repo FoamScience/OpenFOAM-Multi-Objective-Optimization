@@ -48,6 +48,17 @@ def gen_objectives(cfg):
         objs[key] = ObjectiveProperties(minimize=item.minimize, threshold=item.threshold)
     return objs
 
+def local_case_run(case, cfg):
+    """
+        Run the OpenFOAM case through a user-specified bash command which is
+        executed locally inside the trial's folder
+    """
+    try:
+        subprocess.check_output(cfg.meta.case_run_command, cwd=case.name, stderr=subprocess.PIPE, timeout=cfg.meta.case_command_timeout)
+    except:
+        log.info(f"Case run command {cfg.meta.case_run_command} exited. Setting metrics to None for this trial...")
+
+
 def evaluate(parameters, cfg, data):
     """
         Evaluates a single trial (basically an OpenFOAM Case) and populates data dictionary
@@ -80,7 +91,7 @@ def evaluate(parameters, cfg, data):
                 )
         # Process parameters with PyFoam
         for elm,elmv in cfg.meta.scopes.items():
-            paramFile = ParsedParameterFile(case.name + elm)
+            paramFile = ParsedParameterFile(name=case.name + elm)
             for param in elmv:
                 splits = elmv[param].split('.')
                 lvl = paramFile[splits[0]]
@@ -97,10 +108,10 @@ def evaluate(parameters, cfg, data):
                     paramFile[elmv[param]] = parameters[param]
             paramFile.writeFile()
         log.info(f"Running trial: {newcase} with paramters:\n{OmegaConf.to_yaml(parameters)}")
-        try:
-            subprocess.check_output(cfg.meta.case_run_command, cwd=case.name, stderr=subprocess.PIPE, timeout=cfg.meta.case_command_timeout)
-        except:
-            log.info(f"Case run command {cfg.meta.case_run_command} exited. Setting metrics to None for this trial...")
+        runner_map = {
+            "local": local_case_run,
+        }
+        runner_map[cfg.meta.case_run_mode](case, cfg)
         for key, item in cfg.problem.objectives.items():
             try:
                 evals[key] = float(subprocess.check_output(list(item.command), cwd=case.name))
