@@ -285,3 +285,9 @@ Here are sample results; again, not that we're particularly interested in these:
    |--------------------|-------------------|----------------|
    | **Inlet velocity** | 52                | 70             |
    | **k**              | 48                | 30             |
+
+You should be able to reproduce **similar** results both in local and SLURM modes, otherwise it's a bug.
+If you're running this in SLURM mode, it may be useful to watch jobs through their life cycle with:
+```bash
+watch -n 0.1 -x squeue
+```
