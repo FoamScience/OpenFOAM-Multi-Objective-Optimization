@@ -9,8 +9,8 @@ Output: A JSON Snapshot of the experiment and CSV data for experiment trials
 
 Notes:
 - Use multiObjOpt.py for optimization studies
-- Float and Int parameters are sampled in a quasi-random fashion using SOBOL. If you want
-  finer control over parameter values, convert them to choice type.
+- Parameters are sampled in a quasi-random fashion using SOBOL. If you want
+  finer control over parameter values, convert parameters to choice type.
 
 """
 
@@ -20,6 +20,9 @@ from omegaconf import DictConfig, OmegaConf
 from ax.modelbridge.generation_strategy import GenerationStrategy, GenerationStep
 from ax.modelbridge.registry import Models
 from ax.service.ax_client import AxClient
+
+from ax.service.scheduler import Scheduler, SchedulerOptions
+from ax.core import OptimizationConfig, Experiment, Objective
 
 from core import *
 import pandas as pd
@@ -40,40 +43,40 @@ def exp_main(cfg : DictConfig) -> None:
                 model=Models.SOBOL,
                 num_trials=cfg.meta.n_trials,
                 min_trials_observed=cfg.meta.n_trials,
-                max_parallelism=1,
+                max_parallelism=cfg.meta.n_parallel_trials,
             ),
         ]
     )
+
+    objective=Objective(metric=HPCJobMetric(name="MaxError", cfg=cfg), minimize=True)
     ax_client = AxClient(verbose_logging=False)
-    ax_client.create_experiment(
+    exp = Experiment(
         name=f"{cfg.problem.name}_experiment",
-        parameters=search_space,
-        overwrite_existing_experiment=True,
-        is_test=False,
+        search_space=ax_client.make_search_space(parameters=search_space, parameter_constraints=[]),
+        optimization_config=OptimizationConfig(objective=objective),
+        runner=HPCJobRunner(cfg=cfg),
+        is_test=False,  # Marking this experiment as a test experiment.
     )
 
-    df = pd.DataFrame()
-    for i in range(cfg.meta.n_trials):
-        try:
-            generator_run = gs.gen(
-                experiment=ax_client.experiment,
-                data=None,
-                n=1,
-            )
-            trial = ax_client.experiment.new_trial(generator_run)
-            trial.mark_running(no_runner_required=True)
-            data = {}
-            out = evaluate(trial.arms[0].parameters, cfg, data)
-            trial.mark_completed()
-            df = pd.concat([df, pd.DataFrame({**data, **trial.arms[0].parameters, "model": generator_run._model_key, **out}, index=[trial.index])])
-        except:
-            log.warning(f"Could not generate more than {i} trials.")
+    scheduler = Scheduler(
+        experiment=exp,
+        generation_strategy=gs,
+        options=SchedulerOptions(),
+    )
 
-    # Write out data as a Pandas dataframe
-    log.info(df)
-    df.to_csv(f"{cfg.problem.name}_report.csv")
-    # Also save a json snapshot
-    ax_client.save_to_json_file(f"{cfg.problem.name}_snapshot.json")
+    scheduler.run_n_trials(max_trials=cfg.meta.n_trials)
+
+    # Some post-processing
+    params_df = pd.DataFrame()
+    trials = scheduler.experiment.get_trials_by_indices(range(cfg.meta.n_trials))
+    for tr in trials:
+        params_df = pd.concat([params_df, pd.DataFrame({**tr.arm.parameters}, index=[tr.index])])
+
+    # Write trial data
+    exp_df = scheduler.experiment.fetch_data().df.drop_duplicates()
+    exp_df = exp_df.set_index(["trial_index", "metric_name"]).unstack(level=1)["mean"]
+    df = pd.merge(exp_df, params_df, left_index=True, right_index=True)
+    df.to_csv(f"{cfg.problem.name}_report_pv.csv")
 
 if __name__ == "__main__":
     exp_main()

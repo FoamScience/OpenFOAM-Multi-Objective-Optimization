@@ -1,6 +1,9 @@
-#!/bin/sh
+#!/bin/bash -l
+#SBATCH --nodes=2
+#SBATCH --time=0-00:05:00
+
+cd "$1"
 source /usr/lib/openfoam/openfoam2206/etc/bashrc
-cd "${0%/*}" || exit                                # Run from this directory
 . ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions        # Tutorial run functions
 #------------------------------------------------------------------------------
 
@@ -8,6 +11,7 @@ set -e
 touch case.foam
 cp -rT 0orig 0
 runApplication blockMesh
+runApplication decomposePar
 
-# Parallel run on the slurm cluster
-runApplication $(getApplication)
+# Serial run
+mpirun -np 2 --allow-run-as-root --output-filename log $(getApplication) -parallel
