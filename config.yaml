@@ -41,7 +41,7 @@ meta:
   # When clonging template case, specify extra files/dirs to clone
   case_subdirs_to_clone: ["0orig", "Allrun.slurm"]
   # Where to clone trial cases
-  clone_destination: "/axc/OpenFOAM-Multi-Objective-Optimization/"
+  clone_destination: "/axc/multiOptOF/"
   # Case run mode (local, slurm)
   case_run_mode: local
   # Metric evaluation mode (local, slurm)

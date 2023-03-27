@@ -48,7 +48,7 @@ def exp_main(cfg : DictConfig) -> None:
         ]
     )
 
-    objective=Objective(metric=HPCJobMetric(name="MaxError", cfg=cfg), minimize=True)
+    objective=Objective(metric=HPCJobMetric(name=list(cfg.problem.objectives.items())[0][0], cfg=cfg), minimize=True)
     ax_client = AxClient(verbose_logging=False)
     exp = Experiment(
         name=f"{cfg.problem.name}_experiment",

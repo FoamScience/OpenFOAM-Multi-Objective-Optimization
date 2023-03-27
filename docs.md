@@ -78,7 +78,7 @@ docker exec -it axc-headnode bash
 salloc -N 4 mpirun --allow-run-as-root hostname -I
 
 # Source OpenFOAM
-sourcce /usr/lib/openfoam/openfoam2206/etc/bashrc
+source /usr/lib/openfoam/openfoam2206/etc/bashrc
 ```
 
 All subsequent operations are supposed to run on the head node.
@@ -95,7 +95,7 @@ The best option is to get [Miniconda](https://docs.conda.io/en/latest/miniconda.
 ```bash
 # Remember /axc on the head node, would be slurm-cluster/var/axc on your machine
 cd /axc/multiOptOF
-conda create -n of-opt python:3.8 pip
+conda create -n of-opt python=3.8 pip
 conda activate of-opt
 # This will install a load of packages
 pip install -r requirements.txt
