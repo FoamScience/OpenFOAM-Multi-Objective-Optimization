@@ -15,6 +15,14 @@ I describe the workflow in two cases:
 
 > If you're going with option 1, you can skip setting up the cluster. If you intend to adopt option 2, I
 > recommend you still go through option 1
+>
+> This toolkit relies on [ax-platform](https://ax.dev) to do the optimization, so we support what they support.
+>
+> Here are a few nice words about [Bayesian Optimization](https://ax.dev/docs/bayesopt.html). If you want to extend
+> these tools, you might want to take a look at the [Service and Developer APIs](https://ax.dev/docs/api.html)
+
+> Also, Python scripts are [Hydra Applications](https://hydra.cc/docs/intro/), so you can load different configurations
+> and/or override config values from the command line.
 
 ## Features
 
@@ -99,6 +107,11 @@ conda create -n of-opt python=3.8 pip
 conda activate of-opt
 # This will install a load of packages
 pip install -r requirements.txt
+
+# Start the example optimization study while you read through the document
+./multiObjOpt.py
+# or to give the problem another name (override problem.name in default config file):
+# ./multiObjOpt.py +problem.name=MyExample
 ```
 
 ## Local runs
