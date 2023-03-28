@@ -18,7 +18,7 @@ I describe the workflow in two cases:
 >
 > This toolkit relies on [ax-platform](https://ax.dev) to do the optimization, so we support what they support.
 >
-> Here are a few nice words about [Bayesian Optimization](https://ax.dev/docs/bayesopt.html). If you want to extend
+> Here are few nice words about [Bayesian Optimization](https://ax.dev/docs/bayesopt.html). If you want to extend
 > these tools, you might want to take a look at the [Service and Developer APIs](https://ax.dev/docs/api.html)
 
 > Also, Python scripts are [Hydra Applications](https://hydra.cc/docs/intro/), so you can load different configurations
@@ -50,8 +50,6 @@ My objectives are:
 > Note that I'm not particularly interested in the results of the study;
 > All I care about is demonstrating how to optimize this problem with Fully-Bayesian algorithms.
 
-
-# Installation
 
 ## Setup the dummy OpenFOAM-ready SLURM cluster
 
