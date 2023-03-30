@@ -30,6 +30,11 @@ from ax.plot.feature_importances import plot_feature_importance_by_feature
 
 from core import *
 
+import zmq
+context = zmq.Context()
+socket = context.socket(zmq.REQ)
+socket.connect("tcp://172.22.0.8:5555")
+
 log = logging.getLogger(__name__)
 
 @hydra.main(version_base=None, config_path=".", config_name="config.yaml")
@@ -78,11 +83,19 @@ def exp_main(cfg : DictConfig) -> None:
     df = pd.merge(exp_df, params_df, left_index=True, right_index=True)
     df.to_csv(f"{cfg.problem.name}_report_opt.csv")
 
-    log.info("==== Pareto optimal paramters: ===")
-    pareto_params = scheduler.get_pareto_optimal_parameters()
-    log.info(pareto_params)
-    log.info(json.dumps(pareto_params, indent=4))
-    log.info("==================================")
+    try:
+        log.info("==== Pareto optimal paramters: ===")
+        pareto_params = scheduler.get_pareto_optimal_parameters()
+        log.info(pareto_params)
+        log.info(json.dumps(pareto_params, indent=4))
+        log.info("==================================")
+    except:
+        log.info("==== Best paramters: ===")
+        pareto_params = scheduler.get_best_parameters()
+        log.info(pareto_params)
+        log.info(json.dumps(pareto_params, indent=4))
+        log.info("==================================")
+
 
     # Plot Pareto frontier
     try:
@@ -135,5 +148,8 @@ def exp_main(cfg : DictConfig) -> None:
     except:
         log.warning("Could not compute feature importance, no Gaussian process has been called?")
 
+import time
+
 if __name__ == "__main__":
     exp_main()
+    socket.send(b"stop")

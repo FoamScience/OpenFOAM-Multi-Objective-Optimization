@@ -2,6 +2,7 @@
 """Core functionality for performing paramter variation and optimization on OpenFOAM cases"""
 
 import os, hashlib, shutil, logging
+from os.path import basename
 import subprocess as sb
 import regex as re
 from collections import defaultdict
@@ -20,6 +21,9 @@ from ax.plot.pareto_frontier import plot_pareto_frontier
 from ax.utils.report.render import render_report_elements
 from typing import Any, Dict, NamedTuple, Union, Iterable, Set
 from ax.utils.common.result import Ok, Err
+
+from smartredis import Client
+import numpy as np
 
 from PyFoam.RunDictionary.SolutionDirectory import SolutionDirectory
 from PyFoam.RunDictionary.ParsedParameterFile import ParsedParameterFile
@@ -200,6 +204,28 @@ def slurm_metric_value(job_id, jobs, cfg):
             metrics[key] = None
     return metrics
 
+def smartredis_metric_value(job_id, jobs, cfg):
+    """
+        Query fields from a Redis DB using smartredis clients
+    """
+    metrics = {}
+    case = jobs[job_id].config["case"]
+    for key, item in cfg.problem.objectives.items():
+        client = Client(address=item.redis_address, cluster=item.cluster_mode)
+        print(f"###### {os.path.basename(case.name)}_x")
+        print(f"###### {os.path.basename(case.name)}_U_x")
+        x = client.get_tensor(f"{os.path.basename(case.name)}_x").flatten()
+        Ux = client.get_tensor(f"{os.path.basename(case.name)}_U_x").flatten()
+        U_sign = np.sign(Ux)
+        sign_change = ((np.roll(U_sign, 1) - U_sign) != 0).astype(int)
+        changes_idx = np.where(sign_change >= 1)[0]
+        if (len(changes_idx) == 1):
+            metrics[key] = x[-1];
+        else:
+            metrics[key] = x[changes_idx[-1]]
+        print("###### ", metrics[key])
+    return metrics
+
 class HPCJobQueueClient:
     """
         A job queue when the `Scheduler` will
@@ -218,7 +244,8 @@ class HPCJobQueueClient:
     }
     metrics_value_map = {
         "local": local_metric_value,
-        "slurm": slurm_metric_value
+        "slurm": slurm_metric_value,
+        "smartredis": smartredis_metric_value,
     }
 
     def schedule_job_with_parameters(

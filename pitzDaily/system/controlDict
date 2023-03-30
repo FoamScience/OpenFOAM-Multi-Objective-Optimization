@@ -45,4 +45,42 @@ timePrecision   6;
 
 runTimeModifiable true;
 
+libs ("libsmartSimFunctionObject.so");
+
+functions
+{
+    smartSim 
+    {
+        type smartSimFunctionObject;
+        clusterMode off; 
+        fieldNames 
+        (
+            // epsilon  
+            // k  
+            // nut  
+            // nuTilda  
+            // omega  
+            // p  
+            // U
+        ); 
+
+        fieldDimensions 
+        (
+            // 1 
+            // 1 
+            // 1 
+            // 1 
+            // 1 
+            // 1 
+            // 3 
+        ); 
+
+        fieldComponents
+        (
+            "U_x"
+        );
+    }
+}
+
+
 // ************************************************************************* //
