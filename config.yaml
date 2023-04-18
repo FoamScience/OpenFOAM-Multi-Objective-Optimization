@@ -40,8 +40,8 @@ problem:
 meta:
   # When clonging template case, specify extra files/dirs to clone
   case_subdirs_to_clone: ["0orig", "Allrun.slurm"]
-  # Where to clone trial cases
-  clone_destination: "/axc/multiOptOF/"
+  # Where to clone trial cases (absolute path, leave empty to consider $PWD)
+  clone_destination: ""
   # Case run mode (local, slurm)
   case_run_mode: local
   # Metric evaluation mode (local, slurm)

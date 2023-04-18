@@ -49,6 +49,7 @@ def gen_search_space(cfg):
         if 'bounds' in e.keys():
             e['bounds'] = list(e['bounds'])
         if 'dependents' in e.keys():
+            #e['dependents'] = list(e['dependents'])
             tmp = {}
             for k in e['dependents']:
                 tmp.update(k)
@@ -292,9 +293,15 @@ def preprocesss_case(parameters, cfg):
                     except:
                         pass
                     lvl = lvl[scp]
-                lvl[splits[-1]] = parameters[param]
+                try:
+                    lvl[splits[-1]] = parameters[param]
+                except:
+                    log.warn(f"Couldn't substitute {param} value in its scope, if it's a dependent parameter, you can ignore this warning")
             else:
-                paramFile[elmv[param]] = parameters[param]
+                try:
+                    paramFile[elmv[param]] = parameters[param]
+                except:
+                    log.warn(f"Couldn't substitute {param} value in its scope, if it's a dependent parameter, you can ignore this warning")
         paramFile.writeFile()
     data["case"] = case
     return data
@@ -323,7 +330,7 @@ class HPCJobRunner(Runner):
         )
         # This run metadata will be attached to trial as `trial.run_metadata`
         # by the base `Scheduler`.
-        log.info(f"Dispatched case: {case_data['case'].name}")
+        log.info(f"Trial {trial.index} - Dispatched case: {case_data['case'].name}")
         return {"job_id": job_id, "case_path": case_data["case"].name, "case_name": case_data["casename"]}
 
     def poll_trial_status(
