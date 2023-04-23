@@ -8,7 +8,7 @@ from collections import defaultdict
 
 import pandas as pd
 
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, DictConfig, DictKeyType
 from ax.core.base_trial import TrialStatus, BaseTrial
 from ax.core.trial import Trial
 from ax.core.runner import Runner
@@ -18,8 +18,13 @@ from ax.service.utils.instantiation import ObjectiveProperties
 from ax.utils.notebook.plotting import plot_config_to_html, render
 from ax.plot.pareto_frontier import plot_pareto_frontier
 from ax.utils.report.render import render_report_elements
-from typing import Any, Dict, NamedTuple, Union, Iterable, Set
+from typing import Any, Dict, NamedTuple, Union, Iterable, Set, List
 from ax.utils.common.result import Ok, Err
+from ax.storage.metric_registry import register_metric
+from ax.storage.runner_registry import register_runner
+from ax.storage.json_store.registry import CORE_ENCODER_REGISTRY, CORE_DECODER_REGISTRY, CORE_CLASS_DECODER_REGISTRY
+from ax.storage.json_store.encoders import metric_to_dict
+from ax.storage.json_store.encoders import runner_to_dict
 
 from PyFoam.RunDictionary.SolutionDirectory import SolutionDirectory
 from PyFoam.RunDictionary.ParsedParameterFile import ParsedParameterFile
@@ -307,6 +312,9 @@ def preprocesss_case(parameters, cfg):
     return data
 
 class HPCJobRunner(Runner):
+    """
+        A job representation which is ran on HPC
+    """
     
     def __init__(self, cfg) -> None:
         super().__init__()
@@ -364,7 +372,7 @@ class HPCJobMetric(Metric):  # Pulls data for trial from external system.
     def __init__(self, name, cfg) -> None:
         super().__init__(name=name)
         self.cfg = cfg
-        self.lower_is_better = cfg.problem.objectives[name].lower_is_better
+        self.lower_is_better = cfg['problem']['objectives'][name]['lower_is_better']
     
     def fetch_trial_data(self, trial: BaseTrial) -> MetricFetchResult:
         """
@@ -393,3 +401,22 @@ class HPCJobMetric(Metric):  # Pulls data for trial from external system.
             return Err(
                 MetricFetchE(message=f"Failed to fetch {self.name}", exception=e)
             )
+
+# Serialization/Deserialization of HPCJob Metrics/Runners to andfrom JSON-like objects
+
+def config_to_dict(config: DictConfig) -> Union[Dict[DictKeyType, Any], List[Any], None, str, Any]:
+    return OmegaConf.to_object(config)
+
+def config_from_json(config: Dict[str, Any]) -> DictConfig:
+    return DictConfig(config)
+
+CORE_CLASS_DECODER_REGISTRY["Type[DictConfig]"] = config_from_json
+CORE_ENCODER_REGISTRY[DictConfig] = config_to_dict
+
+CORE_ENCODER_REGISTRY[HPCJobRunner] = runner_to_dict;
+CORE_DECODER_REGISTRY["HPCJobRunner"] = HPCJobRunner
+register_runner(HPCJobRunner)
+
+CORE_ENCODER_REGISTRY[HPCJobMetric] = metric_to_dict
+CORE_DECODER_REGISTRY["HPCJobMetric"] = HPCJobMetric
+register_metric(HPCJobMetric)
