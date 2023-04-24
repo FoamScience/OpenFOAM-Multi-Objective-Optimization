@@ -331,6 +331,7 @@ class HPCJobRunner(Runner):
         case_data = preprocesss_case(trial.arm.parameters, self.cfg)
 
         hpc_job_queue = get_hpc_job_queue_client()
+        trial._properties['casename'] = case_data["casename"]
         job_id = hpc_job_queue.schedule_job_with_parameters(
             parameters=trial.arm.parameters,
             case=case_data["case"],
