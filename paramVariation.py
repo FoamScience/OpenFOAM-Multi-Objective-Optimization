@@ -23,6 +23,8 @@ from ax.service.ax_client import AxClient
 
 from ax.service.scheduler import Scheduler, SchedulerOptions
 from ax.core import OptimizationConfig, Experiment, Objective
+from ax.storage.json_store.load import load_experiment
+from ax.storage.json_store.save import save_experiment
 
 from core import *
 import pandas as pd
@@ -77,6 +79,9 @@ def exp_main(cfg : DictConfig) -> None:
     exp_df = exp_df.set_index(["trial_index", "metric_name"]).unstack(level=1)["mean"]
     df = pd.merge(exp_df, params_df, left_index=True, right_index=True)
     df.to_csv(f"{cfg.problem.name}_report_pv.csv")
+
+    # Save experiment for later
+    save_experiment(exp, f"{cfg.problem.name}_experiment_pv.json")
 
 if __name__ == "__main__":
     exp_main()
