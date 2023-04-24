@@ -143,7 +143,7 @@ Next, we have `problem.parameters`. This is where you specify the type/values fo
 >
 > For a list of parameter types and options; check the different classes at: https://ax.dev/api/core.html#parameter
 >
-> Also, no support for dependent parameters YET...
+> Also, there is partial support for dependent parameters, mainly you need one root parameter (Ax limitation) ...
 
 To describe **how** the parameters are substituted in the cloned case, `meta.scopes` specifies the files
 and scope to dictionary entry corresponding to the design parameter.
@@ -195,6 +195,43 @@ meta:
 Also note that this is done before any other substitutions, so, you can have other parameters in those files too.
 This issue with that is it will skew your analysis because you're making those parameters dependent on `modelType`
 without the proper treatment of dependent parameters in the algorithms.
+
+As for dependent parameters, `ax-platform` only supports a single root parameter at the moment, so you can't have independent
+ones once you set a dependent parameter.
+
+Here is how you setup two parameters `epsilon` and `omega` to depend on the value of `turbulenceModel`. With this setup,
+`epsilon` will be selected if `k-epsilon` is selected as `turbulenceModel` value. Same with `omega`:
+```yaml
+problem:
+  template_case: 'pitzDaily'
+  parameters:
+    turbulenceModel:
+      type: choice
+      value_type: str
+      values: ['k-epsilon', 'k-omega']
+      is_ordered: True
+      dependents: 
+        - k-epsilon: ['epsilon']
+        - k-omega: ['omega']
+    epsilon:
+      type: range
+      value_type: float
+      bounds: [1e-8, 1e-1]
+      log_scale: True
+    omega:
+      type: range
+      value_type: float
+      bounds: [1e-8, 1e-1]
+      log_scale: True
+```
+
+You then proceed to `meta.scopes` and `meta.file_copies` to describe where/how these parameters will be substituted in the
+same way as if they were independent.
+
+Current limitations that you need to be aware of:
+- While you can assign multiple parameters to depend on one root value, you cannot assign the same parameter to two different
+  root values
+- You cannot have any other independent parameters
 
 ### Metrics to evaluate objectives
 
@@ -301,4 +338,27 @@ You should be able to reproduce **similar** results both in local and SLURM mode
 If you're running this in SLURM mode, it may be useful to watch jobs through their life cycle with:
 ```bash
 watch -n 0.1 -x squeue
+```
+
+## Saving and loading experiments
+
+There is also some support for saving experiments to JSON files. Reloading them is mainly targeted for post-processing
+of results, but can also be used for resuming (Although the scripts only save when the process is finished).
+
+Here is a quick snippet to load an experiment of a parameter variation study and explore it's trial data:
+```python
+from ax.core import Experiment
+from ax.storage.json_store.load import load_experiment
+from core import *
+import pandas as pd
+
+exp = load_experiment(f"Example_experiment_pv.json")
+# Print metric data by trial/arm
+print(exp.fetch_data().df)
+# Parameters and properties of First trial
+print({**exp.trials[0]._properties, **exp.trials[0].arm.parameters})
+# Experiment search space
+print(exp.search.space)
+# Config file (config.yaml) used to run specific trials (as dict)
+print(exp.runner_for_trial(0).cfg)
 ```
