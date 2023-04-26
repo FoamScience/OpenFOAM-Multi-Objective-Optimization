@@ -266,6 +266,9 @@ meta:
   n_parallel_trials: 3
 ```
 
+> `n_parallel_trials` is always respected when you run `paramVariation.py`, but the algorithm will limit it
+> for `multiObjOpt.py` (max parallel trials is selected by the optimization algorithm, usually: 10)
+
 Depending on the dimension and properties of your search space, a number of cases will be generated
 first with SOBOL for initialization, then the generation strategy will switch to a suitable optimization
 algorithm.

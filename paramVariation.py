@@ -63,7 +63,7 @@ def exp_main(cfg : DictConfig) -> None:
     scheduler = Scheduler(
         experiment=exp,
         generation_strategy=gs,
-        options=SchedulerOptions(),
+        options=SchedulerOptions(max_pending_trials=cfg.meta.n_parallel_trials),
     )
 
     scheduler.run_n_trials(max_trials=cfg.meta.n_trials)
