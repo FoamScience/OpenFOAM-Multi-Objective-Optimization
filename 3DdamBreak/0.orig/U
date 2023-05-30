@@ -18,37 +18,20 @@ dimensions      [0 1 -1 0 0 0 0];
 
 internalField   uniform (0 0 0);
 
-inletVelocity   10.0;
-velVect         ($inletVelocity 0 0);
-
-
 boundaryField
 {
-    inlet
+    atmosphere
     {
-        type            fixedValue;
-        value           uniform $velVect;
+        type            pressureInletOutletVelocity;
+        value           uniform (0 0 0);
     }
 
-    outlet
+    "(obstacle|walls)"
     {
-        type            zeroGradient;
-    }
-
-    upperWall
-    {
-        type            noSlip;
-    }
-
-    lowerWall
-    {
-        type            noSlip;
-    }
-
-    frontAndBack
-    {
-        type            empty;
+        type            uniformFixedValue;
+        uniformValue    (0 0 0);
     }
 }
+
 
 // ************************************************************************* //

@@ -11,38 +11,33 @@ FoamFile
     format      ascii;
     class       dictionary;
     location    "system";
-    object      controlDict;
+    object      meshDict;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-application     simpleFoam;
+mesher pMesh;
 
-startFrom       startTime;
+surfaceFile "geometry/edges.stl";
 
-startTime       0;
+minCellSize 0.030;
+maxCellSize 4.000;
 
-stopAt          endTime;
+renameBoundary
+{
+    defaultName		obstacle;
+    defaultType		wall;
 
-endTime         2000;
-
-deltaT          1;
-
-writeControl    timeStep;
-
-writeInterval   $endTime;
-
-purgeWrite      0;
-
-writeFormat     ascii;
-
-writePrecision  6;
-
-writeCompression off;
-
-timeFormat      general;
-
-timePrecision   6;
-
-runTimeModifiable true;
-
-// ************************************************************************* //
+    newPatchNames
+    {
+        "OpenSCAD_Model_1"
+        {
+            newName     atmosphere;
+            type     patch;
+        }
+        "OpenSCAD_Model_(0|2|3|4|5)"
+        {
+            newName     walls;
+            type     wall;
+        }
+    }
+}

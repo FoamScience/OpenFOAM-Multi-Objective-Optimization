@@ -10,41 +10,28 @@ FoamFile
     version     2.0;
     format      ascii;
     class       volScalarField;
-    location    "0";
-    object      omega;
+    object      k;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-dimensions      [0 0 -1 0 0 0 0];
+dimensions      [0 2 -2 0 0 0 0];
 
-internalField   uniform 440.15;
+internalField   uniform 0.00015;
 
 boundaryField
 {
-    inlet
+    atmosphere
     {
-        type            fixedValue;
+        type            inletOutlet;
+        inletValue      $internalField;
         value           $internalField;
     }
-    outlet
+
+    "(obstacle|walls)"
     {
-        type            zeroGradient;
-    }
-    upperWall
-    {
-        type            omegaWallFunction;
+        type            kqRWallFunction;
         value           $internalField;
-    }
-    lowerWall
-    {
-        type            omegaWallFunction;
-        value           $internalField;
-    }
-    frontAndBack
-    {
-        type            empty;
     }
 }
-
 
 // ************************************************************************* //

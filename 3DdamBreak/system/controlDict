@@ -1,0 +1,115 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2012                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      controlDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+libs
+(
+    libamrDynamicFvMesh.so
+    libamrIndicators.so
+    libamrDynamicMesh.so
+);
+
+application     interDyMFoam;
+
+startFrom       startTime;
+
+startTime       0;
+
+stopAt          endTime;
+
+endTime         1.00;
+
+deltaT          0.001;
+
+writeControl    adjustable;
+
+writeInterval   $endTime;
+
+purgeWrite      0;
+
+writeFormat     ascii;
+
+writePrecision  6;
+
+writeCompression off;
+
+timeFormat      general;
+
+timePrecision   6;
+
+runTimeModifiable yes;
+
+adjustTimeStep  yes;
+
+maxCo           0.5;
+
+maxAlphaCo      0.5;
+
+maxDeltaT       1;
+
+functions
+{
+    #include "probes.cfg"
+
+    waterHeight
+    {
+        type coded;
+        libs ( utilityFunctionObjects );
+    
+        // Name of on-the-fly generated functionObject
+        name waterHeight;
+        codeExecute
+        #{
+            const volScalarField& alpha = mesh().lookupObject<volScalarField>("alpha.water");
+            scalar X1 = 2.66;
+            scalar Y1 = 0.00;
+            scalar X2 = 1.00;
+            scalar Y2 = 0.00;
+            scalar zmin = 0.00;
+            scalar zmax = 1.00;
+            scalar h4 = 0.0;
+            scalar h2 = 0.0;
+    
+            scalarList z(1000, zmin);
+            forAll(z, zi) {
+                z[zi] = zmin + zi/1000.0;
+                label cellID = mesh().findCell(vector(X1,Y1,z[zi]));
+                if (cellID != -1) {
+                    // Cell is found on this proc.
+                    if (alpha[cellID] > 0.5 && h4 <= mesh().C()[cellID].z())
+                    {
+                        h4 = mesh().C()[cellID].z();
+                    }
+                }
+                cellID = mesh().findCell(vector(X2,Y2,z[zi]));
+                if (cellID != -1) {
+                    // Cell is found on this proc.
+                    if (alpha[cellID] > 0.5 && h2 < mesh().C()[cellID].z())
+                    {
+                        h2 = mesh().C()[cellID].z();
+                    }
+                }
+            }
+            // Sync. h2 on all processors, picking the highest
+            reduce(h4, maxOp<scalar>());
+            reduce(h2, maxOp<scalar>());
+            Info << "Time: " << mesh().time().value() << " H4: " << h4  << " H2: " << h2 << endl;
+        #};
+    }
+}
+
+
+// ************************************************************************* //

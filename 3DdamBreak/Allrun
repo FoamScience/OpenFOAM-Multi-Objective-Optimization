@@ -1,0 +1,46 @@
+#!/bin/sh
+cd "${0%/*}" || exit                                # Run from this directory
+. ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions        # Tutorial run functions
+#------------------------------------------------------------------------------
+
+if [ -z "$AMRLB_PROJECT" ] ; then
+    echo "AMR/LB project required. Export AMRLB_PROJECT to the right path!"
+    exit 1
+fi
+
+if [ -z "$FOAM_CODE_TEMPLATES" ]; then
+    echo "FOAM_CODE_TEMPLATES must point to code templates dir."
+    exit 1
+fi
+
+# Geometry
+runApplication openscad geometry/domain.scad -o geometry/domain.stl
+runApplication surfaceFeatureEdges -angle 45 geometry/domain.stl  geometry/edges.stl
+
+# Initial setup
+restore0Dir
+mesher=$(foamDictionary -entry mesher -value system/meshDict)
+runApplication ${mesher}
+maxRef=$(foamDictionary -entry maxRefinement -value constant/dynamicMeshDict)
+refineInterval=$(foamDictionary -entry refineInterval -value constant/dynamicMeshDict)
+foamDictionary -entry refineInterval -set 1 constant/dynamicMeshDict
+runApplication setFields
+for i in $(seq 1 $maxRef); do
+    runApplication -a updateMesh -overwrite
+    runApplication -a setFields
+done
+foamDictionary -entry refineInterval -set $refineInterval constant/dynamicMeshDict
+foamDictionary -entry unrefineInterval -set $(($refineInterval*5)) constant/dynamicMeshDict
+cp -rT 0/polyMesh constant/polyMesh
+
+# Decomposition
+runApplication decomposePar -constant
+
+# RUN
+runParallel interFoam
+
+# Post process
+awk 'BEGIN{print "Time,H2,H4";} /^Time:/ {print $2 "," $6 "," $4}' log.interFoam  > waterHeight.csv
+awk 'BEGIN{print "Time,P1,P3,P5,P7"} /^[^#].*/{print $1 "," $2 "," $3 "," $4, "," $5}' postProcessing/probes/0/p > pressure.csv
+
+#------------------------------------------------------------------------------
