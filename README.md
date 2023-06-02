@@ -1,5 +1,8 @@
 # Multi Objective Optimization on OpenFOAM cases
 
+![](https://zenodo.org/badge/611991004.svg)
+> If you're using this piece of software, please care enough to [cite it](https://zenodo.org/record/7997394) in your publications
+
 Relying on [ax-platform](https://ax.dev) to experiment around 0-code parameter variation and multi-objective optimization
 of OpenFOAM cases.
 
