@@ -21,30 +21,34 @@ host the database server. We would start the server service and wait until stopp
 # --rm makes the container get destroyed immediately when we leave it
 # It also has access to var/axc like other cluster nodes
 docker run -it --rm --name redis-db --net slurm-cluster_default -v $PWD:/axc ghcr.io/craylabs/smartsim-tutorials:v0.4.1 bash
-# Get its IP Address in the cluster's network
+# Get its IP Address in the cluster's network for later
 docker inspect redis-db | jq '.[0].NetworkSettings.Networks."slurm-cluster_default".IPAddress'
 # We assume it's 127.23.0.8 here
 # Start the Redis server inside the container:
 pip install omegaconf zmq hydra-core
 cd /axc/multiOptOF
 # Adapt the address if it's different for you
-python redis-db.py
+python redis-db.py +interface=eth0 +port=6532
 ```
 
 For the OpenFOAM function object; you need to compile it on all nodes (Only on the head-node in this example).
 ```bash
 cd /axc/multiOptOF
+git clone https://github.com/CrayLabs/SmartRedis
+# Execute all of the following commands on all nodes if smartSimFunctionObject needs to run on compute nodes too
 openfoam2206
-conda activate of-opt
+conda activate of-opt # This might need to be created
 pip install smartsim[ml]
 # We don't need PyTorch and TensorFlow backend for this simple example, so don't build them
+yum install -y git-lfs
 smart build --device cpu  --no_pt --no_tf
-git clone https://github.com/CrayLabs/SmartRedis
 . bashrc.smartredis
 cd SmartRedis
 make lib
 cd ..
 wmake smartSimFunctionObject
+# This is the db_server:db_port
+export SSDB="172.23.0.8:6532"
 ```
 
 You're all set; `./multiObjOpt.py` on the head node should start the sample optimization run.

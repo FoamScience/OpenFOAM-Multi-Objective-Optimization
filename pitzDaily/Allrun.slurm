@@ -14,4 +14,4 @@ runApplication blockMesh
 runApplication decomposePar
 
 # Serial run
-mpirun -np 2 --allow-run-as-root --output-filename log $(getApplication) -parallel
+mpirun --allow-run-as-root --output-filename log $(getApplication) -parallel

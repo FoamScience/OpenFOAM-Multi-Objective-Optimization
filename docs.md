@@ -81,7 +81,11 @@ git clone https://github.com/FoamScience/OpenFOAM-Multi-Objective-Optimization v
 docker exec -it axc-headnode bash
 
 # Make sure everything works fine (you should see 4 different IP addresses):
+module load mpi
 salloc -N 4 mpirun --allow-run-as-root hostname -I
+
+# You can also (will auto-load-balance)
+mpiexec hostname -n 4 -I
 
 # Source OpenFOAM
 source /usr/lib/openfoam/openfoam2206/etc/bashrc
