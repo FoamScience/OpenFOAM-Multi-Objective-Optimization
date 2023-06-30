@@ -34,6 +34,21 @@ from core import *
 
 log = logging.getLogger(__name__)
 
+def _find_logger_basefilename(logger):
+    """Finds the logger base filename(s) currently there is only one
+    """
+    log_file = None
+    parent = logger.__dict__['parent']
+    if parent.__class__.__name__ == 'RootLogger':
+        # this is where the file name lives
+        for h in logger.__dict__['handlers']:
+            if h.__class__.__name__ == 'TimedRotatingFileHandler':
+                log_file = h.baseFilename
+    else:
+        log_file = _find_logger_basefilename(parent)
+
+    return log_file 
+
 @hydra.main(version_base=None, config_path=".", config_name="config.yaml")
 def exp_main(cfg : DictConfig) -> None:
     log.info("============= Configuration =============")
@@ -50,7 +65,6 @@ def exp_main(cfg : DictConfig) -> None:
         name=f"{cfg.problem.name}_experiment",
         search_space=ax_client.make_search_space(parameters=search_space, parameter_constraints=[]),
         optimization_config=optimization_config,
-        # something like this will switch to single-objective optimization
         runner=HPCJobRunner(cfg=cfg),
         is_test=False,
     )
@@ -64,7 +78,17 @@ def exp_main(cfg : DictConfig) -> None:
     scheduler = Scheduler(
         experiment=exp,
         generation_strategy=gs,
-        options=SchedulerOptions(),
+        options=SchedulerOptions(
+            log_filepath=log.manager.root.handlers[1].baseFilename,
+            ttl_seconds_for_trials=cfg.meta.trial_ttl
+                if "trial_ttl" in cfg.meta.keys() else None,
+            init_seconds_between_polls=cfg.meta.init_poll_wait
+                if "init_poll_wait" in cfg.meta.keys() else 1,
+            seconds_between_polls_backoff_factor=cfg.meta.poll_factor
+                if "poll_factor" in cfg.meta.keys() else 1.5,
+            timeout_hours=cfg.meta.timeout_hours
+                if "timeout_hours" in cfg.meta.keys() else None,
+        ),
     )
     scheduler.run_n_trials(max_trials=cfg.meta.n_trials)
 
@@ -118,7 +142,6 @@ def exp_main(cfg : DictConfig) -> None:
         df = pd.merge(params_df, metrics_df, left_index=True, right_index=True)
         df = pd.merge(df, sems_df, left_index=True, right_index=True)
         df.to_csv(f"{cfg.problem.name}_frontier_report.csv")
-        log.info(df)
     except:
         log.warning("Could not plot paleto front, not a multi-objective optimization?")
 

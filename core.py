@@ -169,41 +169,27 @@ def slurm_status_query(job_id, jobs, cfg):
     }
     return status_map[status]
 
-def local_metric_value(job_id, jobs, cfg):
+def shell_metric_value(metric, case, cfg):
     """
-        Run a bash command to extract metric/objective values.
+        Run a bash command to extract a single metric/objective value.
         The command runs inside the OpenFOAM case if $CASE_PATH doesn't show up in it
-    """
-    metrics = {}
-    case = jobs[job_id].config["case"]
-    for key, item in cfg.problem.objectives.items():
-        try:
-            # OpenFOAM is annoying in this regard, so, if OpenFOAM utils are used to
-            # extract metrics, do a: foamUtility -case $CASEPATH
-            hasPath=any([c.find('$CASE_PATH') != -1 for c in item.command])
-            cwd = os.getcwd() if hasPath else case.name
-            metrics[key] = float(sb.check_output(list(process_input_command(item.command, case)), cwd=cwd))
-        except:
-            metrics[key] = None
-    return metrics
 
-def slurm_metric_value(job_id, jobs, cfg):
-    """
-        Run a bash command to extract metric/objective values.
-
-        Optionally, a preparation command can be supplied for HPC runs.
-        Note that the preparation command needs to be "interactive" (eg. an salloc) because we need to
+        Optionally, a preparation command can be supplied for HPC runs if necessary.
+        Note that the these commands need to be interactive (eg. salloc) as we need to
         block and figure out the objective's value at this point.
     """
     metrics = {}
-    case = jobs[job_id].config["case"]
-    for key, item in cfg.problem.objectives.items():
-        try:
-            if "prepare" in item.keys():
-                sb.check_output(list(process_input_command(item.prepare, case)), cwd=case.name)
-            metrics[key] = float(sb.check_output(list(process_input_command(item.command, case)), cwd=case.name))
-        except:
-            metrics[key] = None
+    item = cfg.problem.objectives[metric]
+    try:
+        # OpenFOAM is annoying in this regard, so, if OpenFOAM utils are used to
+        # extract metrics, do a: foamUtility -case $CASEPATH
+        hasPath=any([c.find('$CASE_PATH') != -1 for c in item.command])
+        cwd = os.getcwd() if hasPath else case.name
+        if "prepare" in item.keys():
+            sb.check_output(list(process_input_command(item.prepare, case)), cwd=cwd)
+        metrics[metric] = float(sb.check_output(list(process_input_command(item.command, case)), cwd=cwd))
+    except:
+        metrics[metric] = None
     return metrics
 
 class HPCJobQueueClient:
@@ -223,8 +209,7 @@ class HPCJobQueueClient:
         "slurm": slurm_status_query,
     }
     metrics_value_map = {
-        "local": local_metric_value,
-        "slurm": slurm_metric_value
+        "shell": shell_metric_value,
     }
 
     def schedule_job_with_parameters(
@@ -249,9 +234,15 @@ class HPCJobQueueClient:
         """
             Run metric evaluation commands on finished jobs.
         """
-        return self.metrics_value_map[self.cfg.meta.metric_value_mode](job_id, self.jobs, self.cfg)
+        metrics = {}
+        case = self.jobs[job_id].config["case"]
+        # Dispatch a way to get metric; can be different for each metric
+        for key, item in self.cfg.problem.objectives.items():
+            metrics.update(self.metrics_value_map[self.cfg.problem.objectives[key].mode](key, case, self.cfg))
+        return metrics
 
 HPC_JOB_QUEUE_CLIENT = HPCJobQueueClient()
+
 def get_hpc_job_queue_client() -> HPCJobQueueClient:
     """Obtain the singleton job queue instance."""
     return HPC_JOB_QUEUE_CLIENT

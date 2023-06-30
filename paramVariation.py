@@ -19,10 +19,10 @@ from omegaconf import DictConfig, OmegaConf
 
 from ax.modelbridge.generation_strategy import GenerationStrategy, GenerationStep
 from ax.modelbridge.registry import Models
-from ax.service.ax_client import AxClient
+from ax.service.ax_client import AxClient, MultiObjective
 
-from ax.service.scheduler import Scheduler, SchedulerOptions
-from ax.core import OptimizationConfig, Experiment, Objective
+from ax.service.scheduler import ObjectiveThreshold, Scheduler, SchedulerOptions
+from ax.core import OptimizationConfig, Experiment, Objective, MultiObjectiveOptimizationConfig
 from ax.storage.json_store.load import load_experiment
 from ax.storage.json_store.save import save_experiment
 
@@ -50,12 +50,16 @@ def exp_main(cfg : DictConfig) -> None:
         ]
     )
 
-    objective=Objective(metric=HPCJobMetric(name=list(cfg.problem.objectives.items())[0][0], cfg=cfg), minimize=True)
+    metrics = [HPCJobMetric(name=key, cfg=cfg) for key, _ in cfg.problem.objectives.items()]
+    objectives=[Objective(metric=m, minimize=item.minimize) for m, (_, item) in zip(metrics, cfg.problem.objectives.items())]
+    thresholds=[ObjectiveThreshold(metric=m, bound=float(item.threshold), relative=False) for m, (_, item) in zip(metrics, cfg.problem.objectives.items())]
     ax_client = AxClient(verbose_logging=False)
+    optimization_config = MultiObjectiveOptimizationConfig(objective=MultiObjective(objectives), objective_thresholds=thresholds) \
+            if len(objectives) > 1 else OptimizationConfig(objectives[0])
     exp = Experiment(
         name=f"{cfg.problem.name}_experiment",
         search_space=ax_client.make_search_space(parameters=search_space, parameter_constraints=[]),
-        optimization_config=OptimizationConfig(objective=objective),
+        optimization_config=optimization_config,
         runner=HPCJobRunner(cfg=cfg),
         is_test=False,  # Marking this experiment as a test experiment.
     )
@@ -63,7 +67,19 @@ def exp_main(cfg : DictConfig) -> None:
     scheduler = Scheduler(
         experiment=exp,
         generation_strategy=gs,
-        options=SchedulerOptions(max_pending_trials=cfg.meta.n_parallel_trials),
+        options=SchedulerOptions(
+            log_filepath=log.manager.root.handlers[1].baseFilename,
+            max_pending_trials=cfg.meta.n_parallel_trials
+                if "n_parallel_trials" in cfg.meta.keys() else 10,
+            ttl_seconds_for_trials=cfg.meta.trial_ttl
+                if "trial_ttl" in cfg.meta.keys() else None,
+            init_seconds_between_polls=cfg.meta.init_poll_wait
+                if "init_poll_wait" in cfg.meta.keys() else 1,
+            seconds_between_polls_backoff_factor=cfg.meta.poll_factor
+                if "poll_factor" in cfg.meta.keys() else 1.5,
+            timeout_hours=cfg.meta.timeout_hours
+                if "timeout_hours" in cfg.meta.keys() else None,
+        ),
     )
 
     scheduler.run_n_trials(max_trials=cfg.meta.n_trials)

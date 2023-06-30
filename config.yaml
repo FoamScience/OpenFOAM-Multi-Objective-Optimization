@@ -19,6 +19,7 @@ problem:
   # the specific trial
   objectives:
     ExecutionTime:
+      mode: 'shell'
       # A little (optional) preparation before metrics are evaluated
       # This command needs to be !interactive! as it runs in blocking mode and it's only active in SLURM metric value mode
       # Think: salloc
@@ -31,6 +32,7 @@ problem:
       minimize: True
       lower_is_better: True
     ContinuityErrors:
+      mode: 'shell'
       command: ['awk', 'function abs(v) {return v < 0 ? -v : v} /continuity errors/{a=$15} END{print(abs(a))}', 'log.simpleFoam']
       #command: ['awk', 'function abs(v) {return v < 0 ? -v : v} /continuity errors/{a=$15} END{print(abs(a))}', 'log.1.0']
       threshold: 1.0
@@ -44,8 +46,6 @@ meta:
   clone_destination: ""
   # Case run mode (local, slurm)
   case_run_mode: local
-  # Metric evaluation mode (local, slurm)
-  metric_value_mode: local
   # How should we run your case?
   # Metric values are extracted through problem.objectives.*.command
   # after completion of the following command
@@ -64,6 +64,14 @@ meta:
   n_trials: 10
   # Number of trials to deploy at the same time (in parallel)
   n_parallel_trials: 3
+  # Time To Live for a single trial in seconds
+  ttl_trial: 3600
+  # Number of seconds to wait for polling initially
+  init_poll_wait: 2
+  # Rate at which poll interval increases
+  poll_factor: 1.5
+  # Timeout in hours for the whole experiment
+  timeout: 10
   # Try to use SAASBO, default is to use: GPEI
   use_saasbo: True
   # Number of pareto front points to generate
@@ -79,9 +87,3 @@ meta:
       inletVelocity: "inletVelocity"
     "/0orig/k":
       k: "k"
-
-# Evaluate how the optimization algorithm did
-verify:
-  base:
-    - k: 1e-5
-    - inletVelocity: 10
