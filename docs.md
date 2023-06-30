@@ -243,11 +243,13 @@ Here are two examples using awk to parse log files for execution time and contin
 problem:
   objectives:
     ExecutionTime:
+      mode: 'shell'
       command: ['awk', '/ExecutionTime/{a=$3} END{print(a)}', 'log.simpleFoam']
       threshold: 5
       minimize: True
       lower_is_better: True
     ContinuityErrors:
+      mode: 'shell'
       command: ['awk', 'function abs(v) {return v < 0 ? -v : v} /continuity errors/{a=$15} END{print(abs(a))}', 'log.simpleFoam']
       threshold: 1.0
       minimize: True
@@ -260,10 +262,14 @@ To run a total of 10 cases locally, 3-cases at a time (in parallel), each with i
 ```yaml
 meta:
   case_run_mode: local
-  metric_value_mode: local
   case_run_command: ['./Allrun']
   n_trials: 10
   n_parallel_trials: 3
+  # These are optional
+  ttl_trial: 3600
+  init_poll_wait: 2
+  poll_factor: 1.5
+  timeout: 10
 ```
 
 > `n_parallel_trials` is always respected when you run `paramVariation.py`, but the algorithm will limit it
@@ -291,8 +297,8 @@ If you want to run your trials on a SLURM cluster, there are only few things to 
 file. Mainly:
 
 - Your objective commands. You can still do metric evaluation with a local command, but it accepts a
-  `prepare` command that runs before your shell command. The preparation command can submit jobs to SLURM
-  if `meta.metric_value_mode` is set to `slurm`. Note that this preparation command is "blocking" though
+  `prepare` command that runs before your shell command. The preparation command can submit jobs to SLURM.
+  Note that this preparation command is "blocking" though
   and needs to do the preparation in interactive mode (so, `salloc`, but not `sbatch`).
 - Case run mode should be set to slurm.
 - Put an `sbatch` in `meta.case_run_command` (using `Allrun.slurm`)
@@ -303,12 +309,14 @@ file. Mainly:
 problem:
   objectives:
     ExecutionTime:
+      mode: 'shell'
       prepare: ['echo', '$CASE_NAME']
       command: ['awk', '/ExecutionTime/{a=$3} END{print(a)}', 'log.1.0']
       threshold: 5
       minimize: True
       lower_is_better: True
     ContinuityErrors:
+      mode: 'shell'
       command: ['awk', 'function abs(v) {return v < 0 ? -v : v} /continuity errors/{a=$15} END{print(abs(a))}', 'log.1.0']
       threshold: 1.0
       minimize: True
@@ -316,8 +324,6 @@ problem:
 
 meta:
   case_run_mode: slurm
-  # local or slurm here
-  metric_value_mode: local
   case_run_command: ['sbatch', '-J', '$CASE_NAME', './Allrun.slurm', '$CASE_PATH']
   slurm_status_query: ['sacct', '--name', '$CASE_NAME', '-o', 'JobName%60,State', '-n']
 ```
