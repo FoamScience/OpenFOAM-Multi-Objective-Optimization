@@ -45,6 +45,9 @@ SIMPLE
         U               1e-3;
         "(k|epsilon|omega|f|v2)" 1e-3;
     }
+
+    pRefPoint           (-0.02 0.025 0.0005);
+    pRefValue           0.0;
 }
 
 relaxationFactors

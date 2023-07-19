@@ -2,4 +2,4 @@
 cd "${0%/*}" || exit                                # Run from this directory
 
 foamCleanTutorials -self
-rm -rf 0
+rm -rf 0 geometry/*

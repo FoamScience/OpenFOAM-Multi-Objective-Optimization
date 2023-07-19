@@ -10,39 +10,46 @@ FoamFile
     version     2.0;
     format      ascii;
     class       dictionary;
-    location    "system";
-    object      controlDict;
+    object      meshDict;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-application     simpleFoam;
+surfaceFile "geometry/pitzDaily.stl";
+minCellSize 5e-4;
+maxCellSize 5e-4;
 
-startFrom       startTime;
+boundaryCellSize 5e-4;
 
-startTime       0;
+renameBoundary
+{
+    defaultName		frontAndBack;
+    defaultType		empty;
 
-stopAt          endTime;
+    newPatchNames
+    {
+        "inlet"
+        {
+            newName  inlet;
+            type     patch;
+        }
+        "outlet"
+        {
+            newName  outlet;
+            type     patch;
+        }
 
-endTime         10000;
+        "upperWall"
+        {
+            newName  upperWall;
+            type     wall;
+        }
 
-deltaT          1;
-
-writeControl    timeStep;
-
-writeInterval   $endTime;
-
-purgeWrite      0;
-
-writeFormat     ascii;
-
-writePrecision  6;
-
-writeCompression off;
-
-timeFormat      general;
-
-timePrecision   6;
-
-runTimeModifiable true;
+        "wall_.*"
+        {
+            newName  lowerWall;
+            type     wall;
+        }
+    }
+}
 
 // ************************************************************************* //

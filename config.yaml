@@ -1,89 +1,93 @@
 problem:
-  # Problem name to prefix output files with
-  name: Example
-  # The base OpenFOAM case; this needs to be fully functional case once paramters/files are substituted.
+  name: ShapeOpt
   template_case: 'pitzDaily'
-  # Experiment paramters
   parameters:
-    k:
+    nCtrlPnts:
+      type: choice
+      value_type: int
+      values: [4, 6]
+      is_ordered: True
+    angle1:
       type: range
       value_type: float
-      bounds: [0.1, 0.4]
+      bounds: [-90.0, 0.0]
       log_scale: False
-    inletVelocity:
+    # Angle2 is for the "first new control point on the right"
+    # Cannot reach -90 otherwise Paraview's connectivity filter won't detect the outlet
+    # Can this be implicitely penalized in metric computation?
+    angle2:
       type: range
       value_type: float
-      bounds: [5.0, 20.0]
+      bounds: [-180.0, -120.0]
       log_scale: False
-  # Experiment objectives. Metric values are fetched through shell commands in the working directory of
-  # the specific trial
+    angle3:
+      type: range
+      value_type: float
+      bounds: [-90.0, 90.0]
+      log_scale: False
+    angle4:
+      type: range
+      value_type: float
+      bounds: [90.0, 270.0]
+      log_scale: False
+    radiusRatio1:
+      type: range
+      value_type: float
+      bounds: [0.1, 0.5]
+      log_scale: False
+    radiusRatio2:
+      type: range
+      value_type: float
+      bounds: [0.1, 0.5]
+      log_scale: False
+    radiusRatio3:
+      type: range
+      value_type: float
+      bounds: [0.1, 0.5]
+      log_scale: False
+    radiusRatio4:
+      type: range
+      value_type: float
+      bounds: [0.1, 0.5]
+      log_scale: False
   objectives:
-    ExecutionTime:
+    PressureDrop:
       mode: 'shell'
-      # A little (optional) preparation before metrics are evaluated
-      # This command needs to be !interactive! as it runs in blocking mode and it's only active in SLURM metric value mode
-      # Think: salloc
-      prepare: ['echo', '$CASE_NAME']
-      # How to evaluate the objective metric?
-      # This command needs to return a convertible-to-float value
-      command: ['awk', '/ExecutionTime/{a=$3} END{print(a)}', 'log.simpleFoam']
-      #command: ['awk', '/ExecutionTime/{a=$3} END{print(a)}', 'log.1.0']
-      threshold: 5
+      command: ['./getPressDiff.sh']
+      threshold: 6
       minimize: True
       lower_is_better: True
-    ContinuityErrors:
-      mode: 'shell'
-      command: ['awk', 'function abs(v) {return v < 0 ? -v : v} /continuity errors/{a=$15} END{print(abs(a))}', 'log.simpleFoam']
-      #command: ['awk', 'function abs(v) {return v < 0 ? -v : v} /continuity errors/{a=$15} END{print(abs(a))}', 'log.1.0']
-      threshold: 1.0
-      minimize: True
-      lower_is_better: True
+        #ExecutionTime:
+        #  mode: 'shell'
+        #  command: ['awk', '/ExecutionTime/{a=$3} END{print(a)}', 'log.simpleFoam']
+        #  threshold: 10
+        #  minimize: True
+        #  lower_is_better: True
 
 meta:
-  # When clonging template case, specify extra files/dirs to clone
-  case_subdirs_to_clone: ["0orig", "Allrun.slurm"]
-  # Where to clone trial cases (absolute path, leave empty to consider $PWD)
+  metric_value_mode: 'local'
+  case_subdirs_to_clone: ["0orig", "Allrun.slurm", "geometry",  "getPressDiff.sh",  "openscad",  "patches.py",  "pressureDiff.py", "case.foam"]
   clone_destination: ""
-  # Case run mode (local, slurm)
   case_run_mode: local
-  # How should we run your case?
-  # Metric values are extracted through problem.objectives.*.command
-  # after completion of the following command
-  # The command is processed to provide a couple of variables:
-  # - $CASE_PATH: fullpath to **parameter variation case**
-  # - $CASE_NAME: generated name of the **parameter variation case**
   case_run_command: ['./Allrun']
-  #case_run_command: ['sbatch', '-J', '$CASE_NAME', './Allrun.slurm', '$CASE_PATH']
-  # How to check for job completion?
-  # The output of this command is "split", and the second element is considered the status
-  # This has no effect if local mode is used
   slurm_status_query: ['sacct', '--name', '$CASE_NAME', '-o', 'JobName%60,State', '-n']
-  # Number of trials to generate:
-  # Using SOBOL for paramter variation
-  # Model is automatically chosen for optimization studies
-  n_trials: 10
-  # Number of trials to deploy at the same time (in parallel)
-  n_parallel_trials: 3
-  # Time To Live for a single trial in seconds
+  n_trials: 40
+  n_parallel_trials: 6
+  # How about diverging cases???
   ttl_trial: 3600
-  # Number of seconds to wait for polling initially
   init_poll_wait: 2
-  # Rate at which poll interval increases
   poll_factor: 1.5
-  # Timeout in hours for the whole experiment
   timeout: 10
-  # Try to use SAASBO, default is to use: GPEI
   use_saasbo: True
-  # Number of pareto front points to generate
   n_pareto_points: 5
-  # Paramters can be substitued as whole case files
-  # There are done first if present
-  #file_copies:
-  #modelType:
-  #  template: "/constant/transportProperties"
-  # Parameters can also be substituted per-file
   scopes:
-    "/0orig/U":
-      inletVelocity: "inletVelocity"
-    "/0orig/k":
-      k: "k"
+    "/system/geometryDict":
+      nCtrlPnts: "nCtrlPnts"
+      angle1: "angle1"
+      angle2: "angle2"
+      angle3: "angle3"
+      angle4: "angle4"
+      radiusRatio1: "ratio1"
+      radiusRatio2: "ratio2"
+      radiusRatio3: "ratio3"
+      radiusRatio4: "ratio4"

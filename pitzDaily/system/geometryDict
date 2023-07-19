@@ -1,0 +1,53 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2112                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      geometryParameters;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// Number of curve points to generate on the lower patch
+nCurvePnts 100;
+
+// Number of control points for the Bezier curve
+nCtrlPnts 4;
+
+// Domain length
+L 0.29;
+
+// Angles in degrees, Range: [-180, 180]
+// Order is kinda strange
+// 1st NEW control point -> last NEW control point
+// 2nd NEW control point -> 2nd NEW last control point
+// ....
+// To allow for variable number of control points
+angle1 -90; // Range: [-90, 0]
+angle2 -150; // Range: [-180, -90]
+angle3   0;
+angle4   0;
+angle5   0;
+angle6   0;
+// Extra angles? not used!
+angle7   0;
+angle8   0;
+
+// Radius ratios of L to put the control points at
+// Same order as angles
+ratio1   1.1;
+ratio2   0.1;
+ratio3   0.1;
+ratio4   0.1;
+ratio5   0.1;
+ratio6   0.1;
+ratio7   0.1;
+ratio8   0.1;
+
+// ************************************************************************* //
