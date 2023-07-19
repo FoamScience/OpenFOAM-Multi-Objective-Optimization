@@ -68,8 +68,9 @@ meta:
   metric_value_mode: 'local'
   case_subdirs_to_clone: ["0orig", "Allrun.slurm", "geometry",  "getPressDiff.sh",  "openscad",  "patches.py",  "pressureDiff.py", "case.foam"]
   clone_destination: ""
-  case_run_mode: local
-  case_run_command: ['./Allrun']
+  case_run_mode: slurm
+  #case_run_command: ['./Allrun']
+  case_run_command: ['sbatch', '-J', '$CASE_NAME', './Allrun.slurm', '$CASE_PATH']
   slurm_status_query: ['sacct', '--name', '$CASE_NAME', '-o', 'JobName%60,State', '-n']
   n_trials: 40
   n_parallel_trials: 6
