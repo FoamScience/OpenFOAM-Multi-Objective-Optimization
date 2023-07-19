@@ -107,43 +107,49 @@ def exp_main(cfg : DictConfig) -> None:
     # Save experiment for later
     save_experiment(exp, f"{cfg.problem.name}_experiment_opt.json")
 
-    log.info("==== Pareto optimal paramters: ===")
-    pareto_params = scheduler.get_pareto_optimal_parameters()
-    log.info(pareto_params)
-    log.info(json.dumps(pareto_params, indent=4))
-    log.info("==================================")
+    if len(objectives) == 1:
+        # Single-Objective optimization
+        log.info("==== Best trial s===")
+        log.info(scheduler.get_best_parameters())
+        log.info(scheduler.get_best_trial())
+    else:
+        try:
+            # Plot Pareto frontier
+            log.info("==== Pareto optimal paramters: ===")
+            pareto_params = scheduler.get_pareto_optimal_parameters()
+            log.info(pareto_params)
+            log.info(json.dumps(pareto_params, indent=4))
+            log.info("==================================")
 
-    # Plot Pareto frontier
-    try:
-        metric_names = [e.metric.name for e in objectives]
-        sobol_frontier = compute_posterior_pareto_frontier(
-            experiment=exp,
-            data=exp.fetch_data(),
-            primary_objective=objectives[1].metric,
-            secondary_objective=objectives[0].metric,
-            absolute_metrics=metric_names,
-            num_points=int(cfg.meta.n_pareto_points),
-        )
-        plot_frontier(sobol_frontier, 0.9, f"{cfg.problem.name}_fronier")
-        log.info(scheduler.get_hypervolume())
-        # Frontier dataframe
-        params_df = pd.DataFrame(
-            sobol_frontier.param_dicts,
-            index=range(cfg.meta.n_pareto_points)
-        )
-        metrics_df = pd.DataFrame(
-            [{k:v[i] for k,v in sobol_frontier.means.items()} for i in range(cfg.meta.n_pareto_points)],
-            index=range(cfg.meta.n_pareto_points)
-        )
-        sems_df = pd.DataFrame(
-            [{k+"_sems":v[i] for k,v in sobol_frontier.sems.items()} for i in range(cfg.meta.n_pareto_points)],
-            index=range(cfg.meta.n_pareto_points)
-        )
-        df = pd.merge(params_df, metrics_df, left_index=True, right_index=True)
-        df = pd.merge(df, sems_df, left_index=True, right_index=True)
-        df.to_csv(f"{cfg.problem.name}_frontier_report.csv")
-    except:
-        log.warning("Could not plot paleto front, not a multi-objective optimization?")
+            metric_names = [e.metric.name for e in objectives]
+            sobol_frontier = compute_posterior_pareto_frontier(
+                experiment=exp,
+                data=exp.fetch_data(),
+                primary_objective=objectives[1].metric,
+                secondary_objective=objectives[0].metric,
+                absolute_metrics=metric_names,
+                num_points=int(cfg.meta.n_pareto_points),
+            )
+            plot_frontier(sobol_frontier, 0.9, f"{cfg.problem.name}_fronier")
+            log.info(scheduler.get_hypervolume())
+            # Frontier dataframe
+            params_df = pd.DataFrame(
+                sobol_frontier.param_dicts,
+                index=range(cfg.meta.n_pareto_points)
+            )
+            metrics_df = pd.DataFrame(
+                [{k:v[i] for k,v in sobol_frontier.means.items()} for i in range(cfg.meta.n_pareto_points)],
+                index=range(cfg.meta.n_pareto_points)
+            )
+            sems_df = pd.DataFrame(
+                [{k+"_sems":v[i] for k,v in sobol_frontier.sems.items()} for i in range(cfg.meta.n_pareto_points)],
+                index=range(cfg.meta.n_pareto_points)
+            )
+            df = pd.merge(params_df, metrics_df, left_index=True, right_index=True)
+            df = pd.merge(df, sems_df, left_index=True, right_index=True)
+            df.to_csv(f"{cfg.problem.name}_frontier_report.csv")
+        except:
+            log.warning("Could not plot paleto front, not a multi-objective optimization?")
 
     # Feature Importance
     try:
