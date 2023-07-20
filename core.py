@@ -151,11 +151,12 @@ def slurm_status_query(job_id, jobs, cfg):
     proc_out = sb.check_output(list(process_input_command(cfg.meta.slurm_status_query, case)), cwd=case.name, stderr=sb.PIPE)
     # TODO: I have no idea why this isnecessary, but sacct sometimes returns an empty string!
     if proc_out.decode("utf-8") == "":
-        return TrialStatus.RUNNING
+        raise Exception("SLURM job status was empty, this is not allowed")
     status = str(proc_out.split()[1].decode("utf-8"))
     status_map = {
-        "": TrialStatus.RUNNING,
+        #"": TrialStatus.RUNNING,
         "RUNNING": TrialStatus.RUNNING,
+        "CONFIGURING": TrialStatus.RUNNING,
         "COMPLETING": TrialStatus.RUNNING,
         "CONFIGURING": TrialStatus.RUNNING,
         "PENDING": TrialStatus.RUNNING,
