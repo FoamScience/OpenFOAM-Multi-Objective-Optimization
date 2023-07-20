@@ -71,9 +71,12 @@ meta:
   case_run_mode: slurm
   #case_run_command: ['./Allrun']
   case_run_command: ['sbatch', '-J', '$CASE_NAME', './Allrun.slurm', '$CASE_PATH']
-  slurm_status_query: ['sacct', '--name', '$CASE_NAME', '-o', 'JobName%60,State', '-n']
-  n_trials: 40
-  n_parallel_trials: 6
+  # This works if accounting is enabled on SLURM
+  #slurm_status_query: ['sacct', '--name', '$CASE_NAME', '-o', 'JobName%60,State', '-n']
+  # Instead we can use the less reliable scontrol
+  slurm_status_query: ['../getSLURMJOBStatus.sh', '$CASE_NAME']
+  n_trials: 30
+  n_parallel_trials: 3
   # How about diverging cases???
   ttl_trial: 3600
   init_poll_wait: 2

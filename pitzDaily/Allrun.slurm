@@ -1,14 +1,17 @@
-#!/bin/bash
-#SBATCH --ntasks=2
-#SBATCH --output=%x_%j.out
+#!/usr/bin/bash -l
+#SBATCH -N 1
+#SBATCH -n 2
+#SBATCH --output=log.%x
 #SBATCH --partition=queue-1
 #SBATCH --constraint=c5a.24xlarge
 #
 source /fsx/OpenFOAM/OpenFOAM-v2212/etc/bashrc
+conda activate /fsx/bias/bias_env
 cd "${1}" || exit                                # Run from this directory
 . ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions        # Tutorial run functions
 #------------------------------------------------------------------------------
 
+set -e
 function getParam() {
     foamDictionary -entry "$1" -value system/geometryDict
 }
@@ -54,7 +57,7 @@ done
 radius="$radius ]"
 
 ## First generate the geometry
-runApplication openscad -o geometry/pitzDaily.stl -D "nCurvePnts=$nCurvePnts;nCtrlPnts=$nCtrlPnts;L=$L;angles=$angles;ratios=$radius" openscad/pitzDaily.scad
+openscad -o geometry/pitzDaily.stl -D "nCurvePnts=$nCurvePnts;nCtrlPnts=$nCtrlPnts;L=$L;angles=$angles;ratios=$radius" openscad/pitzDaily.scad > log.openscad
 
 ## Then remove the faces whose normals are in Z
 sed -r '/facet normal [-+]?0 [-+]?0 /,+6d' geometry/pitzDaily.stl > geometry/pitzDaily2D.stl
@@ -63,7 +66,7 @@ sed -r '/facet normal [-+]?0 [-+]?0 /,+6d' geometry/pitzDaily.stl > geometry/pit
 runApplication surfaceCheck geometry/pitzDaily2D.stl
 
 # Split patches and put back together
-pvpython patches.py "$PWD"/geometry
+runApplication pvpython patches.py "$PWD"/geometry
 echo "Writing geometry/pitzDaily.stl"
 sed "s/^solid.*/solid inlet/g" geometry/inlet.stl > geometry/pitzDaily.stl
 sed "s/^solid.*/solid outlet/g" geometry/outlet.stl >> geometry/pitzDaily.stl
@@ -82,3 +85,4 @@ runApplication decomposePar
 
 # Parallel run on the slurm cluster
 mpirun --output-filename log $(getApplication) -parallel
+runApplication reconstructPar
