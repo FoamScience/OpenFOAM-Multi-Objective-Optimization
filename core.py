@@ -157,6 +157,7 @@ def slurm_status_query(job_id, jobs, cfg):
         "": TrialStatus.RUNNING,
         "RUNNING": TrialStatus.RUNNING,
         "COMPLETING": TrialStatus.RUNNING,
+        "CONFIGURING": TrialStatus.RUNNING,
         "PENDING": TrialStatus.RUNNING,
         "PREEMPTED": TrialStatus.FAILED,
         "FAILED": TrialStatus.FAILED,
