@@ -66,7 +66,17 @@ problem:
 
 meta:
   metric_value_mode: 'local'
-  case_subdirs_to_clone: ["0orig", "Allrun.slurm", "geometry",  "getPressDiff.sh",  "openscad",  "patches.py",  "pressureDiff.py", "case.foam"]
+  case_subdirs_to_clone:
+    - 0orig
+    - Allrun.slurm
+    - geometry
+    - openscad
+    - patches.py
+    - getPressDiff.sh
+    - pressureDiff.py
+    - case.foam
+    - getImage.sh
+    - renderResults.py
   clone_destination: ""
   case_run_mode: slurm
   #case_run_command: ['./Allrun']
@@ -76,7 +86,7 @@ meta:
   # Instead we can use the less reliable scontrol
   slurm_status_query: ['../getSLURMJOBStatus.sh', '$CASE_NAME']
   n_trials: 30
-  n_parallel_trials: 3
+  n_parallel_trials: 2
   # How about diverging cases???
   ttl_trial: 3600
   init_poll_wait: 2
@@ -95,3 +105,15 @@ meta:
       radiusRatio2: "ratio2"
       radiusRatio3: "ratio3"
       radiusRatio4: "ratio4"
+
+visualize:
+  # Replot every 30 secs
+  update_interval: 30
+  # Number of latest trials to generate images for
+  n_figures: 3
+  # Generate an image of the trial's final state
+  # This needs to return a URI to the generate image (can be local)
+  figure_generator: ['./getImage.sh']
+  # IP/Port to expose the dashboard app
+  host: '0.0.0.0'
+  port: 8888

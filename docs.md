@@ -352,7 +352,7 @@ watch -n 0.1 -x squeue
 ## Saving and loading experiments
 
 There is also some support for saving experiments to JSON files. Reloading them is mainly targeted for post-processing
-of results, but can also be used for resuming (Although the scripts only save when the process is finished).
+of results, but can also be used for resuming experiments.
 
 Here is a quick snippet to load an experiment of a parameter variation study and explore it's trial data:
 ```python
@@ -370,4 +370,32 @@ print({**exp.trials[0]._properties, **exp.trials[0].arm.parameters})
 print(exp.search.space)
 # Config file (config.yaml) used to run specific trials (as dict)
 print(exp.runner_for_trial(0).cfg)
+```
+## Online visualization of results
+
+While there is a [Ax's visualization API](https://ax.dev/api/plot.html) section.
+We only currently use it for post-processing of experiment results.
+
+For online feedback on how the optimization is going, CSV files are being
+written to disk on every trial completion (or failure). A separate process
+can then periodically read them and produce the desired interactive graphs.
+
+An example application is:
+```bash
+./dashboard.py
+```
+
+Which relies on some `config.yaml` settings:
+```yaml
+visualize:
+  # Replot every 20 secs
+  update_interval: 20
+  # Number of latest trials to generate images for
+  n_figures: 3
+  # Generate an image of the trial's final state
+  # This needs to return a URI to the generate image (can be local)
+  figure_generator: ['./getImage.sh']
+  # IP/Port to expose the dashboard app
+  host: '0.0.0.0'
+  port: 8888
 ```

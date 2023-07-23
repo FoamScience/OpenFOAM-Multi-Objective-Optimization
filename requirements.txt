@@ -5,3 +5,5 @@ omegaconf>=2.3.0
 pandas==1.4.1
 PyFoam>=2022.9
 regex>=2022.10.31
+dash>=2.7.0
+dash_bootstrap_components>=1.4.2

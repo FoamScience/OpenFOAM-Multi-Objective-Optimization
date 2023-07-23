@@ -28,9 +28,9 @@ from ax.modelbridge.dispatch_utils import choose_generation_strategy
 from ax.plot.pareto_utils import compute_posterior_pareto_frontier
 from ax.plot.feature_importances import plot_feature_importance_by_feature
 from ax.storage.json_store.load import load_experiment
-from ax.storage.json_store.save import save_experiment
 
 from core import *
+from dashboard import data_from_experiment
 
 log = logging.getLogger(__name__)
 
@@ -90,27 +90,15 @@ def exp_main(cfg : DictConfig) -> None:
                 if "timeout_hours" in cfg.meta.keys() else None,
         ),
     )
-    scheduler.run_n_trials(max_trials=cfg.meta.n_trials)
-
-    # Some post-processing
-    params_df = pd.DataFrame()
-    trials = scheduler.experiment.get_trials_by_indices(range(cfg.meta.n_trials))
-    for tr in trials:
-        params_df = pd.concat([params_df, pd.DataFrame({**tr.arm.parameters}, index=[tr.index])])
-
-    # Write trial data
-    exp_df = scheduler.experiment.fetch_data().df.drop_duplicates()
-    exp_df = exp_df.set_index(["trial_index", "metric_name"]).unstack(level=1)["mean"]
-    df = pd.merge(exp_df, params_df, left_index=True, right_index=True)
-    df.to_csv(f"{cfg.problem.name}_report_opt.csv")
-
-    # Save experiment for later
-    save_experiment(exp, f"{cfg.problem.name}_experiment_opt.json")
+    # This continuously writes CSV data and saves the experiment
+    scheduler.run_n_trials(max_trials=cfg.meta.n_trials,
+        idle_callback=data_from_experiment)
 
     if len(objectives) == 1:
         # Single-Objective optimization
-        log.info("==== Best trial s===")
+        log.info("==== Best Parameter Set ===")
         log.info(scheduler.get_best_parameters())
+        log.info("==== Best trial ===")
         log.info(scheduler.get_best_trial())
     else:
         try:
