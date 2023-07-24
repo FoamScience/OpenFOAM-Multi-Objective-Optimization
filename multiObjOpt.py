@@ -29,6 +29,8 @@ from ax.plot.pareto_utils import compute_posterior_pareto_frontier
 from ax.plot.feature_importances import plot_feature_importance_by_feature
 from ax.storage.json_store.load import load_experiment
 
+from ax.global_stopping.strategies.improvement import ImprovementGlobalStoppingStrategy
+
 from core import *
 from dashboard import data_from_experiment
 
@@ -88,10 +90,15 @@ def exp_main(cfg : DictConfig) -> None:
                 if "poll_factor" in cfg.meta.keys() else 1.5,
             timeout_hours=cfg.meta.timeout_hours
                 if "timeout_hours" in cfg.meta.keys() else None,
+            global_stopping_strategy=ImprovementGlobalStoppingStrategy(
+                min_trials=int(cfg.meta.n_trials*0.5),
+                improvement_bar=cfg.meta.improvement_bar,
+            ),
         ),
     )
     # This continuously writes CSV data and saves the experiment
     scheduler.run_n_trials(max_trials=cfg.meta.n_trials,
+        ignore_global_stopping_strategy=False,
         idle_callback=data_from_experiment)
 
     if len(objectives) == 1:

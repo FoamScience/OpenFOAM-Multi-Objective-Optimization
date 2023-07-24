@@ -2,11 +2,11 @@ problem:
   name: ShapeOpt
   template_case: 'pitzDaily'
   parameters:
-    nCtrlPnts:
-      type: choice
+    nCurvePnts:
+      type: range
       value_type: int
-      values: [4, 6]
-      is_ordered: True
+      bounds: [2, 15]
+      log_scale: False
     angle1:
       type: range
       value_type: float
@@ -20,32 +20,12 @@ problem:
       value_type: float
       bounds: [-180.0, -120.0]
       log_scale: False
-    angle3:
-      type: range
-      value_type: float
-      bounds: [-90.0, 90.0]
-      log_scale: False
-    angle4:
-      type: range
-      value_type: float
-      bounds: [90.0, 270.0]
-      log_scale: False
     radiusRatio1:
       type: range
       value_type: float
       bounds: [0.1, 0.5]
       log_scale: False
     radiusRatio2:
-      type: range
-      value_type: float
-      bounds: [0.1, 0.5]
-      log_scale: False
-    radiusRatio3:
-      type: range
-      value_type: float
-      bounds: [0.1, 0.5]
-      log_scale: False
-    radiusRatio4:
       type: range
       value_type: float
       bounds: [0.1, 0.5]
@@ -57,12 +37,6 @@ problem:
       threshold: 6
       minimize: True
       lower_is_better: True
-        #ExecutionTime:
-        #  mode: 'shell'
-        #  command: ['awk', '/ExecutionTime/{a=$3} END{print(a)}', 'log.simpleFoam']
-        #  threshold: 10
-        #  minimize: True
-        #  lower_is_better: True
 
 meta:
   metric_value_mode: 'local'
@@ -85,26 +59,23 @@ meta:
   #slurm_status_query: ['sacct', '--name', '$CASE_NAME', '-o', 'JobName%60,State', '-n']
   # Instead we can use the less reliable scontrol
   slurm_status_query: ['../getSLURMJOBStatus.sh', '$CASE_NAME']
-  n_trials: 30
+  n_trials: 50
   n_parallel_trials: 2
   # How about diverging cases???
   ttl_trial: 3600
-  init_poll_wait: 2
+  init_poll_wait: 30
   poll_factor: 1.5
   timeout: 10
+  improvement_bar: 0.1
   use_saasbo: True
   n_pareto_points: 5
   scopes:
     "/system/geometryDict":
-      nCtrlPnts: "nCtrlPnts"
+      nCurvePnts: "nCurvePnts"
       angle1: "angle1"
       angle2: "angle2"
-      angle3: "angle3"
-      angle4: "angle4"
       radiusRatio1: "ratio1"
       radiusRatio2: "ratio2"
-      radiusRatio3: "ratio3"
-      radiusRatio4: "ratio4"
 
 visualize:
   # Replot every 30 secs
