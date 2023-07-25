@@ -18,7 +18,7 @@ FoamFile
 nCurvePnts 100;
 
 // Number of control points for the Bezier curve
-nCtrlPnts 6;
+nCtrlPnts 8;
 
 // Domain length
 L 0.29;
@@ -29,24 +29,26 @@ L 0.29;
 // 2nd NEW control point -> 2nd NEW last control point
 // ....
 // To allow for variable number of control points
-angle1 -90; // Range: [-90, 0]
-angle2 -150; // Range: [-180, -90]
-angle3   0;
-angle4   0;
-angle5   0;
-angle6   0;
+
+angle1 -90;
+angle2 20;
+angle3 -30;
+angle4 140;
+angle5 180;
+angle6 -150;
 // Extra angles? not used!
 angle7   0;
 angle8   0;
 
 // Radius ratios of L to put the control points at
 // Same order as angles
-ratio1   1.1;
-ratio2   0.1;
-ratio3   0.1;
-ratio4   0.1;
-ratio5   0.1;
-ratio6   0.1;
+ratio1   0.1;
+ratio2   0.3;
+ratio3   0.6;
+ratio4   0.4;
+ratio5   0.2;
+ratio6   0.03;
+// Extra radiuses
 ratio7   0.1;
 ratio8   0.1;
 

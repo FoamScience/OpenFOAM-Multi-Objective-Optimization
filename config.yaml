@@ -5,36 +5,73 @@ problem:
     nCurvePnts:
       type: range
       value_type: int
-      bounds: [2, 15]
+      bounds: [30, 50]
       log_scale: False
     angle1:
       type: range
       value_type: float
-      bounds: [-90.0, 0.0]
+      bounds: [270.0, 360.0]
       log_scale: False
-    # Angle2 is for the "first new control point on the right"
-    # Cannot reach -90 otherwise Paraview's connectivity filter won't detect the outlet
-    # Can this be implicitely penalized in metric computation?
     angle2:
       type: range
       value_type: float
-      bounds: [-180.0, -120.0]
+      bounds: [-90.0, 90.0]
+      log_scale: False
+    angle3:
+      type: range
+      value_type: float
+      bounds: [-90.0, 90.0]
+      log_scale: False
+    angle4:
+      type: range
+      value_type: float
+      bounds: [90.0, 270.0]
+      log_scale: False
+    angle5:
+      type: range
+      value_type: float
+      bounds: [90.0, 270.0]
+      log_scale: False
+    angle6:
+      type: range
+      value_type: float
+      bounds: [140.0, 180.0]
       log_scale: False
     radiusRatio1:
       type: range
       value_type: float
-      bounds: [0.1, 0.5]
+      bounds: [0.05, 0.25]
       log_scale: False
     radiusRatio2:
       type: range
       value_type: float
-      bounds: [0.1, 0.5]
+      bounds: [0.10, 0.35]
+      log_scale: False
+    radiusRatio3:
+      type: range
+      value_type: float
+      bounds: [0.3, 0.55]
+      log_scale: False
+    radiusRatio4:
+      type: range
+      value_type: float
+      bounds: [0.3, 0.55]
+      log_scale: False
+    radiusRatio5:
+      type: range
+      value_type: float
+      bounds: [0.10, 0.35]
+      log_scale: False
+    radiusRatio6:
+      type: range
+      value_type: float
+      bounds: [0.05, 0.25]
       log_scale: False
   objectives:
     PressureDrop:
       mode: 'shell'
       command: ['./getPressDiff.sh']
-      threshold: 6
+      threshold: 200
       minimize: True
       lower_is_better: True
 
@@ -52,34 +89,42 @@ meta:
     - getImage.sh
     - renderResults.py
   clone_destination: ""
-  case_run_mode: slurm
-  #case_run_command: ['./Allrun']
-  case_run_command: ['sbatch', '-J', '$CASE_NAME', './Allrun.slurm', '$CASE_PATH']
+  case_run_mode: local
+  case_run_command: ['./Allrun']
+  #case_run_command: ['sbatch', '-J', '$CASE_NAME', './Allrun.slurm', '$CASE_PATH']
   # This works if accounting is enabled on SLURM
   #slurm_status_query: ['sacct', '--name', '$CASE_NAME', '-o', 'JobName%60,State', '-n']
   # Instead we can use the less reliable scontrol
   slurm_status_query: ['../getSLURMJOBStatus.sh', '$CASE_NAME']
-  n_trials: 50
-  n_parallel_trials: 2
+  n_trials: 80
+  n_parallel_trials: 5
+  improvement_bar: 0.05
   # How about diverging cases???
   ttl_trial: 3600
   init_poll_wait: 30
   poll_factor: 1.5
   timeout: 10
-  improvement_bar: 0.1
   use_saasbo: True
   n_pareto_points: 5
   scopes:
     "/system/geometryDict":
       nCurvePnts: "nCurvePnts"
       angle1: "angle1"
+      angle3: "angle3"
+      angle5: "angle5"
       angle2: "angle2"
+      angle4: "angle4"
+      angle6: "angle6"
       radiusRatio1: "ratio1"
+      radiusRatio3: "ratio3"
+      radiusRatio5: "ratio5"
       radiusRatio2: "ratio2"
+      radiusRatio4: "ratio4"
+      radiusRatio6: "ratio6"
 
 visualize:
-  # Replot every 30 secs
-  update_interval: 30
+  # Replot every 15 secs
+  update_interval: 15
   # Number of latest trials to generate images for
   n_figures: 3
   # Generate an image of the trial's final state

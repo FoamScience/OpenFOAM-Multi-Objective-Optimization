@@ -15,7 +15,7 @@ paraview.simple._DisableFirstRenderCameraReset()
 # create a new 'OpenFOAMReader'
 casefoam = OpenFOAMReader(registrationName='case.foam', FileName=f'{sys.argv[1]}/case.foam')
 casefoam.MeshRegions = ['patch/inlet']
-casefoam.CellArrays = ['p']
+casefoam.CellArrays = ['total(p)']
 casefoam.Decomposepolyhedra = 0
 
 UpdatePipeline(int(sys.argv[2]), casefoam)
@@ -24,7 +24,7 @@ casefoam.MeshRegions = ['patch/inlet']
 
 # create a new 'Calculator'
 calculator1 = Calculator(registrationName='Calculator1', Input=casefoam)
-calculator1.Function = 'avg(p)'
+calculator1.Function = 'avg("total(p)")'
 arr = servermanager.Fetch(calculator1)
 pIn = arr.GetBlock(0).GetBlock(0).GetPointData().GetArray("Result").GetValue(0)
 

@@ -37,7 +37,8 @@ upperPnts = [
 
 // The way we parametrically generate control points is simply
 // by translating existing ones by an angle and a distance
-function newCtrlPoint(point, angle, r) = point + [r*cos(angle),r*sin(angle),0];
+function newCtrlPoint(origin, angle, r) = origin + [r*cos(angle),r*sin(angle),0];
+
 
 // Bezier coords along the curve
 // Implementing B(s) = sum((n j) s^j (1-s)^(n-j).P_j)
@@ -65,14 +66,16 @@ echo(radius=radius_ratios);
 // 0.4 Fixed lists
 
 radius = [for (j=[0:nCtrlPnts-3]) radius_ratios[j]*L];
-origins = [for (j=[0:nCtrlPnts-3]) upperPnts[j+2]];
 
 // Control points for a bezier curve in XZ plane
+sep = ceil((nCtrlPnts-2)/2)-1;
 ctrlPnts = [
     upperPnts[2],
-    for(j=[0:nCtrlPnts-3]) newCtrlPoint(origins[j], angles[j], radius[j]),
-    upperPnts[3]
+    for(j=[0:sep]) newCtrlPoint(upperPnts[2], angles[j], radius[j]),
+    for(j=[sep:2*sep]) newCtrlPoint(upperPnts[3], angles[sep+j-1], radius[sep+j-1]),
+    upperPnts[3],
 ];
+echo(ctrlPnts=ctrlPnts);
 
 // Generate lower wall curve
 lowerWall = [

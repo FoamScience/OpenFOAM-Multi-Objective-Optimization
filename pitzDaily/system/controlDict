@@ -45,4 +45,25 @@ timePrecision   6;
 
 runTimeModifiable true;
 
+functions
+{
+    pressure1
+    {
+        type            pressure;
+        libs            (fieldFunctionObjects);
+        mode            total;
+        rho             rhoInf;
+        rhoInf          1.0;
+        writeControl    writeTime;
+    }
+    solverInfo
+    {
+        type            solverInfo;
+        libs            ("libutilityFunctionObjects.so");
+        fields          (U p);
+        writeResidualFields yes;
+        writeControl    writeTime;
+    }
+};
+
 // ************************************************************************* //

@@ -57,7 +57,7 @@ done
 radius="$radius ]"
 
 ## First generate the geometry
-openscad -o geometry/pitzDaily.stl -D "nCurvePnts=$nCurvePnts;nCtrlPnts=$nCtrlPnts;L=$L;angles=$angles;ratios=$radius" openscad/pitzDaily.scad > log.openscad
+openscad -o geometry/pitzDaily.stl -D "nCurvePnts=$nCurvePnts;nCtrlPnts=$nCtrlPnts;L=$L;angles=$angles;radius_ratios=$radius" openscad/pitzDaily.scad > log.openscad
 
 ## Then remove the faces whose normals are in Z
 sed -r '/facet normal [-+]?0 [-+]?0 /,+6d' geometry/pitzDaily.stl > geometry/pitzDaily2D.stl
