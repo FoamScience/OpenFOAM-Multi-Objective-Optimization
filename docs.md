@@ -2,7 +2,7 @@
 
 ## Preface
 
-This document describes how to use the few Python scripts from
+This document describes how to use the Python script `foamBO.py` from
 [this repository](https://github.com/FoamScience/OpenFOAM-Multi-Objective-Optimization)
 to run Fully-Bayesian optimization (or just parameter variation studies) on OpenFOAM cases.
 
@@ -107,9 +107,9 @@ conda activate of-opt
 pip install -r requirements.txt
 
 # Start the example optimization study while you read through the document
-./multiObjOpt.py
+./foamBO.py
 # or to give the problem another name (override problem.name in default config file):
-# ./multiObjOpt.py +problem.name=MyExample
+# ./foamBO.py +problem.name=MyExample
 ```
 
 ## Local runs
@@ -117,7 +117,7 @@ pip install -r requirements.txt
 The workflow consists of the following steps:
 - Preparing your base case, this will be a fully-functional OpenFOAM case
 - Writing a configuration file (YAML) for the optimization/parameter-variation
-- Running `multiObjOpt.py` or `paramVariation.py`
+- Running `foamBO.py`
 
 The example case is provided with the code [here](https://github.com/FoamScience/OpenFOAM-Multi-Objective-Optimization/tree/main/pitzDaily) and
 an example configuration file is also provided [there](https://github.com/FoamScience/OpenFOAM-Multi-Objective-Optimization/blob/main/config.yaml).
@@ -134,6 +134,22 @@ The first thing is `problem.template_case` which points to the case you want to 
 This case is then cloned each time with the help of PyFOAM. `meta.case_subdirs_to_clone` specifies
 any non-standard folders/files to clone with the base case. Also, `meta.clone_destination` controls where
 the case is copied to.
+
+There is also a `problem.type` to decide on either doing a `parameter_variation` or an `optimization` run.
+If you select `optimization`, you can set `problem.models` to "auto". The algorithm will then pick suitable
+generation strategies based on your parameters configuration.
+
+But you can always choose an ordered list of generation strategies to consider. The following snippet
+will result in 10 trials sampled uniformly and 6 trials sampled using quasi-random algorithm.
+```yaml
+problem:
+  type: "parameter_variation"
+  models:
+    UNIFORM: 10
+    SOBOL: 6
+# Or, if you want it to be automatically chosen for you:
+# models: auto
+```
 
 Next, we have `problem.parameters`. This is where you specify the type/values for your parameters.
 
@@ -272,8 +288,8 @@ meta:
   timeout: 10
 ```
 
-> `n_parallel_trials` is always respected when you run `paramVariation.py`, but the algorithm will limit it
-> for `multiObjOpt.py` (max parallel trials is selected by the optimization algorithm, usually: 10)
+> `n_parallel_trials` is always respected when you run parameter variation studies, but the algorithm will limit it
+> for optimization (max parallel trials is selected by the optimization algorithm, usually: 10)
 
 Depending on the dimension and properties of your search space, a number of cases will be generated
 first with SOBOL for initialization, then the generation strategy will switch to a suitable optimization
@@ -285,7 +301,7 @@ Note that metric-evaluation commands also run locally in the same way `Allrun` d
 > be replaced with the relevant ones for each trial. Also, all of them will run inside the generated 
 > trial's directory
 
-That's pretty much it. Run `./multiObjOpt.py` and watch the magic happen. At the end, the script will
+That's pretty much it. Run `./foamBO.py` and watch the magic happen. At the end, the script will
 **try** to:
 - Generate trial CSV data (Hopefully this will always work)
 - Plot the Pareto frontier (if a multi-objective optimization, and generate corresponding CSV data)
@@ -349,6 +365,20 @@ If you're running this in SLURM mode, it may be useful to watch jobs through the
 watch -n 0.1 -x squeue
 ```
 
+## Optimization settings
+
+The most important setting for optimization control is the Stopping Strategy.
+```yaml
+  stopping_strategy:
+    improvement_bar: 0.05
+    min_trials: 60
+    window_size: 10
+```
+Above settings, will make sure the optimization runs for at least 60 trials
+before starting to call the stopping strategy routine, which will stop the
+optimization if the improvement falls lower than `improvement_bar` for the
+last `window_size` trials.
+
 ## Saving and loading experiments
 
 There is also some support for saving experiments to JSON files. Reloading them is mainly targeted for post-processing
@@ -382,7 +412,7 @@ can then periodically read them and produce the desired interactive graphs.
 
 An example application is:
 ```bash
-./dashboard.py
+./foamDash.py
 ```
 
 Which relies on some `config.yaml` settings:
