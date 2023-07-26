@@ -21,43 +21,16 @@ nCtrlPnts=$(getParam "nCtrlPnts")
 nNewCtrlPnts=$((nCtrlPnts-2))
 L=$(getParam "L")
 
-declare -A angleVals
 counter=1
-for i in $(seq 1 2 $nNewCtrlPnts); do
-    angleVals[$i]=$(getParam "angle$counter")
-    counter=$((counter+2))
-done
-counter=$nNewCtrlPnts
-for i in $(seq 2 2 $nNewCtrlPnts); do
-    angleVals[$i]=$(getParam "angle$counter")
-    counter=$((counter-2))
-done
-
-angles="["
+ctrlPnts="["
 for i in $(seq 1 $nNewCtrlPnts); do
-    angles="$angles ${angleVals[$i]},"
+    ctrlPnts="$ctrlPnts [$(getParam "Ctrl${counter}X"), $(getParam "Ctrl${counter}Y"), 0],"
+    counter=$((counter+1))
 done
-angles="$angles ]"
-
-declare -A radiusVals
-counter=1
-for i in $(seq 1 2 $nNewCtrlPnts); do
-    radiusVals[$i]=$(getParam "ratio$counter")
-    counter=$((counter+2))
-done
-counter=$nCtrlPnts
-for i in $(seq 2 2 $nNewCtrlPnts); do
-    radiusVals[$i]=$(getParam "ratio$counter")
-    counter=$((counter-2))
-done
-radius="["
-for i in $(seq 1 $nNewCtrlPnts); do
-    radius="$radius ${radiusVals[$i]},"
-done
-radius="$radius ]"
+ctrlPnts="$ctrlPnts ]"
 
 ## First generate the geometry
-openscad -o geometry/pitzDaily.stl -D "nCurvePnts=$nCurvePnts;nCtrlPnts=$nCtrlPnts;L=$L;angles=$angles;radius_ratios=$radius" openscad/pitzDaily.scad > log.openscad
+runApplication openscad -o geometry/pitzDaily.stl -D "nCurvePnts=$nCurvePnts;nCtrlPnts=$nCtrlPnts;L=$L;newCtrlPnts=$ctrlPnts" openscad/pitzDaily.scad
 
 ## Then remove the faces whose normals are in Z
 sed -r '/facet normal [-+]?0 [-+]?0 /,+6d' geometry/pitzDaily.stl > geometry/pitzDaily2D.stl

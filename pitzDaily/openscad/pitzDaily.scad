@@ -33,12 +33,16 @@ upperPnts = [
     [0.206  , 0.0254 , 0]  // upperWall
 ];
 
+newCtrlPnts = [];
+
+allCtrlPnts = [
+    upperPnts[2],
+    for (k=[0:len(newCtrlPnts)-1]) newCtrlPnts[k],
+    upperPnts[3]
+];
+echo(CtrlPnts=allCtrlPnts);
+
 // 0.2 Meta functions
-
-// The way we parametrically generate control points is simply
-// by translating existing ones by an angle and a distance
-function newCtrlPoint(origin, angle, r) = origin + [r*cos(angle),r*sin(angle),0];
-
 
 // Bezier coords along the curve
 // Implementing B(s) = sum((n j) s^j (1-s)^(n-j).P_j)
@@ -54,32 +58,9 @@ function bezierCoord(s, ctrlPnts) = [
     ])
 ];
 
-// 0.3 Overridable lists, can be modified from CMD
-
-// Angles and rations of domain length to put control points at
-angles = [-90, -150];
-radius_ratios = [for (j=[0:nCtrlPnts-3]) 0.1];
-
-echo(angles=angles);
-echo(radius=radius_ratios);
-
-// 0.4 Fixed lists
-
-radius = [for (j=[0:nCtrlPnts-3]) radius_ratios[j]*L];
-
-// Control points for a bezier curve in XZ plane
-sep = ceil((nCtrlPnts-2)/2)-1;
-ctrlPnts = [
-    upperPnts[2],
-    for(j=[0:sep]) newCtrlPoint(upperPnts[2], angles[j], radius[j]),
-    for(j=[sep:2*sep]) newCtrlPoint(upperPnts[3], angles[sep+j-1], radius[sep+j-1]),
-    upperPnts[3],
-];
-echo(ctrlPnts=ctrlPnts);
-
 // Generate lower wall curve
 lowerWall = [
-    for (i=[0:nCurvePnts]) bezierCoord(i/nCurvePnts, ctrlPnts),
+    for (i=[0:nCurvePnts]) bezierCoord(i/nCurvePnts, allCtrlPnts),
 ];
 
 // Genererate the "bottom" patch

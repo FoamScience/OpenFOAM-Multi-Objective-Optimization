@@ -23,33 +23,17 @@ nCtrlPnts 8;
 // Domain length
 L 0.29;
 
-// Angles in degrees, Range: [-180, 180]
-// Order is kinda strange
-// 1st NEW control point -> last NEW control point
-// 2nd NEW control point -> 2nd NEW last control point
-// ....
-// To allow for variable number of control points
-
-angle1 -90;
-angle2 20;
-angle3 -30;
-angle4 140;
-angle5 180;
-angle6 -150;
-// Extra angles? not used!
-angle7   0;
-angle8   0;
-
-// Radius ratios of L to put the control points at
-// Same order as angles
-ratio1   0.1;
-ratio2   0.3;
-ratio3   0.6;
-ratio4   0.4;
-ratio5   0.2;
-ratio6   0.03;
-// Extra radiuses
-ratio7   0.1;
-ratio8   0.1;
+Ctrl1X 0.024;
+Ctrl1Y -0.1;
+Ctrl2X 0.074;
+Ctrl2Y 0.0;
+Ctrl3X 0.124;
+Ctrl3Y 0.01;
+Ctrl4X 0.174;
+Ctrl4Y 0.01;
+Ctrl5X 0.224;
+Ctrl5Y -0.01;
+Ctrl6X 0.265;
+Ctrl6Y 0.0;
 
 // ************************************************************************* //
