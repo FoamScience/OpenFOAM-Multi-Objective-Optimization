@@ -56,10 +56,13 @@ def gen_search_space(cfg):
             e['bounds'] = list(e['bounds'])
         if 'dependents' in e.keys():
             #e['dependents'] = list(e['dependents'])
+            print("#######", e)
             tmp = {}
             for k in e['dependents']:
-                tmp.update(k)
+                for kk in k.keys():
+                    tmp.update({kk: list(k[kk])})
             e['dependents'] = tmp
+            print("########", e)
         l.append(e)    
     return l
 
