@@ -34,7 +34,7 @@ from ax.modelbridge.generation_node import GenerationStep
 from ax.global_stopping.strategies.improvement import ImprovementGlobalStoppingStrategy
 
 from core import *
-from dashboard import data_from_experiment
+from foamDash import data_from_experiment
 
 log = logging.getLogger(__name__)
 
