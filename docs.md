@@ -110,7 +110,19 @@ pip install -r requirements.txt
 ./multiObjOpt.py
 # or to give the problem another name (override problem.name in default config file):
 # ./multiObjOpt.py +problem.name=MyExample
+
+## additional required libraries
 ```
+
+other softwares:
+```bash
+sudo apt  install openscad
+```
+
+### paraview version warning
+
+In the example, the pvpython related to paraview version is changed to paraviewopenfoam56. The pvpython in paraviewopenfoam510 on ubuntu 22.04 seems has a bug.s
+
 
 ## Local runs
 

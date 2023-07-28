@@ -1,4 +1,4 @@
-#!/opt/paraview-5.10/bin/pvpython
+#!/opt/paraviewopenfoam510/bin/pvpython
 import os
 import sys
 
@@ -11,9 +11,9 @@ from paraview.simple import *
 paraview.simple._DisableFirstRenderCameraReset()
 
 # create a new 'OpenFOAMReader'
-casefoam = OpenFOAMReader(registrationName='case.foam', FileName=f'case.foam')
+casefoam = OpenFOAMReader(registrationName='case.foam', FileName='case.foam')
 casefoam.MeshRegions = ['internalMesh']
-casefoam.CellArrays = ['U', 'epsilon', 'k', 'nut', 'p']
+casefoam.CellArrays = ['U', 'p']
 casefoam.Decomposepolyhedra = 0
 
 LoadPalette(paletteName='WhiteBackground')
@@ -43,22 +43,22 @@ animationScene1.UpdateAnimationUsingDataTimeSteps()
 renderView1.InteractionMode = '2D'
 
 # reset view to fit data bounds
-renderView1.ResetCamera(-0.020599400624632835, 0.2899929881095886, -0.023620499297976494, 0.02539060078561306, 0.0, 0.0010000000474974513, False)
+renderView1.ResetCamera(-0.020599400624632835, 0.2899929881095886, -0.023620499297976494, 0.02539060078561306, 0.0, 0.0010000000474974513)
 
 # reset view to fit data bounds
-renderView1.ResetCamera(-0.020599400624632835, 0.2899929881095886, -0.023620499297976494, 0.02539060078561306, 0.0, 0.0010000000474974513, False)
+#renderView1.ResetCamera(-0.020599400624632835, 0.2899929881095886, -0.023620499297976494, 0.02539060078561306, 0.0, 0.0010000000474974513, False)
 
 # reset view to fit data
-renderView1.ResetCamera(False)
+#renderView1.ResetCamera(False)
 
 # reset view to fit data
-renderView1.ResetCamera(False)
+#renderView1.ResetCamera(False)
 
 # reset view to fit data
-renderView1.ResetCamera(False)
+#renderView1.ResetCamera(False)
 
 # reset view to fit data
-renderView1.ResetCamera(False)
+#renderView1.ResetCamera(False)
 
 # Properties modified on casefoam
 casefoam.CellArrays = []
@@ -91,16 +91,16 @@ uLUT = GetColorTransferFunction('U')
 uPWF = GetOpacityTransferFunction('U')
 
 # reset view to fit data
-renderView1.ResetCamera(False)
+#renderView1.ResetCamera(False)
 
 # get color legend/bar for uLUT in view renderView1
 uLUTColorBar = GetScalarBar(uLUT, renderView1)
 
 # change scalar bar placement
 uLUTColorBar.Orientation = 'Horizontal'
-uLUTColorBar.WindowLocation = 'Any Location'
+uLUTColorBar.WindowLocation =  0 #'Any Location'
 uLUTColorBar.Position = [0.35741403026134816, 0.2300630517023959]
-uLUTColorBar.ScalarBarLength = 0.33000000000000035
+uLUTColorBar.ScalarBarLength = 0.4
 
 # Hide orientation axes
 renderView1.OrientationAxesVisibility = 0
@@ -109,7 +109,8 @@ renderView1.OrientationAxesVisibility = 0
 layout1 = GetLayout()
 
 # layout/tab size in pixels
-layout1.SetSize(1454, 793)
+#layout1.SetSize(1454, 793)
+#layout1.SetSize(1454)
 
 # current camera placement for renderView1
 renderView1.InteractionMode = '2D'
@@ -118,7 +119,9 @@ renderView1.CameraFocalPoint = [0.1346967937424779, 0.0008850507438182831, 0.000
 renderView1.CameraParallelScale = 0.15721857386384755
 
 # save screenshot
-SaveScreenshot(f'{sys.argv[1]}.png', renderView1, ImageResolution=[2908, 1586], 
+figName = 'pitzDaily.png'
+print(figName)
+SaveScreenshot(figName, renderView1, ImageResolution=[2908, 1586], 
     # PNG options
     CompressionLevel='3')
 
@@ -131,8 +134,8 @@ SaveScreenshot(f'{sys.argv[1]}.png', renderView1, ImageResolution=[2908, 1586],
 # saving layout sizes for layouts
 
 # layout/tab size in pixels
-layout1.SetSize(1454, 793)
-
+#layout1.SetSize(1454, 793)
+#layout1.SetSize(1454)
 #-----------------------------------
 # saving camera placements for views
 
