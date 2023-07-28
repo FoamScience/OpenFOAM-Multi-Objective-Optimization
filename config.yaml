@@ -1,5 +1,5 @@
 problem:
-  name: ShapeOpt
+  name: Example
   template_case: 'pitzDaily'
   parameters:
     nCtrlPnts:
@@ -78,13 +78,13 @@ meta:
     - getImage.sh
     - renderResults.py
   clone_destination: ""
-  case_run_mode: slurm
-  #case_run_command: ['./Allrun']
-  case_run_command: ['sbatch', '-J', '$CASE_NAME', './Allrun.slurm', '$CASE_PATH']
+  case_run_mode: local
+  case_run_command: ['./Allrun']
+  #case_run_command: ['sbatch', '-J', '$CASE_NAME', './Allrun.slurm', '$CASE_PATH']
   # This works if accounting is enabled on SLURM
-  #slurm_status_query: ['sacct', '--name', '$CASE_NAME', '-o', 'JobName%60,State', '-n']
+  slurm_status_query: ['sacct', '--name', '$CASE_NAME', '-o', 'JobName%60,State', '-n']
   # Instead we can use the less reliable scontrol
-  slurm_status_query: ['../getSLURMJOBStatus.sh', '$CASE_NAME']
+  #slurm_status_query: ['../getSLURMJOBStatus.sh', '$CASE_NAME']
   n_trials: 30
   n_parallel_trials: 2
   # How about diverging cases???
