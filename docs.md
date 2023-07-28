@@ -112,11 +112,10 @@ pip install -r requirements.txt
 # ./multiObjOpt.py +problem.name=MyExample
 
 ## additional required libraries
+#other softwares:
 
-other softwares:
-```bash
 sudo apt  install openscad
-```
+
 
 ### paraview version warning
 
