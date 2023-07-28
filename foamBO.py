@@ -27,10 +27,14 @@ from ax.core import OptimizationConfig, Experiment, Objective, MultiObjectiveOpt
 from ax.modelbridge.dispatch_utils import choose_generation_strategy
 from ax.plot.pareto_utils import compute_posterior_pareto_frontier
 from ax.plot.feature_importances import plot_feature_importance_by_feature
-from ax.storage.json_store.load import load_experiment
+from ax.modelbridge.registry import Models
+from ax.modelbridge.generation_strategy import GenerationStrategy
+from ax.modelbridge.generation_node import GenerationStep
+
+from ax.global_stopping.strategies.improvement import ImprovementGlobalStoppingStrategy
 
 from core import *
-from dashboard import data_from_experiment
+from foamDash import data_from_experiment
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +52,32 @@ def _find_logger_basefilename(logger):
         log_file = _find_logger_basefilename(parent)
 
     return log_file 
+
+# Straight from Ax docs, not well tested!
+supported_models = {
+    "ALEBO": Models.ALEBO,
+    "ALEBO_INITIALIZER": Models.ALEBO_INITIALIZER,
+    "BOTORCH": Models.BOTORCH,
+    "BOTORCH_MODULAR": Models.BOTORCH_MODULAR,
+    "BO_MIXED": Models.BO_MIXED,
+    "CONTEXT_SACBO": Models.CONTEXT_SACBO,
+    "EMPIRICAL_BAYES_THOMPSON": Models.EMPIRICAL_BAYES_THOMPSON,
+    "FACTORIAL": Models.FACTORIAL,
+    "FULLYBAYESIAN": Models.FULLYBAYESIAN,
+    "FULLYBAYESIANMOO": Models.FULLYBAYESIANMOO,
+    "FULLYBAYESIANMOO_MTGP": Models.FULLYBAYESIANMOO_MTGP,
+    "FULLYBAYESIAN_MTGP": Models.FULLYBAYESIAN_MTGP,
+    "GPEI": Models.GPEI,
+    "GPKG": Models.GPKG,
+    "GPMES": Models.GPMES,
+    "MOO": Models.MOO,
+    "MOO_MODULAR": Models.MOO_MODULAR,
+    "SOBOL": Models.SOBOL,
+    "ST_MTGP": Models.ST_MTGP,
+    "ST_MTGP_NEHVI": Models.ST_MTGP_NEHVI,
+    "THOMPSON": Models.THOMPSON,
+    "UNIFORM": Models.UNIFORM,
+}
 
 @hydra.main(version_base=None, config_path=".", config_name="config.yaml")
 def exp_main(cfg : DictConfig) -> None:
@@ -74,7 +104,14 @@ def exp_main(cfg : DictConfig) -> None:
         num_trials=cfg.meta.n_trials,
         max_parallelism_cap=cfg.meta.n_parallel_trials,
         use_saasbo=cfg.meta.use_saasbo,
-    )
+    ) if cfg.problem.models == 'auto' else GenerationStrategy([
+            GenerationStep(
+                model=supported_models[mk],
+                num_trials=cfg.problem.models[mk],
+                max_parallelism=cfg.meta.n_parallel_trials
+            )
+        for mk in cfg.problem.models])
+    log.info(f'Generation Strategy: {gs}')
     scheduler = Scheduler(
         experiment=exp,
         generation_strategy=gs,
@@ -88,18 +125,38 @@ def exp_main(cfg : DictConfig) -> None:
                 if "poll_factor" in cfg.meta.keys() else 1.5,
             timeout_hours=cfg.meta.timeout_hours
                 if "timeout_hours" in cfg.meta.keys() else None,
+            global_stopping_strategy=ImprovementGlobalStoppingStrategy(
+                min_trials=int(cfg.meta.stopping_strategy.min_trials),
+                window_size=cfg.meta.stopping_strategy.window_size,
+                improvement_bar=cfg.meta.stopping_strategy.improvement_bar,
+            ),
         ),
     )
     # This continuously writes CSV data and saves the experiment
     scheduler.run_n_trials(max_trials=cfg.meta.n_trials,
+        ignore_global_stopping_strategy=False if cfg.problem.models == 'auto' else True,
         idle_callback=data_from_experiment)
+
+    if cfg.problem.type == "parameter_variation":
+        return
+
+    if not cfg.problem.type in ["parameter_variation", "optimization"]:
+        log.warning(f"Problem type not parameter_variation, or optimization. Considering optimiztion...")
+
+    # Get some summary
+    scheduler.summarize_final_result()
 
     if len(objectives) == 1:
         # Single-Objective optimization
         log.info("==== Best Parameter Set ===")
-        log.info(scheduler.get_best_parameters())
-        log.info("==== Best trial ===")
-        log.info(scheduler.get_best_trial())
+        best_params = scheduler.get_best_parameters()
+        log.info(OmegaConf.to_yaml(best_params[0]))
+        log.info(best_params[1])
+        best_trial = scheduler.get_best_trial()
+        log.info(f"==== Best trial was {best_trial[0]} ===")
+        log.info(OmegaConf.to_yaml(best_trial[1]))
+        log.info(best_trial[2])
+        
     else:
         try:
             # Plot Pareto frontier
@@ -118,7 +175,7 @@ def exp_main(cfg : DictConfig) -> None:
                 absolute_metrics=metric_names,
                 num_points=int(cfg.meta.n_pareto_points),
             )
-            plot_frontier(sobol_frontier, 0.9, f"{cfg.problem.name}_fronier")
+            plot_frontier(sobol_frontier, f"{cfg.problem.name}_fronier", 0.9)
             log.info(scheduler.get_hypervolume())
             # Frontier dataframe
             params_df = pd.DataFrame(

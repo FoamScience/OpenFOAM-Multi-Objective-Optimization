@@ -18,11 +18,23 @@ FoamFile
 nCurvePnts 100;
 
 // Number of control points for the Bezier curve
-nCtrlPnts 8;
+nCtrlPnts 4;
 
 // Domain length
 L 0.29;
 
+theta1 -30;
+theta2 180;
+theta3 0;
+theta4 20;
+theta5 -40;
+theta6 0;
+rr1 0.1;
+rr2 0.1;
+rr3 0.1;
+rr4 0.1;
+rr5 0.1;
+rr6 0.1;
 Ctrl1X 0.024;
 Ctrl1Y -0.1;
 Ctrl2X 0.074;

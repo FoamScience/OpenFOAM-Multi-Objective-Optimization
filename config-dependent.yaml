@@ -1,74 +1,107 @@
 problem:
-  name: Example
-  template_case: 'pitzDaily'
+  name: ShapeOptDependent
+  template_case: 'pitzDaily-dependent'
   type: 'optimization'
   models: auto
   parameters:
-    nCurvePnts:
+    nCtrlPnts:
+      type: choice
+      value_type: str
+      values: ["4", "6"]
+      is_ordered: False
+      dependents:
+        - "4": [N4NCurvePnts, N4Ctrl1X, N4Ctrl1Y, N4Ctrl2X, N4Ctrl2Y]
+        - "6": [N6NCurvePnts, N6Ctrl1X, N6Ctrl1Y, N6Ctrl2X, N6Ctrl2Y, N6Ctrl3X, N6Ctrl3Y, N6Ctrl4X, N6Ctrl4Y]
+    N4NCurvePnts:
       type: choice
       value_type: int
       values: [2, 30, 50]
       is_ordered: False
-    Ctrl1X:
+    N4Ctrl1X:
       type: range
       value_type: float
-      bounds: [0, 0.048]
+      bounds: [0, 0.145]
       log_scale: False
-    Ctrl1Y:
-      type: range
-      value_type: float
-      bounds: [-0.05, 0.02]
-      log_scale: False
-    Ctrl2X:
-      type: range
-      value_type: float
-      bounds: [0.05, 0.098]
-      log_scale: False
-    Ctrl2Y:
+    N4Ctrl1Y:
       type: range
       value_type: float
       bounds: [-0.05, 0.02]
       log_scale: False
-    Ctrl3X:
+    N4Ctrl2X:
       type: range
       value_type: float
-      bounds: [0.10, 0.148]
+      bounds: [0.145, 0.27]
       log_scale: False
-    Ctrl3Y:
-      type: range
-      value_type: float
-      bounds: [-0.05, 0.02]
-      log_scale: False
-    Ctrl4X:
-      type: range
-      value_type: float
-      bounds: [0.15, 0.198]
-      log_scale: False
-    Ctrl4Y:
+    N4Ctrl2Y:
       type: range
       value_type: float
       bounds: [-0.05, 0.02]
       log_scale: False
-    Ctrl5X:
+    N6NCurvePnts:
+      type: choice
+      value_type: int
+      values: [2, 30, 50]
+      is_ordered: False
+    N6Ctrl1X:
       type: range
       value_type: float
-      bounds: [0.20, 0.248]
+      bounds: [0, 0.0725]
       log_scale: False
-    Ctrl5Y:
+    N6Ctrl1Y:
       type: range
       value_type: float
       bounds: [-0.05, 0.02]
       log_scale: False
-    Ctrl6X:
+    N6Ctrl2X:
       type: range
       value_type: float
-      bounds: [0.25, 0.28]
+      bounds: [0.07, 0.1425]
       log_scale: False
-    Ctrl6Y:
+    N6Ctrl2Y:
       type: range
       value_type: float
-      bounds: [-0.03, 0.02]
+      bounds: [-0.05, 0.02]
       log_scale: False
+    N6Ctrl3X:
+      type: range
+      value_type: float
+      bounds: [0.10, 0.215]
+      log_scale: False
+    N6Ctrl3Y:
+      type: range
+      value_type: float
+      bounds: [-0.05, 0.02]
+      log_scale: False
+    N6Ctrl4X:
+      type: range
+      value_type: float
+      bounds: [0.21, 0.27]
+      log_scale: False
+    N6Ctrl4Y:
+      type: range
+      value_type: float
+      bounds: [-0.05, 0.02]
+      log_scale: False
+        #Ctrl5X:
+        #  type: range
+        #  value_type: float
+        #  bounds: [0.20, 0.248]
+        #  log_scale: False
+        #Ctrl5Y:
+        #  type: range
+        #  value_type: float
+        #  bounds: [-0.05, 0.02]
+        #  log_scale: False
+        #Ctrl6X:
+        #  type: range
+        #  value_type: float
+        #  bounds: [0.25, 0.28]
+        #  log_scale: False
+        #Ctrl6Y:
+        #  type: range
+        #  value_type: float
+        #  bounds: [-0.03, 0.02]
+        #  log_scale: False
   objectives:
     PressureDrop:
       mode: 'shell'
@@ -97,15 +130,15 @@ meta:
     - getImage.sh
     - renderResults.py
   clone_destination: ""
-  case_run_mode: local
-  case_run_command: ['./Allrun']
-  #case_run_command: ['sbatch', '-J', '$CASE_NAME', './Allrun.slurm', '$CASE_PATH']
+  case_run_mode: slurm
+  #case_run_command: ['./Allrun']
+  case_run_command: ['sbatch', '-J', '$CASE_NAME', './Allrun.slurm', '$CASE_PATH']
   # This works if accounting is enabled on SLURM
-  slurm_status_query: ['sacct', '--name', '$CASE_NAME', '-o', 'JobName%60,State', '-n']
+  #slurm_status_query: ['sacct', '--name', '$CASE_NAME', '-o', 'JobName%60,State', '-n']
   # Instead we can use the less reliable scontrol
-  #slurm_status_query: ['../getSLURMJOBStatus.sh', '$CASE_NAME']
-  n_trials: 30
-  n_parallel_trials: 2
+  slurm_status_query: ['../getSLURMJOBStatus.sh', '$CASE_NAME']
+  n_trials: 90
+  n_parallel_trials: 5
   # How about diverging cases???
   ttl_trial: 3600
   init_poll_wait: 5
@@ -115,19 +148,24 @@ meta:
   n_pareto_points: 5
   scopes:
     "/system/geometryDict":
-      nCurvePnts: "nCurvePnts"
-      Ctrl1X: "Ctrl1X"
-      Ctrl1Y: "Ctrl1X"
-      Ctrl2X: "Ctrl2X"
-      Ctrl2Y: "Ctrl2Y"
-      Ctrl3X: "Ctrl3X"
-      Ctrl3Y: "Ctrl3Y"
-      Ctrl4X: "Ctrl4X"
-      Ctrl4Y: "Ctrl4Y"
-      Ctrl5X: "Ctrl5X"
-      Ctrl5Y: "Ctrl5Y"
-      Ctrl6X: "Ctrl6X"
-      Ctrl6Y: "Ctrl6Y"
+      N4NCurvePnts: "nCurvePnts"
+      N4Ctrl1X: "Ctrl1X"
+      N4Ctrl1Y: "Ctrl1X"
+      N4Ctrl2X: "Ctrl2X"
+      N4Ctrl2Y: "Ctrl2Y"
+      N6NCurvePnts: "nCurvePnts"
+      N6Ctrl1X: "Ctrl1X"
+      N6Ctrl1Y: "Ctrl1X"
+      N6Ctrl2X: "Ctrl2X"
+      N6Ctrl2Y: "Ctrl2Y"
+      N6Ctrl3X: "Ctrl3X"
+      N6Ctrl3Y: "Ctrl3Y"
+      N6Ctrl4X: "Ctrl4X"
+      N6Ctrl4Y: "Ctrl4Y"
+        #Ctrl5X: "Ctrl5X"
+        #Ctrl5Y: "Ctrl5Y"
+        #Ctrl6X: "Ctrl6X"
+        #Ctrl6Y: "Ctrl6Y"
   stopping_strategy:
     improvement_bar: 0.05
     min_trials: 60

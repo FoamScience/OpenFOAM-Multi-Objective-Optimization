@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-#source /fsx/OpenFOAM/OpenFOAM-v2212/etc/bashrc
+source /fsx/OpenFOAM/OpenFOAM-v2212/etc/bashrc
 cd "${0%/*}" || exit                                # Run from this directory
 . ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions        # Tutorial run functions
 #------------------------------------------------------------------------------
 
-set -e
 function getParam() {
     foamDictionary -entry "$1" -value system/geometryDict
 }
@@ -14,16 +13,43 @@ nCtrlPnts=$(getParam "nCtrlPnts")
 nNewCtrlPnts=$((nCtrlPnts-2))
 L=$(getParam "L")
 
+declare -A angleVals
 counter=1
-ctrlPnts="["
-for i in $(seq 1 $nNewCtrlPnts); do
-    ctrlPnts="$ctrlPnts [$(getParam "Ctrl${counter}X"), $(getParam "Ctrl${counter}Y"), 0],"
-    counter=$((counter+1))
+for i in $(seq 1 2 $nNewCtrlPnts); do
+    angleVals[$i]=$(getParam "angle$counter")
+    counter=$((counter+2))
 done
-ctrlPnts="$ctrlPnts ]"
+counter=$nNewCtrlPnts
+for i in $(seq 2 2 $nNewCtrlPnts); do
+    angleVals[$i]=$(getParam "angle$counter")
+    counter=$((counter-2))
+done
+
+angles="["
+for i in $(seq 1 $nNewCtrlPnts); do
+    angles="$angles ${angleVals[$i]},"
+done
+angles="$angles ]"
+
+declare -A radiusVals
+counter=1
+for i in $(seq 1 2 $nNewCtrlPnts); do
+    radiusVals[$i]=$(getParam "ratio$counter")
+    counter=$((counter+2))
+done
+counter=$nCtrlPnts
+for i in $(seq 2 2 $nNewCtrlPnts); do
+    radiusVals[$i]=$(getParam "ratio$counter")
+    counter=$((counter-2))
+done
+radius="["
+for i in $(seq 1 $nNewCtrlPnts); do
+    radius="$radius ${radiusVals[$i]},"
+done
+radius="$radius ]"
 
 ## First generate the geometry
-runApplication openscad -o geometry/pitzDaily.stl -D "nCurvePnts=$nCurvePnts;nCtrlPnts=$nCtrlPnts;L=$L;newCtrlPnts=$ctrlPnts" openscad/pitzDaily.scad
+runApplication openscad -o geometry/pitzDaily.stl -D "nCurvePnts=$nCurvePnts;nCtrlPnts=$nCtrlPnts;L=$L;angles=$angles;radius_ratios=$radius" openscad/pitzDaily.scad
 
 ## Then remove the faces whose normals are in Z
 sed -r '/facet normal [-+]?0 [-+]?0 /,+6d' geometry/pitzDaily.stl > geometry/pitzDaily2D.stl
@@ -32,7 +58,7 @@ sed -r '/facet normal [-+]?0 [-+]?0 /,+6d' geometry/pitzDaily.stl > geometry/pit
 runApplication surfaceCheck geometry/pitzDaily2D.stl
 
 # Split patches and put back together
-runApplication pvpython patches.py $PWD/geometry
+pvpython patches.py $PWD/geometry
 echo "Writing geometry/pitzDaily.stl"
 sed "s/^solid.*/solid inlet/g" geometry/inlet.stl > geometry/pitzDaily.stl
 sed "s/^solid.*/solid outlet/g" geometry/outlet.stl >> geometry/pitzDaily.stl
@@ -50,8 +76,3 @@ cp -rT 0orig 0
 
 # Parallel run on the slurm cluster
 runApplication $(getApplication)
-
-postProcess -fields "(p U)" -func "totalPressureIncompressible" -latestTime
-postProcess -fields "total(p)" -func "pressureDifferencePatch" -latestTime
-
-

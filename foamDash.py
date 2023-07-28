@@ -26,7 +26,6 @@ from plotly.subplots import make_subplots
 from core import process_input_command
 from ax.service.scheduler import Scheduler
 from ax.storage.json_store.save import save_experiment
-from ax.plot.contour import interact_contour_plotly
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +67,7 @@ def dash_main(cfg : DictConfig):
         fig = make_subplots(rows=nrows, cols=1)
         i=1
         for key, _ in cfg.problem.objectives.items():
+            print(np.abs(stats.zscore(data[key])))
             df = data[(np.abs(stats.zscore(data[key])) < 1)]
             ifig = px.scatter(df, x=df.index, y=key, hover_name=key, hover_data=df.columns)
             fig.add_trace(
@@ -99,7 +99,7 @@ def dash_main(cfg : DictConfig):
         return [
             html.Div(style={'width': f'{100/cfg.visualize.n_figures}%', 'float': 'left'},
                 children=[
-                html.Img(src=uri["image"], width='100%'),
+                html.Img(src=uri["image"], width='100%', style={'margin':'10px'}),
                 html.Div(children=[
                     html.P(children=elm)
                     for elm in OmegaConf.to_yaml(OmegaConf.create(uri)).splitlines()
@@ -122,7 +122,14 @@ def dash_main(cfg : DictConfig):
         dcc.Graph(id='live-update-graph'),
         html.H2(children=f'Insight into latest trials',
                 style={'padding':'5px'}),
-        html.Div(id='images', style={'padding':'10px'})
+        html.Div(id='images', style={'padding':'10px'}),
+        html.H2(children=f'Your configuration',
+                style={'padding':'5px'}),
+        html.Div(children=[
+            html.Code(children=OmegaConf.to_yaml(cfg), style={'white-space': 'pre-wrap'})
+            ],
+            style = {'padding': '20px', 'margin': '10px'}
+        )
     ])
     app.run_server(debug=False, port=int(cfg.visualize.port), host=cfg.visualize.host)
 

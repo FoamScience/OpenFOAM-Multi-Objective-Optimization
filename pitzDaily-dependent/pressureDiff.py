@@ -1,4 +1,4 @@
-#!/opt/paraviewopenfoam510/bin/pvpython
+#!/opt/paraview-5.10/bin/pvpython
 import os
 import sys
 
@@ -13,7 +13,7 @@ import paraview.servermanager as servermanager
 paraview.simple._DisableFirstRenderCameraReset()
 
 # create a new 'OpenFOAMReader'
-casefoam = OpenFOAMReader(registrationName='case.foam', FileName=[sys.argv[1]+'/case.foam'])
+casefoam = OpenFOAMReader(registrationName='case.foam', FileName=f'{sys.argv[1]}/case.foam')
 casefoam.MeshRegions = ['patch/inlet']
 casefoam.CellArrays = ['total(p)']
 casefoam.Decomposepolyhedra = 0
@@ -32,8 +32,7 @@ casefoam.MeshRegions = ['patch/outlet']
 arr = servermanager.Fetch(calculator1)
 pOut = arr.GetBlock(0).GetBlock(0).GetPointData().GetArray("Result").GetValue(0)
 
-pressureDiff = abs(pIn-pOut) 
-print(str(pressureDiff))
+print(f"{abs(pIn-pOut)}")
 
 # Alternative way with  probes; less robust
 

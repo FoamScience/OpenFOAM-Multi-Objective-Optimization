@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#source /fsx/OpenFOAM/OpenFOAM-v2212/etc/bashrc
+source /fsx/OpenFOAM/OpenFOAM-v2212/etc/bashrc
 cd "${0%/*}" || exit                                # Run from this directory
 . ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions        # Tutorial run functions
 #------------------------------------------------------------------------------
@@ -50,8 +50,3 @@ cp -rT 0orig 0
 
 # Parallel run on the slurm cluster
 runApplication $(getApplication)
-
-postProcess -fields "(p U)" -func "totalPressureIncompressible" -latestTime
-postProcess -fields "total(p)" -func "pressureDifferencePatch" -latestTime
-
-

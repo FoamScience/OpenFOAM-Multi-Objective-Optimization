@@ -7,6 +7,7 @@ import regex as re
 from collections import defaultdict
 
 import pandas as pd
+import numpy as np
 
 from omegaconf import OmegaConf, DictConfig, DictKeyType
 from ax.core.base_trial import TrialStatus, BaseTrial
@@ -55,10 +56,13 @@ def gen_search_space(cfg):
             e['bounds'] = list(e['bounds'])
         if 'dependents' in e.keys():
             #e['dependents'] = list(e['dependents'])
+            print("#######", e)
             tmp = {}
             for k in e['dependents']:
-                tmp.update(k)
+                for kk in k.keys():
+                    tmp.update({kk: list(k[kk])})
             e['dependents'] = tmp
+            print("########", e)
         l.append(e)    
     return l
 
@@ -73,12 +77,12 @@ def gen_objectives(cfg):
         objs[key] = ObjectiveProperties(minimize=item.minimize, threshold=item.threshold)
     return objs
 
-def plot_frontier(frontier,CI_level,name):
+def plot_frontier(frontier,name, CI_level=0.9):
     """
         Plot pareto frontier with CI_level error bars into an HTML file.
     """
 
-    plot_config = plot_pareto_frontier(frontier, CI_level=0.90)
+    plot_config = plot_pareto_frontier(frontier, CI_level=CI_level)
     with open(f'{name}_report.html', 'w') as outfile:
         outfile.write(render_report_elements(
             f"{name}_report", 
@@ -181,16 +185,21 @@ def shell_metric_value(metric, case, cfg):
     """
     metrics = {}
     item = cfg.problem.objectives[metric]
+    # OpenFOAM is annoying in this regard, so, if OpenFOAM utils are used to
+    # extract metrics, do a: foamUtility -case $CASEPATH
+    hasPath=any([c.find('$CASE_PATH') != -1 for c in item.command])
+    cwd = os.getcwd() if hasPath else case.name
     try:
-        # OpenFOAM is annoying in this regard, so, if OpenFOAM utils are used to
-        # extract metrics, do a: foamUtility -case $CASEPATH
-        hasPath=any([c.find('$CASE_PATH') != -1 for c in item.command])
-        cwd = os.getcwd() if hasPath else case.name
         if "prepare" in item.keys():
             sb.check_output(list(process_input_command(item.prepare, case)), cwd=cwd)
-        metrics[metric] = float(sb.check_output(list(process_input_command(item.command, case)), cwd=cwd))
     except:
-        metrics[metric] = None
+        log.warning(f"prepare command was not successful for {item}")
+    try:
+        out = sb.check_output(list(process_input_command(item.command, case)), cwd=cwd)
+        metrics[metric] = float(out)
+    except:
+        log.warning(f"Metric output for {item} cannot be converted to float, considering NaN...")
+        metrics[metric] = np.nan
     return metrics
 
 class HPCJobQueueClient:

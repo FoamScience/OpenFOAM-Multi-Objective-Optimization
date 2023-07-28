@@ -11,59 +11,53 @@ FoamFile
     format      ascii;
     class       dictionary;
     location    "system";
-    object      controlDict;
+    object      fvSolution;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-application     simpleFoam;
-
-startFrom       startTime;
-
-startTime       0;
-
-stopAt          endTime;
-
-endTime         10000;
-
-deltaT          1;
-
-writeControl    timeStep;
-
-writeInterval   $endTime;
-
-purgeWrite      0;
-
-writeFormat     ascii;
-
-writePrecision  6;
-
-writeCompression off;
-
-timeFormat      general;
-
-timePrecision   6;
-
-runTimeModifiable true;
-
-functions
+solvers
 {
-    pressure1
+    p
     {
-        type            pressure;
-        libs            (fieldFunctionObjects);
-        mode            total;
-        rho             rhoInf;
-        rhoInf          1.0;
-        writeControl    writeTime;
+        solver          GAMG;
+        tolerance       1e-06;
+        relTol          0.1;
+        smoother        GaussSeidel;
     }
-    solverInfo
+
+    "(U|k|epsilon|omega|f|v2)"
     {
-        type            solverInfo;
-        libs            ("libutilityFunctionObjects.so");
-        fields          (U p);
-        writeResidualFields yes;
-        writeControl    writeTime;
+        solver          smoothSolver;
+        smoother        symGaussSeidel;
+        tolerance       1e-05;
+        relTol          0.1;
     }
-};
+}
+
+SIMPLE
+{
+    nNonOrthogonalCorrectors 0;
+    consistent      yes;
+
+    residualControl
+    {
+        p               1e-2;
+        U               1e-3;
+        "(k|epsilon|omega|f|v2)" 1e-3;
+    }
+
+    pRefPoint           (-0.02 0.025 0.0005);
+    pRefValue           0.0;
+}
+
+relaxationFactors
+{
+    equations
+    {
+        U               0.9; // 0.9 is more stable but 0.95 more convergent
+        ".*"            0.9; // 0.9 is more stable but 0.95 more convergent
+    }
+}
+
 
 // ************************************************************************* //
