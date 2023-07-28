@@ -287,7 +287,7 @@ def preprocesss_case(parameters, cfg):
                 case.name+elmv.template
             )
     # Process parameters with PyFoam
-    for elm,elmv in cfg.meta.scopes.items():
+    for elm,elmv in cfg.problem.scopes.items():
         paramFile = ParsedParameterFile(name=case.name + elm)
         for param in elmv:
             splits = elmv[param].split('.')

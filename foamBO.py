@@ -79,7 +79,7 @@ supported_models = {
     "UNIFORM": Models.UNIFORM,
 }
 
-@hydra.main(version_base=None, config_path=".", config_name="config.yaml")
+@hydra.main(version_base=None, config_path=os.getcwd(), config_name="config.yaml")
 def exp_main(cfg : DictConfig) -> None:
     log.info("============= Configuration =============")
     log.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
@@ -136,6 +136,9 @@ def exp_main(cfg : DictConfig) -> None:
     scheduler.run_n_trials(max_trials=cfg.meta.n_trials,
         ignore_global_stopping_strategy=False if cfg.problem.models == 'auto' else True,
         idle_callback=data_from_experiment)
+
+    ax_client = AxClient(generation_strategy=gs,verbose_logging=False)
+    ax_client.save_to_json_file(f"{cfg.problem.name}_client_state.json")
 
     if cfg.problem.type == "parameter_variation":
         return

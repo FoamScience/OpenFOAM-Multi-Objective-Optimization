@@ -67,8 +67,7 @@ def dash_main(cfg : DictConfig):
         fig = make_subplots(rows=nrows, cols=1)
         i=1
         for key, _ in cfg.problem.objectives.items():
-            print(np.abs(stats.zscore(data[key])))
-            df = data[(np.abs(stats.zscore(data[key])) < 1)]
+            df = data[(np.abs(stats.zscore(data[key])) < cfg.visualize.zscore_bar)]
             ifig = px.scatter(df, x=df.index, y=key, hover_name=key, hover_data=df.columns)
             fig.add_trace(
                 ifig['data'][0],
