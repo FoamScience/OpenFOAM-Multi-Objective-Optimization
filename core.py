@@ -280,8 +280,8 @@ def preprocesss_case(parameters, cfg):
     # Run the case through the provided command in the config
     case = templateCase.cloneCase(cfg.meta.clone_destination+newcase)
     # Process parameters which require file copying (you can have one parameter per case file)
-    if "file_copies" in cfg.meta.keys():
-        for elm,elmv in cfg.meta.file_copies.items():
+    if "file_copies" in cfg.problem.keys():
+        for elm,elmv in cfg.problem.file_copies.items():
             shutil.copyfile(
                 case.name+elmv.template+"."+parameters[elm],
                 case.name+elmv.template
