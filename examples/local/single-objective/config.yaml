@@ -1,0 +1,59 @@
+problem:
+  name: SingleObjF1
+  template_case: 'case'
+  type: 'optimization'
+  models: auto
+  parameters:
+    x:
+      type: range
+      value_type: float
+      bounds: [-200, 200]
+      log_scale: False
+  scopes:
+    "/FxDict":
+      x: "x"
+  objectives:
+    F1:
+      mode: 'shell'
+      command: 
+        - 'python3'
+        - 'benchmark.py'
+        - '--F'
+        - 'F1'
+        - '--k'
+        - '1'
+        - '--m'
+        - '0'
+        - '--lb'
+        - '0.01'
+      threshold: 80
+      minimize: True
+      lower_is_better: True
+
+meta:
+  case_subdirs_to_clone:
+    - FxDict
+    - benchmark.py
+  clone_destination: "./trials/"
+  case_run_mode: local
+  case_run_command: ['echo', '0']
+  metric_value_mode: 'local'
+  n_trials: 300
+  n_parallel_trials: 5
+  ttl_trial: 3600
+  init_poll_wait: 0.1
+  poll_factor: 1.5
+  timeout: 10
+  use_saasbo: False
+  n_pareto_points: 5
+  stopping_strategy:
+    improvement_bar: 1e-4
+    min_trials: 300
+    window_size: 10
+
+visualize:
+  update_interval: 15
+  n_latest_trials: 3
+  zscore_bar: 15
+  host: '0.0.0.0'
+  port: 8888
