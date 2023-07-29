@@ -1,0 +1,13 @@
+#!/bin/sh
+source ${1}/etc/bashrc
+cd "${0%/*}" || exit                                # Run from this directory
+. ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions        # Tutorial run functions
+#------------------------------------------------------------------------------
+
+set -e
+touch case.foam
+cp -rT 0orig 0
+runApplication blockMesh
+
+# Parallel run on the slurm cluster
+runApplication $(getApplication)
