@@ -1,6 +1,7 @@
 # Multi Objective Optimization on OpenFOAM cases
 
-![](https://zenodo.org/badge/611991004.svg)
+<a href="https://zenodo.org/record/7997394"><img src="https://zenodo.org/badge/611991004.svg"></a>
+
 > If you're using this piece of software, please care enough to [cite it](https://zenodo.org/record/7997394) in your publications
 
 Relying on [ax-platform](https://ax.dev) to experiment around 0-code parameter variation and multi-objective optimization
@@ -15,35 +16,23 @@ of OpenFOAM cases.
   - Specify how/where parameters are substituted
   - Specify how your metrics are computed
 
-## The scripts
+## How do I try this out?
 
-- `paramVariation.py` runs a Parameter Variation Study with the provided config and outputs trial data as a CSV file.
-  Trial parameters are generated with SOBOL.
-- `multiObjOpt.py` runs a multi-objective optimization study (can use the same config file) and captures a JSON snapshot
-  of the experiment. You can also run it with a single objective.
+Some [examples](examples), which range from simple and moderate levels of complexity, are provided
+as reference.
 
-## How do I use this?
-
-The only requirement of usage (aside from being able to install dependency software) is that your template case needs to
-be **ready to be parameterized**.
+Strictly speaking, you don't need an OpenFOAM installation unless you are running a CFD case. You
+can always use your own code to evaluate the trials;  but parameters must be passed through an
+OpenFOAM-like dictionary (See [single-objective opt. example](examples/local/single-objective)
+for inspiration.
 
 ```bash
 # Clone the repository
-git clone https://github.com/FoamScience/OpenFOAM-Multi-Objective-Optimization multiOptFoam
-cd multiOptFoam
+git clone https://github.com/FoamScience/OpenFOAM-Multi-Objective-Optimization foamBO
+cd foamBO
 # Install dependencies
 pip3 install -r requirements.txt
-# Run parameter variation with config.yaml on pitzDaily case
-./paramVariation.py
-# Or run a multi-objective optimization
-./multiObjOpt.py
 ```
-
-## Docs and Sample configuration
-
-You can find a quick tutorial in the [docs page](docs.md). The [sample config file](config.yaml) and [case](pitzDaily)
-are also documented.
-
 ## Contribution is welcome!
 
 By either filing issues or opening pull requests, you can contribute to the development
