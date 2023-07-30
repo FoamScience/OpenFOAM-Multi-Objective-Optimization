@@ -7,5 +7,12 @@ time=$(foamListTimes)
 if [[ $time == "" ]] || [[ $time == "10000" ]]; then
     echo "10000"
 else
-    pvpython pressureDiff.py $PWD $time
+    #pvpython pressureDiff.py $PWD $time
+    filename="postProcessing/pressureDifferencePatch/0/multiFieldValue.dat" 
+    awk '
+    END {
+        value = $NF
+        print "", value
+    }
+' "$filename"
 fi

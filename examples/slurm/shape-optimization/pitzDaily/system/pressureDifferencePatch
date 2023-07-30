@@ -1,0 +1,43 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Version:  v2212
+    \\  /    A nd           | Website:  www.openfoam.com
+     \\/     M anipulation  |
+-------------------------------------------------------------------------------
+Description
+    Calculates the difference between the average pressures on 2 specified
+    patches.
+
+\*---------------------------------------------------------------------------*/
+
+type            multiFieldValue;
+libs            ("libfieldFunctionObjects.so");
+
+operation       subtract;
+
+writeControl    timeStep;
+writeInterval   1;
+log             false;
+
+functions
+{
+    region1
+    {
+        #includeEtc "caseDicts/postProcessing/surfaceFieldValue/surfaceRegion.cfg"
+        operation       areaAverage;
+        fields          (total(p));
+        regionType  patch;
+        name  inlet;
+    }
+    region2
+    {
+        #includeEtc "caseDicts/postProcessing/surfaceFieldValue/surfaceRegion.cfg"
+        operation       areaAverage;
+        fields          (total(p));
+        regionType  patch;
+        name  outlet;
+    }
+}
+
+// ************************************************************************* //
