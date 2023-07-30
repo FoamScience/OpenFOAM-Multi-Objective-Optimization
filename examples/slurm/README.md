@@ -29,5 +29,5 @@ on.
 
 You can run it with:
 ```bash
-python3 foamBO.py --config-name=condif.Dependent.yaml
+foamBO --config-name=config-dependent.yaml
 ```

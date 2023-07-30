@@ -173,11 +173,11 @@ x 0;
 
 ### Generating predictions from models trained with foamBO
 
-`foamBO.py` will periodically save your experiment to a JSON file, and once the optimization is
+`foamBO` will periodically save your experiment to a JSON file, and once the optimization is
 stopped, it will write its current state to another JSON. You can load those again into an Ax client:
 ```python
 # You need to load stuff from core.py to be able to de-serialize them
-from core import *
+from foambo.core import *
 from ax.service.ax_client import AxClient
 from ax.storage.json_store.load import load_experiment
 cl = AxClient().load_from_json_file('SingleObjF1_client_state.json')

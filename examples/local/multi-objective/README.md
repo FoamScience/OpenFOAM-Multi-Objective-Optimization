@@ -15,7 +15,7 @@
 
 ## Preface
 
-This document describes how to use `foamBO.py` to run Fully-Bayesian optimization
+This document describes how to use `foamBO` to run Fully-Bayesian optimization
 (or just parameter variation studies) on OpenFOAM cases.
 
 I describe the workflow in two cases:
@@ -124,7 +124,7 @@ pip install -r requirements.txt
 The workflow consists of the following steps:
 - Preparing your base case, this will be a fully-functional OpenFOAM case
 - Writing a configuration file (YAML) for the optimization/parameter-variation
-- Running `foamBO.py` in the directory containing the configuration file
+- Running `foamBO` in the directory containing the configuration file
 
 The [example case](pitzDaily) is provided with the [example configuration](config.yaml)
 for reference.
@@ -282,7 +282,7 @@ meta:
 ```
 
 > `n_parallel_trials` is always respected when you run `paramVariation.py`, but the algorithm will limit it
-> for `foamBO.py` (max parallel trials is selected by the optimization algorithm, usually: 10)
+> for `foamBO` (max parallel trials is selected by the optimization algorithm, usually: 10)
 
 Depending on the dimension and properties of your search space, a number of cases will be generated
 first with SOBOL for initialization, then the generation strategy will switch to a suitable optimization
@@ -294,7 +294,7 @@ Note that metric-evaluation commands also run locally in the same way `Allrun` d
 > be replaced with the relevant ones for each trial. Also, all of them will run inside the generated 
 > trial's directory
 
-That's pretty much it. Run `foamBO.py` and watch the magic happen. At the end, the script will
+That's pretty much it. Run `foamBO` and watch the magic happen. At the end, the script will
 **try** to:
 - Generate trial CSV data (Hopefully this will always work)
 - Plot the Pareto frontier (if a multi-objective optimization, and generate corresponding CSV data)
@@ -367,7 +367,7 @@ Here is a quick snippet to load an experiment of a parameter variation study and
 ```python
 from ax.core import Experiment
 from ax.storage.json_store.load import load_experiment
-from core import *
+from foambo.core import *
 import pandas as pd
 
 exp = load_experiment(f"Example_experiment_pv.json")
