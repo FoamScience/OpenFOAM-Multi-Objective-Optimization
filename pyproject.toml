@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "foambo"
+version = "0.0.1"
+authors = [
+  { name="Mohammed Elwardi Fadeli", email="elwardifadeli@gmail.com" },
+]
+description = "Multi-objective Bayesian Optimization on OpenFOAM cases with Ax-platform"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "ax>=0.52.0",
+    "ax_platform>=0.3.3",
+    "hydra-core>=1.3.2",
+    "omegaconf>=2.3.0",
+    "PyFoam>=2023.7",
+    "regex>=2023.6.3",
+    "dash>=2.11.1",
+    "dash_bootstrap_components>=1.4.2",
+]
+
+[project.scripts]
+    foamBO = "foambo.foamBO:exp_main"
+    foamDash = "foambo.foamDash:dash_main"
+
+[project.urls]
+"Homepage" = "https://github.com/FoamScience/OpenFOAM-Multi-Objective-Optimization"
+"Bug Tracker" = "https://github.com/FoamScience/OpenFOAM-Multi-Objective-Optimization/issues"

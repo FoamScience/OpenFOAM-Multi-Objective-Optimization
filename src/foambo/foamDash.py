@@ -11,7 +11,7 @@ Seperate visualization toolkits (rg. Dash) can pick up these files.
 IO operations are not intensive, this should be enough
 """
 
-import hydra, logging
+import hydra, logging, os
 import subprocess as sb
 from omegaconf import DictConfig, OmegaConf
 import pandas as pd
@@ -23,35 +23,26 @@ import dash_bootstrap_components as dbc
 import plotly.express as px
 from plotly.subplots import make_subplots
 
-from core import process_input_command
-from ax.service.scheduler import Scheduler
-from ax.storage.json_store.save import save_experiment
+from foambo.core import process_input_command
 
 log = logging.getLogger(__name__)
 
-app = Dash(__name__, external_stylesheets=[dbc.themes.MATERIA])
+app = Dash(__name__, external_stylesheets=[dbc.themes.MATERIA],
+        external_scripts=[{
+            'src': "https://kit.fontawesome.com/f62ef3c170.js",
+            'crossorigin': "anonymous"
+            }])
 
-def data_from_experiment(scheduler: Scheduler):
-    # Trial Parameters with corresponding objective values
-    cfg = scheduler.experiment.runner.cfg
-    params_df = pd.DataFrame()
-    exp_df = scheduler.experiment.fetch_data().df
-    if "trial_index" in exp_df.columns:
-        exp_df = exp_df.set_index(["trial_index", "metric_name"]).unstack(level=1)["mean"]
-        trials = scheduler.experiment.get_trials_by_indices(range(exp_df.shape[0]))
-        for tr in trials:
-            params_df = pd.concat([params_df,
-                pd.DataFrame({
-                    **tr.arm.parameters,
-                    **tr._properties,
-                    "GenerationModel": scheduler.generation_strategy.model._model_key},
-                    index=[tr.index])])
-        df = pd.merge(exp_df, params_df, left_index=True, right_index=True)
-        df.index.name="trial_index"
-        df.to_csv(f"{cfg.problem.name}_report.csv")
-    save_experiment(scheduler.experiment, f"{cfg.problem.name}_experiment.json")
+def choose_icon(st):
+    return "fa-check" if st == "COMPLETED" else "fa-square-xmark" \
+        if st == "FAILED" else "fa-circle-exclamation"
 
-@hydra.main(version_base=None, config_path=".", config_name="config.yaml")
+def choose_color(st):
+    return "4e9a06" if st == "COMPLETED" else "a40000" \
+        if st == "FAILED" else "fcaf3e"
+
+
+@hydra.main(version_base=None, config_path=os.getcwd(), config_name="config.yaml")
 def dash_main(cfg : DictConfig):
     app.title = cfg.problem.name
     @app.callback(Output('live-update-graph', 'figure'),
@@ -96,14 +87,18 @@ def dash_main(cfg : DictConfig):
             figure_uris.append({ **row.to_dict(),
                 "image": image_uri.decode("utf-8").strip(' ').replace('\"', '').replace('\\n', '')})
         return [
-            html.Div(style={'width': f'{100/cfg.visualize.n_figures}%', 'float': 'left'},
-                children=[
-                html.Img(src=uri["image"], width='100%', style={'margin':'10px'}),
+            html.Div(style={'width': f'{100/cfg.visualize.n_figures}%', 'float': 'left', 'position': 'relative'},
+            children=[
+                html.Img(src=uri["image"] if "null" not in uri["image"] and not uri["image"] else "https://placehold.co/600x400/png",
+                        width='95%', style={'display': 'block', 'margin-left': 'auto', 'margin-right': 'auto'}),
+                html.I(className=f'fa-solid {choose_icon(uri["trial_status"])}',
+                       style={"color": f'#{choose_color(uri["trial_status"])}', "position": "absolute",
+                    "top": "0", "right": "0"}),
                 html.Div(children=[
                     html.P(children=elm)
                     for elm in OmegaConf.to_yaml(OmegaConf.create(uri)).splitlines()
                     ])
-                ])
+            ])
         for uri in figure_uris ]
 
     updates = dcc.Interval(

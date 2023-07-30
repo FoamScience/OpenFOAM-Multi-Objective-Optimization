@@ -32,9 +32,10 @@ from ax.modelbridge.generation_strategy import GenerationStrategy
 from ax.modelbridge.generation_node import GenerationStep
 
 from ax.global_stopping.strategies.improvement import ImprovementGlobalStoppingStrategy
+from ax.service.utils.report_utils import exp_to_df
 
-from core import *
-from foamDash import data_from_experiment
+from foambo.core import *
+from ax.storage.json_store.save import save_experiment
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +79,28 @@ supported_models = {
     "THOMPSON": Models.THOMPSON,
     "UNIFORM": Models.UNIFORM,
 }
+
+def data_from_experiment(scheduler: Scheduler):
+    # Trial Parameters with corresponding objective values
+    cfg = scheduler.experiment.runner.cfg
+    params_df = pd.DataFrame()
+    exp_df = scheduler.experiment.fetch_data().df
+    if "trial_index" in exp_df.columns:
+        #exp_df = exp_df.set_index(["trial_index", "metric_name"]).unstack(level=1)["mean"]
+        df = exp_to_df(exp=scheduler.experiment)
+        trials = scheduler.experiment.get_trials_by_indices(range(df.shape[0]))
+        for tr in trials:
+            params_df = pd.concat([params_df,
+                pd.DataFrame({
+                    #**tr.arm.parameters,
+                    **tr._properties},#,
+                    #"GenerationModel": expdf['generation_method'][tr.index]},
+                    index=[tr.index])])
+        df = pd.merge(df, params_df, left_index=True, right_index=True)
+        df.set_index("trial_index", inplace=True)
+        df.to_csv(f"{cfg.problem.name}_report.csv")
+    save_experiment(scheduler.experiment, f"{cfg.problem.name}_experiment.json")
+
 
 @hydra.main(version_base=None, config_path=os.getcwd(), config_name="config.yaml")
 def exp_main(cfg : DictConfig) -> None:
