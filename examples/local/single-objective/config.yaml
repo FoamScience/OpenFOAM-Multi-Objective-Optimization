@@ -15,17 +15,7 @@ problem:
   objectives:
     F1:
       mode: 'shell'
-      command: 
-        - 'python3'
-        - 'benchmark.py'
-        - '--F'
-        - 'F1'
-        - '--k'
-        - '1'
-        - '--m'
-        - '0'
-        - '--lb'
-        - '0.01'
+      command: 'python3 benchmark.py --F F1 --k 1 --m 0 --lb 0.01'
       threshold: 80
       minimize: True
       lower_is_better: True
@@ -36,7 +26,7 @@ meta:
     - benchmark.py
   clone_destination: "./trials/"
   case_run_mode: local
-  case_run_command: ['echo', '0']
+  case_run_command: 'echo 0'
   metric_value_mode: 'local'
   n_trials: 300
   n_parallel_trials: 5

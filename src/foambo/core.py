@@ -36,6 +36,8 @@ def process_input_command(command, case):
     """
         Process commands from config files to provide some flexibility
     """
+    if isinstance(command, str):
+        command = list(command.split())
     return [c.replace("$CASE_PATH", case.name).replace("$CASE_NAME", os.path.basename(case.name)) for c in command]
 
 def gen_search_space(cfg):
