@@ -1,0 +1,91 @@
+#!/bin/sh
+
+# Source tutorial run functions
+. $LBAMR_PROJECT/scripts/moreRunFunctions
+#. $PFM_PROJECT/scripts/moreRunFunctions
+
+export FOAM_CODE_TEMPLATES=$LBAMR_PROJECT/etc/codeTemplates
+trap exit INT
+
+# Usage prompt
+usage() { 
+        echo ""
+        echo "Usage:" 
+        echo "($0 [-s or --serial | -p or --parallel]"
+        echo ""
+        exit 0
+}
+
+# Mesh generation and checking
+generateMeshAndCheck() {
+    runApplication blockMesh
+    #runApplication snappyHexMesh -overwrite
+
+    #runApplication checkMesh
+    #runApplication funkySetBoundaryField -time 0
+    #runApplication funkySetFields -time 0 -dictExt Water
+    #runApplication -a funkySetFields -time 0 -dictExt Air
+}
+
+# Set fields and update mesh
+# $1 is either runParallel or runApplication
+# $2 is typically "-a" for "append to the logs"
+initializeCase() {
+    # Get max refinement level of all refinements
+    #maxRefinement=$(getMaxRefinementLevels)
+    maxRefinement=`cat constant/dynamicMeshDict | grep 'maxRefinement' | tr -s ' ' | cut -d ' ' -f3 | tr -d ';' | tail -n1`
+    refinementInterval=`cat constant/dynamicMeshDict | grep 'refinementInterval' | tr -s ' ' | cut -d ' ' -f3 | tr -d ';' | tail -n1`
+
+    sed -i "s/refineInterval[[:space:]]\+[0-9]\+/refineInterval 1/" "constant/dynamicMeshDict"
+    if [ $1 = "runParallel" ] ; then
+        runApplication decomposePar -cellDist -copyUniform 
+    fi
+    for i in $( seq 1 $maxRefinement )
+    do
+        #$1 $2 funkySetBoundaryField -time 0
+        $1 $2 funkySetFields -time 0 -dictExt Water
+        $1 $2 funkySetFields -time 0 -dictExt Air
+        $1 $2 funkySetBoundaryField -time 0
+
+        $1 $2 updateMesh -overwrite
+    done
+
+
+        $1 $2 funkySetFields -time 0 -dictExt Water
+        $1 $2 funkySetFields -time 0 -dictExt Air
+        $1 $2 funkySetBoundaryField -time 0
+        sed -i "s/refineInterval[[:space:]]\+[0-9]\+/refineInterval 25/" "constant/dynamicMeshDict"
+
+}
+
+# Run the solver binary
+# $1 is either runParallel or runApplication
+appRun() {
+    $1 $(getApplication)
+    # some other options for parallel run:
+    #app=$(getApplication)
+    #mpirun -np $app -parallel | tee log.$app
+}
+
+options=$(getopt -l "help,serial,parallel" -o "h:sp" -a -- "$@")
+eval set -- "$options"
+appMode=""
+case $1 in
+    -s|--serial)
+        appMode="runApplication -a"
+        ;;
+    -p|--parallel)
+        appMode="runParallel -a"
+        ;;
+    *)
+        usage
+        exit 0
+        ;;
+esac
+
+# Workflow for the OpenFOAM case
+cp -rT 0.orig 0
+generateMeshAndCheck $appMode
+initializeCase $appMode
+appRun $appMode 
+return 0

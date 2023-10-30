@@ -1,0 +1,220 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  1.7.1                                 |
+|   \\  /    A nd           | Web:      www.OpenFOAM.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      fvSolution;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+solvers
+{
+    pcorr
+    {
+        solver          PCG;
+        preconditioner      
+        {                   
+
+            preconditioner  DIC;
+            nVcycles        5;
+            tolerance       1e-05;
+            relTol          0;       
+            smoother        DICGaussSeidel;      
+            //number of smoothing steps before projection
+            nSmoothingSteps 4;                           
+            //sweeps to perform before moving to a coarser level. 
+            nPreSweeps      2;                                    
+            //sweeps to perform after coarser level corrections   
+            nPostSweeps     1;                                    
+            nFinestSweeps   1;                                  
+            cacheAgglomeration false;                              
+            nCellsInCoarsestLevel 10;//100;
+            agglomerator    algebraicPair; 
+            //-HM alternatives: algebraicPair; faceAreaPair;                         
+            mergeLevels     1;                                    
+        }
+        tolerance       1e-5;
+        relTol          0;
+        minIter         2;   
+        maxIter         200;  
+    }
+
+    pd
+    {
+        solver          PCG;
+        preconditioner  DIC;
+        tolerance       1e-6;
+        relTol          0;
+    }
+
+/*    pdFinal*/
+/*    {*/
+/*        solver          PCG;*/
+/*        preconditioner  DIC;*/
+/*        tolerance       1e-9;*/
+/*        relTol          0;*/
+/*    }*/
+
+/*    pd*/
+/*    {*/
+/*        solver          PCG;*/
+/*        preconditioner      */
+/*        {                   */
+
+/*            preconditioner  GAMG;*/
+/*            nVcycles        4;*/
+/*            tolerance       1e-05;*/
+/*            relTol          0;       */
+/*            smoother        DICGaussSeidel;      */
+/*            //number of smoothing steps before projection*/
+/*            nSmoothingSteps 1;                           */
+/*            //sweeps to perform before moving to a coarser level. */
+/*            nPreSweeps      1;                                    */
+/*            //sweeps to perform after coarser level corrections   */
+/*            nPostSweeps     2;                                    */
+/*            nFinestSweeps   2;                                  */
+/*            cacheAgglomeration false;                              */
+/*            nCellsInCoarsestLevel 10;*/
+/*            agglomerator    faceAreaPair; */
+/*            //-HM alternatives: algebraicPair; faceAreaPair;                         */
+/*            mergeLevels     1;                                    */
+/*        }*/
+/*        tolerance        1e-09;*/
+/*        relTol           0;   */
+/*        minIter          5;*/
+/*        maxIter          50;  */
+/*    }*/
+
+
+    pdFinal
+    {
+        solver          PCG;
+        preconditioner      
+        {                   
+
+            preconditioner  DIC;
+            nVcycles        5;
+            tolerance       1e-5;
+            relTol          0;       
+            smoother        DICGaussSeidel;      
+            //number of smoothing steps before projection
+            nSmoothingSteps 4;                           
+            //sweeps to perform before moving to a coarser level. 
+            nPreSweeps      2;                                    
+            //sweeps to perform after coarser level corrections   
+            nPostSweeps     1;                                    
+            nFinestSweeps   1;                                  
+            cacheAgglomeration false;                              
+            nCellsInCoarsestLevel 10;//100;
+            agglomerator    algebraicPair; 
+            //-HM alternatives: algebraicPair; faceAreaPair;                         
+            mergeLevels     1;                                    
+        }
+        tolerance        1e-5;
+        relTol           0;   
+        minIter          2;   
+        maxIter          50;  
+    }
+
+
+    U
+    {
+        solver          BiCGStab;
+        preconditioner  DILU;
+        tolerance       1e-05;
+        relTol          0;
+    }
+
+    C 
+    {
+        solver          GMRES;
+        nDirections     5;
+
+        preconditioner  DILU;
+/*        solver          PBiCG;      */
+/*        preconditioner  DILU;*/
+
+        tolerance       1e-9;
+        relTol          0;
+
+/*        minIter         0;*/
+/*        maxIter         10;*/
+    }
+
+    T
+    {
+        solver          PBiCG;
+        
+        preconditioner  DILU;
+        tolerance       1e-10;
+        relTol          0;
+
+/*        minIter         0;*/
+/*        maxIter         10;*/
+    }
+
+    Ccoupled
+    {
+        solver          GMRES;
+        nDirections     5;
+
+        preconditioner  Cholesky;
+
+        tolerance       1e-8;//1e-12
+        relTol          0;
+
+        minIter         2;
+        maxIter         500;
+    };
+}
+
+blockSolver
+{
+    convergence 1e-7;
+
+    pRefCell 0;
+    pRefValue 0;
+}
+
+fieldBounds
+{
+    U      500;
+    pd     -5e6 5e6;
+}
+
+relaxationFactors
+{
+    U   0.999;
+}
+
+phaseFieldSystem
+{
+}
+
+PIMPLE
+{
+    momentumPredictor no;
+    nOuterCorrectors 2;
+    nCorrectors     2;
+    nNonOrthogonalCorrectors 2;
+
+    nSubCycles          1;
+    pdRefCell           0;
+    pRefValue           0;
+    pdRefValue          0;
+    correctPhi          true;
+    checkMeshCourantNo  false;
+
+	gh	0;
+	ghf	0;
+}
+
+// ************************************************************************* //

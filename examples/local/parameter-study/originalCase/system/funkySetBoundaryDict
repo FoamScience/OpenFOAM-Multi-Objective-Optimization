@@ -1,0 +1,60 @@
+/*---------------------------------------------------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Version:  4.0-ext                             
+    \\  /    A nd           | Copyright held by original author
+     \\/     M anipulation  |
+-----------------------------------------------------------------------------*/
+
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      funkySetBoundaryDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+
+CWater1 { 
+    field CWater; 
+    expressions 
+    ( 
+        { 
+            target value; 
+            patchName down;
+variables
+(
+    "cx=-6e-3;"
+    "cy=0;"
+    "cz=0;"
+    "radius=2.25e-3;"
+    "epsilon=9e-5;"
+);
+            expression "tanh((-sqrt(sqr(pos().x-cx)+sqr(pos().y-cy)+sqr(pos().z-cz))+radius)/(sqrt(2)*epsilon))"; 		 
+        } 
+    ); 
+}  
+
+CAir1 { 
+    field CAir; 
+    expressions 
+    ( 
+        { 
+            target value; 
+            patchName down;
+variables
+(
+    "cx=-6e-3;"
+    "cy=0;"
+    "cz=0;"
+    "radius=2.25e-3;"
+    "epsilon=9e-5;"
+);
+            expression "-tanh((-sqrt(sqr(pos().x-cx)+sqr(pos().y-cy)+sqr(pos().z-cz))+radius)/(sqrt(2)*epsilon))"; 		 
+        } 
+    ); 
+}  
+
+// ************************************************************************* //

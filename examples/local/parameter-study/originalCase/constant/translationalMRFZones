@@ -1,0 +1,39 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | foam-extend: Open Source CFD                    |
+|  \\    /   O peration     | Version:     4.1                                |
+|   \\  /    A nd           | Web:         http://www.foam-extend.org         |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      MRFZones;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+0
+(
+    /*slidingDroplet
+    {
+    KP          KP [0 0 0 0 0]  0;//0.2
+    KI          KI [0 0 -1 0 0] 0;
+    KD          KD [0 0 0 0 0]  0;//0.6
+        
+        dUFMask     (0 0 0);
+        centreMask  (0 0 0);
+
+        //wallPatchName right;
+        //inletPatchName right;
+
+        centreFrom Field;
+        centreFromField CWater;
+
+        //normalise01 no;
+    }*/
+)
+
+
+// ************************************************************************* //

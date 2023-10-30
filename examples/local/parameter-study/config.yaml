@@ -1,0 +1,91 @@
+problem:
+  # Problem name to prefix output files with
+  models:
+  UNIFORM: 4
+  name: Example
+  # The base OpenFOAM case; this needs to be fully functional case once paramters/files are substituted.
+  template_case: 'originalCase'
+  # Experiment paramters
+  parameters:
+    l:
+      type: choice
+      value_type: float
+      values: [0.0005, 0.002] #Lwidth	
+      log_scale: False
+      is_ordered: True
+    g:
+      type: choice
+      value_type: str
+      # values: ['4.905 -8.495', '6.3057 -7.5149', '7.51489 -6.3057', '8.495 -4.905'] # 30 40 50 60
+      values: ['4.1458 -8.89087', '8.495 -4.905'] # 25 60
+      log_scale: False
+      is_ordered: True
+  # Experiment objectives. Metric values are fetched through shell commands in the working directory of
+  # the specific trial
+  objectives:
+    Bo:
+      # A little (optional) preparation before metrics are evaluated
+      # This command needs to be !interactive! as it runs in blocking mode and it's only active in SLURM metric value mode
+      # Think: salloc
+      prepare: ['echo', '$CASE_NAME']
+      # How to evaluate the objective metric?
+      # This command needs to return a convertible-to-float value
+      command: ['pvpython', './trial.py', '--Bo']
+      #command: ['awk', '/ExecutionTime/{a=$3} END{print(a)}', 'log.1.0']
+      threshold: 5
+      minimize: True
+      lower_is_better: True
+    L:
+      prepare: ['echo', '$CASE_NAME']
+      command: ['pvpython', './trial.py', '--L']
+      threshold: 5
+      minimize: True
+      lower_is_better: True
+
+meta:
+  # When clonging template case, specify extra files/dirs to clone
+  case_subdirs_to_clone: ["0.orig", "trial.py"]
+  # Where to clone trial cases (absolute path, leave empty to consider $PWD)
+  clone_destination: "./trials/"
+  # Case run mode (local, slurm)
+  case_run_mode: local
+  # Metric evaluation mode (local, slurm)
+  metric_value_mode: local
+  # How should we run your case?
+  # Metric values are extracted through problem.objectives.*.command
+  # after completion of the following command
+  # The command is processed to provide a couple of variables:
+  # - $CASE_PATH: fullpath to **parameter variation case**
+  # - $CASE_NAME: generated name of the **parameter variation case**
+  case_run_command: ['./Allrun', '-p']
+  #case_run_command: ['sbatch', '-J', '$CASE_NAME', './Allrun.slurm', '$CASE_PATH']
+  # How to check for job completion?
+  # The output of this command is "split", and the second element is considered the status
+  # This has no effect if local mode is used
+  slurm_status_query: ['sacct', '--name', '$CASE_NAME', '-o', 'JobName%60,State', '-n']
+  # Number of trials to generate:
+  # Using SOBOL for paramter variation
+  # Model is automatically chosen for optimization studies
+  n_trials: 2
+  # Number of trials to deploy at the same time (in parallel)
+  n_parallel_trials: 1
+  # Try to use SAASBO, default is to use: GPEI
+  use_saasbo: True
+  # Number of pareto front points to generate
+  n_pareto_points: 5
+  # Paramters can be substitued as whole case files
+  # There are done first if present
+  #file_copies:
+  #modelType:
+  #  template: "/0.orig/theta0WaterAir"
+  # Parameters can also be substituted per-file
+  scopes:
+    "/0.orig/theta0WaterAir":
+      l: "l"
+    "/constant/g":
+      g: "g"
+
+# Evaluate how the optimization algorithm did
+verify:
+  base:
+    - l: 0.01

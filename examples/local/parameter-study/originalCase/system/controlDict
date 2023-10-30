@@ -1,0 +1,85 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  1.7.1                                 |
+|   \\  /    A nd           | Web:      www.OpenFOAM.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      controlDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+application     phaseFieldFoam;
+
+startFrom       latestTime;
+
+startTime       0;
+
+stopAt          endTime;
+
+endTime         3.5e-5;
+
+deltaT          1e-8;
+
+writeControl    adjustableRunTime;
+
+writeInterval   1e-5;
+
+purgeWrite      0;
+
+writeFormat     ascii;
+
+writePrecision  12;
+
+writeCompression uncompressed;
+
+timeFormat      general;
+
+timePrecision   12;
+
+runTimeModifiable yes;
+
+adjustTimeStep  yes;
+
+maxCo           0.02;
+
+maxDeltaT       5e-6;
+
+//loadBalance     no;
+
+
+libs (
+"libbalancedRefinementFvMesh.so"
+"libsimpleSwakFunctionObjects.so"
+"libswakFunctionObjects.so"
+//"libenergyDensityFields.so"
+"libgroovyBC.so"
+);
+
+functions
+(
+        calculateTheta0VolScalarField 
+	{
+	type  readAndUpdateFields;
+	fields 
+		(
+			"theta0WaterAir"
+		);
+	outputControl timeStep;
+	outputInterval	1;
+	correctBoundary true;
+	}
+);
+
+/*InfoSwitches
+{
+        allowSystemOperations 1;
+}*/
+
+// ************************************************************************* //

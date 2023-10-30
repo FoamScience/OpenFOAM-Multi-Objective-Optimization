@@ -1,0 +1,73 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | foam-extend: Open Source CFD                    |
+|  \\    /   O peration     | Version:     4.0                                |
+|   \\  /    A nd           | Web:         http://www.foam-extend.org         |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      binary;
+    class       volScalarField;
+    location    "0";
+    object      theta0;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 0 0 0 0 0 0];
+
+internalField   uniform 0;
+l 0.0025;
+R 2.25e-3;
+
+boundaryField
+{
+    down
+    {
+	type 		groovyBC;
+	variables	"";
+	//valueExpression "53+6*function";
+	valueExpression "pos().x >= 0.002-($l/2) && pos().x <= 0.002+($l/2) ? 40:100";
+
+    }
+    right
+    {
+	type 		groovyBC;
+	variables	"";
+	//valueExpression "53+6*function";
+	valueExpression "pos().x >= 0.009 && pos().x <= 0.010 ? 40:90";
+
+    }
+    back
+    {
+	type 		groovyBC;
+	variables	"";
+	//valueExpression "53+6*function";
+	valueExpression "pos().x >= 0.009 && pos().x <= 0.010 ? 30:90";
+
+    }
+    up
+    {
+	type 		groovyBC;
+	variables	"";
+	//valueExpression "53+6*function";
+	valueExpression "pos().x >= 0.009 && pos().x <= 0.010 ? 30:90";
+
+    }
+    left
+    {
+	type 		groovyBC;
+	variables	"";
+	//valueExpression "53+6*function";
+	valueExpression "pos().x >= 0.009 && pos().x <= 0.010 ? 30:90";
+    }
+    front
+    {
+        type            symmetryPlane;
+    }
+
+}
+
+
+// ************************************************************************* //
