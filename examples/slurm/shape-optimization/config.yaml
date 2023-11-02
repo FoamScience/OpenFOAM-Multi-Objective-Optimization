@@ -138,6 +138,8 @@ visualize:
   update_interval: 15
   # Number of latest trials to generate images for
   n_figures: 3
+  # Height value for a single objective graph in pixels
+  graph_height: 400
   # Generate an image of the trial's final state
   # This needs to return a URI to the generate image (can be local)
   figure_generator: ['./getImage.sh']

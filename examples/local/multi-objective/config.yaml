@@ -102,6 +102,7 @@ visualize:
   zscore_bar: 15
   n_figures: 3
   figure_generator: ['echo', 'null']
+  graph_height: 400
   # Interface settings for Dash
   host: '0.0.0.0'
   port: 8888
