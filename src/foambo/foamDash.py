@@ -45,6 +45,7 @@ def choose_color(st):
 @hydra.main(version_base=None, config_path=os.getcwd(), config_name="config.yaml")
 def dash_main(cfg : DictConfig):
     app.title = cfg.problem.name
+    GRAPH_HEIGHT = 300 if "graph_height" not in cfg.visualize.keys() else cfg.visualize.graph_height
     @app.callback(Output('live-update-graph', 'figure'),
                   Input('interval-component', 'n_intervals'))
     def update_graph(fig):
@@ -55,10 +56,14 @@ def dash_main(cfg : DictConfig):
             log.warn("Could not visualize current state")
             return fig
         nrows = len(cfg.problem.objectives.keys())
-        fig = make_subplots(rows=nrows, cols=1)
+        fig = make_subplots(
+            rows=nrows, cols=1,
+            specs=[[{'type': 'xy'}] for _ in range(nrows)],
+        )
         i=1
         for key, _ in cfg.problem.objectives.items():
-            df = data[(np.abs(stats.zscore(data[key])) < cfg.visualize.zscore_bar)]
+            obj = data[key].dropna()
+            df = pd.DataFrame(obj[(np.abs(stats.zscore(obj)) < cfg.visualize.zscore_bar)], columns=[key])
             ifig = px.scatter(df, x=df.index, y=key, hover_name=key, hover_data=df.columns)
             fig.add_trace(
                 ifig['data'][0],
@@ -86,10 +91,11 @@ def dash_main(cfg : DictConfig):
                 case)), cwd=case.name, stderr=sb.PIPE)
             figure_uris.append({ **row.to_dict(),
                 "image": image_uri.decode("utf-8").strip(' ').replace('\"', '').replace('\\n', '')})
+            print([u["image"] for u in figure_uris])
         return [
             html.Div(style={'width': f'{100/cfg.visualize.n_figures}%', 'float': 'left', 'position': 'relative'},
             children=[
-                html.Img(src=uri["image"] if "null" not in uri["image"] and not uri["image"] else "https://placehold.co/600x400/png",
+                html.Img(src=uri["image"] if not ("null" in uri["image"] or uri["image"] == "") else "https://placehold.co/600x400/png",
                         width='95%', style={'display': 'block', 'margin-left': 'auto', 'margin-right': 'auto'}),
                 html.I(className=f'fa-solid {choose_icon(uri["trial_status"])}',
                        style={"color": f'#{choose_color(uri["trial_status"])}', "position": "absolute",
@@ -113,7 +119,7 @@ def dash_main(cfg : DictConfig):
                 style={'text-align':'center', 'padding':'20px'}),
         html.H2(children=f'Optimization Metrics',
                 style={'padding':'5px'}),
-        dcc.Graph(id='live-update-graph'),
+        dcc.Graph(id='live-update-graph', figure={"layout": {"height": len(cfg.problem.objectives.keys())*GRAPH_HEIGHT}}),
         html.H2(children=f'Insight into latest trials',
                 style={'padding':'5px'}),
         html.Div(id='images', style={'padding':'10px'}),
