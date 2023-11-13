@@ -91,7 +91,6 @@ def dash_main(cfg : DictConfig):
                 case)), cwd=case.name, stderr=sb.PIPE)
             figure_uris.append({ **row.to_dict(),
                 "image": image_uri.decode("utf-8").strip(' ').replace('\"', '').replace('\\n', '')})
-            print([u["image"] for u in figure_uris])
         return [
             html.Div(style={'width': f'{100/cfg.visualize.n_figures}%', 'float': 'left', 'position': 'relative'},
             children=[

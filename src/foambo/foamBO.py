@@ -37,6 +37,8 @@ from ax.service.utils.report_utils import exp_to_df
 from foambo.core import *
 from ax.storage.json_store.save import save_experiment
 
+__version__ = "0.0.3"
+
 log = logging.getLogger(__name__)
 
 def _find_logger_basefilename(logger):

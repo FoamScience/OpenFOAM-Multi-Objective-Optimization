@@ -159,7 +159,7 @@ def slurm_status_query(job_id, jobs, cfg):
     # Hash clashes maybe?
     if proc_out.decode("utf-8") == "":
         return TrialStatus.COMPLETED
-    status = str(proc_out.split()[1].decode("utf-8"))
+    status = str(proc_out.split()[-1].decode("utf-8"))
     status_map = {
         "RUNNING": TrialStatus.RUNNING,
         "CONFIGURING": TrialStatus.RUNNING,
