@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """Core functionality for performing paramter variation and optimization on OpenFOAM cases"""
 
-import os, hashlib, shutil, logging
+import os, hashlib, shutil, logging, time
 import subprocess as sb
 import regex as re
 from collections import defaultdict
@@ -159,7 +159,7 @@ def slurm_status_query(job_id, jobs, cfg):
     # Hash clashes maybe?
     if proc_out.decode("utf-8") == "":
         return TrialStatus.COMPLETED
-    status = str(proc_out.split()[-1].decode("utf-8"))
+    status = str(proc_out.split()[1].decode("utf-8"))
     status_map = {
         "RUNNING": TrialStatus.RUNNING,
         "CONFIGURING": TrialStatus.RUNNING,
@@ -270,7 +270,7 @@ def preprocesss_case(parameters, cfg):
     # Hash parameters to avoid long trial names
     hash = hashlib.md5()
     encoded = repr(OmegaConf.to_yaml(parameters)).encode()
-    hash.update(encoded)
+    hash.update(encoded+f"{time.time()}".encode())
 
     # Clone template case
     templateCase = SolutionDirectory(f"{cfg.problem.template_case}", archive=None, paraviewLink=False)
