@@ -1,0 +1,23 @@
+containers:
+  basic:
+    opencfd-openfoam:
+      os:
+        distro: ubuntu
+        version: 24.04
+      mpi:
+        implementation: openmpi
+        version: 4.1.5
+      openfoam:
+        fork: com-openfoam
+        version: 2312
+  projects:
+    foambo:
+      base_container: opencfd-openfoam
+      definition: build/foambo.def
+      build_args:
+        foambo_version:
+          - 0.0.7
+pull:
+  try_to_pull: true
+  protocol: "oras"
+  scope: "ghcr.io/foamscience"

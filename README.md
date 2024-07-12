@@ -33,6 +33,16 @@ cd foamBO
 # Install dependencies
 pip3 install -r requirements.txt
 ```
+### Apptainer containers
+
+```bash
+git clone https://github.com/FoamScience/openfoam-apptainer-packaging /tmp/of_tainers
+git clone https://github.com/FoamScience/OpenFOAM-Multi-Objective-Optimization foamBO
+cd foamBO
+ansible-playbook /tmp/of_tainers/build.yaml --extra-vars="original_dir=$PWD" --extra-vars="@build/config.yaml"
+# Get an apptainer container at containers/projects/foambo-<version>.sif
+```
+
 ## Contribution is welcome!
 
 By either filing issues or opening pull requests, you can contribute to the development
