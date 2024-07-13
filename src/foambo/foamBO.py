@@ -22,7 +22,8 @@ import hydra, logging, json
 from omegaconf import DictConfig, OmegaConf
 import pandas as pd
 from ax.service.ax_client import AxClient, MultiObjective
-from ax.service.scheduler import ObjectiveThreshold, Scheduler, SchedulerOptions
+from ax.service.scheduler import Scheduler, SchedulerOptions
+from ax.core.optimization_config import ObjectiveThreshold
 from ax.core import OptimizationConfig, Experiment, Objective, MultiObjectiveOptimizationConfig
 from ax.modelbridge.dispatch_utils import choose_generation_strategy
 from ax.plot.pareto_utils import compute_posterior_pareto_frontier
@@ -71,10 +72,7 @@ supported_models = {
     "FULLYBAYESIANMOO_MTGP": Models.FULLYBAYESIANMOO_MTGP,
     "FULLYBAYESIAN_MTGP": Models.FULLYBAYESIAN_MTGP,
     "GPEI": Models.GPEI,
-    "GPKG": Models.GPKG,
-    "GPMES": Models.GPMES,
     "MOO": Models.MOO,
-    "MOO_MODULAR": Models.MOO_MODULAR,
     "SOBOL": Models.SOBOL,
     "ST_MTGP": Models.ST_MTGP,
     "ST_MTGP_NEHVI": Models.ST_MTGP_NEHVI,

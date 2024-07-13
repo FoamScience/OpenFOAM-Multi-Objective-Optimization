@@ -5,3 +5,4 @@ PyFoam>=2023.7
 regex>=2023.6.3
 dash>=2.11.1
 dash_bootstrap_components>=1.4.2
+kaleido>=0.2.1
