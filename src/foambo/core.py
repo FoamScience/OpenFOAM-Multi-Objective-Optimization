@@ -118,17 +118,22 @@ def slurm_case_run(parameters, case, cfg):
     """
     curr_cwd = os.getcwd()
     os.chdir(case.name)
-    proc_out = sb.check_output(list(process_input_command(cfg.meta.case_run_command, case)), cwd=case.name, stderr=sb.PIPE)
-    os.chdir(curr_cwd)
     job_id = -1
-    match = re.search(b"[0-9]+", proc_out)
-    if match:
-        sub_string = match.group()
-        job_id = int(sub_string)
-    else:
-        log.warn(f"SLURM command: '{cfg.meta.case_run_command}' did not submit a job?")
-    job = HPCJob(id=job_id, parameters=parameters, mode=cfg.meta.case_run_mode, config={"slurm": proc_out, "case": case})
-    return (job_id, job)
+    try:
+        proc_out = sb.check_output(list(process_input_command(cfg.meta.case_run_command, case)), cwd=case.name, stderr=sb.PIPE)
+        os.chdir(curr_cwd)
+        match = re.search(b"[0-9]+", proc_out)
+        if match:
+            sub_string = match.group()
+            job_id = int(sub_string)
+        else:
+            log.warn(f"SLURM command: '{cfg.meta.case_run_command}' did not submit a job?")
+        job = HPCJob(id=job_id, parameters=parameters, mode=cfg.meta.case_run_mode, config={"slurm": proc_out, "case": case})
+        return (job_id, job)
+    except:
+        os.chdir(curr_cwd)
+        raise RuntimeError(f"SLURM job disbatch: '{' '.join(process_input_command(cfg.meta.case_run_command, case))}'"
+            f" failed to submit a job, CWD was: {case.name}")
 
 def local_status_query(job_id, jobs, cfg):
     """
