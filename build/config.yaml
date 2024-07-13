@@ -16,7 +16,7 @@ containers:
       definition: build/foambo.def
       build_args:
         foambo_version:
-          - 0.0.7
+          - 0.0.8
 pull:
   try_to_pull: true
   protocol: "oras"
