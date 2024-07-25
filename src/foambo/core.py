@@ -9,13 +9,23 @@ from collections import defaultdict
 import pandas as pd
 import numpy as np
 
-from omegaconf import OmegaConf, DictConfig, DictKeyType
+from omegaconf import OmegaConf, DictConfig, DictKeyType, ListConfig
 from ax.core.base_trial import TrialStatus, BaseTrial
 from ax.core.trial import Trial
 from ax.core.runner import Runner
 from ax.core.metric import Metric, MetricFetchResult, MetricFetchE
 from ax.core.data import Data
+from ax.core.search_space import SearchSpace
+from ax.core.parameter import RangeParameter, ChoiceParameter, FixedParameter
 from ax.service.utils.instantiation import ObjectiveProperties
+from ax.models.random.base import RandomModel
+from ax.modelbridge.registry import (
+    ModelRegistryBase,
+    ModelSetup,
+    MODEL_KEY_TO_MODEL_SETUP,
+    RandomModelBridge,
+    Cont_X_trans,
+)
 from ax.utils.notebook.plotting import plot_config_to_html, render
 from ax.plot.pareto_frontier import plot_pareto_frontier
 from ax.utils.report.render import render_report_elements
@@ -23,7 +33,11 @@ from typing import Any, Dict, NamedTuple, Union, Iterable, Set, List
 from ax.utils.common.result import Ok, Err
 from ax.storage.metric_registry import register_metric
 from ax.storage.runner_registry import register_runner
-from ax.storage.json_store.registry import CORE_ENCODER_REGISTRY, CORE_DECODER_REGISTRY, CORE_CLASS_DECODER_REGISTRY
+from ax.storage.json_store.registry import (
+    CORE_ENCODER_REGISTRY,
+    CORE_DECODER_REGISTRY,
+    CORE_CLASS_DECODER_REGISTRY,
+)
 from ax.storage.json_store.encoders import metric_to_dict
 from ax.storage.json_store.encoders import runner_to_dict
 
@@ -90,6 +104,63 @@ def plot_frontier(frontier,name, CI_level=0.9):
             header=False,
             ))
     render(plot_config)
+
+class ManualGenerator(RandomModel):
+    """
+        Class to generate trials manually within a Strategy Step
+    """
+    def __init__(self, parameter_sets: ListConfig, search: SearchSpace):
+        self.index = 0
+        self.parameter_sets = parameter_sets
+        self.search_space = search
+        self.deduplicate = False
+        self.generated_points = None
+
+    def gen(
+        self,
+        n: int,
+        bounds = None,
+        linear_constraints = None,
+        fixed_features = None,
+        model_gen_options = None,
+        rounding_func = None,
+    ):
+        params = self.search_space.parameters
+        if self.index + n > len(self.parameter_sets):
+            raise ValueError(
+                f"Not enough parameter sets available. Requested: {n}, Available: {len(self.parameter_sets) - self.index}."
+            )
+        generated = self.parameter_sets[self.index:self.index + n]
+        points = []
+        for i in range(len(generated)):
+            param_bounds = []
+            for k in generated[i].keys():
+                point = None
+                if isinstance(params[k], RangeParameter):
+                    point = (generated[i][k] - params[k].lower) / (params[k].upper-params[k].lower)
+                if isinstance(params[k], ChoiceParameter):
+                    id = params[k].values.index(generated[i][k])
+                    point = id / len(params[k].values)
+                if isinstance(params[k], FixedParameter):
+                    point = 1.0
+                param_bounds.append(point)
+            points.append(param_bounds)
+        points = np.array(points)
+        self.index += n
+        self.generated_points = points
+        return points, np.ones(len(points))
+
+MODEL_KEY_TO_MODEL_SETUP["MANUAL"] = ModelSetup(
+    bridge_class=RandomModelBridge,
+    model_class=ManualGenerator,
+    transforms=Cont_X_trans,
+)
+
+class CustomModels(ModelRegistryBase):
+    """
+        Register custom generators and models
+    """
+    Manual = "MANUAL"
 
 class HPCJob(NamedTuple):
     """
