@@ -11,10 +11,11 @@ of OpenFOAM cases.
 - Parameter values are fetched through a YAML/JSON configuration file. Absolutely no code should be needed, add parameters
   to the YAML file and they should be picked up automatically
 - The no-code thing is taken to the extreme, through a YAML config file, you can (need-to):
-  - Specify the template case
-  - Specify how the case is ran
-  - Specify how/where parameters are substituted
-  - Specify how your metrics are computed
+  - Specify the template case. This must be a "complete" (no placeholder), and runnable (as-is) OpenFOAM case.
+  - Specify how the case is ran. Locally, or on SLURM, and specifying the commands to run.
+  - Specify how/where parameters are substituted. `PyFoam` is used for this purpose for now.
+  - Specify how your metrics are computed. These are just shell commands that output a single scalar
+    value to `STDOUT`.
 
 ## How do I try this out?
 
@@ -27,13 +28,16 @@ OpenFOAM-like dictionary (See [single-objective opt. example](examples/local/sin
 for inspiration.
 
 ```bash
-# Clone the repository
+# Install the package
+pip install foambo
+# Clone the repo to get the examples
 git clone https://github.com/FoamScience/OpenFOAM-Multi-Objective-Optimization foamBO
-cd foamBO
-# Install dependencies
-pip3 install -r requirements.txt
+cd foamBO/examples
 ```
 ### Apptainer containers
+
+If you'd like to try this out in Apptainer containers instead, It's recommended to
+(Must have `ansible` installed for this to work):
 
 ```bash
 git clone https://github.com/FoamScience/openfoam-apptainer-packaging /tmp/of_tainers
@@ -42,6 +46,12 @@ cd foamBO
 ansible-playbook /tmp/of_tainers/build.yaml --extra-vars="original_dir=$PWD" --extra-vars="@build/config.yaml"
 # Get an apptainer container at containers/projects/foambo-<version>.sif
 ```
+
+Each example has some description in its README:
+- [Single-Objective BO of a single-parameter function, ran locally](examples/local/single-objective/README.md)
+- [Multi-Objective BO of a `pitzDaily` case, ran locally and on a SLURM Cluster](examples/local/multi-objective/README.md)
+- [Multi-Objective BO of a `pitzDaily` case, ran on a SLURM cluster](examples/slurm/README.md)
+  and providing "dependent parameters setup" variants.
 
 ## Contribution is welcome!
 

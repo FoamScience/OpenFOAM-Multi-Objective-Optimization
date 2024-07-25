@@ -8,7 +8,7 @@ paper, with parameters `k=1, m=0, lambda=0.01`.
 
 ## Prerequisites
 
-- You only need the Python dependencies: `pip install -r requirements.txt`
+- You only need the `foamBO` package: `pip install foamBO`
 - No OpenFOAM installation is needed.
 
 ## Basic Ax usage
@@ -68,8 +68,9 @@ a single dictionary).
 
 ### Configuration and "OpenFOAM" case
 
-The configuration file usually contains three sections `problem`, `meta` and `visualize`.
-In this example, we can ignore `visualize` as it's necessary only if you run `foamDash.py`. 
+The configuration file usually contains four sections `problem`, `meta`, `validate` and `visualize`.
+In this example, we can ignore `visualize` as it configures how `foamDash` utility visualizes
+the optimization trials and metric evolution.
 
 The first section, `problem`, defines the optimization problem you're treating.
 It points to the base OpenFOAM case (`problem.template_case`) and distinguishes between
@@ -171,19 +172,44 @@ the content:
 x 0;
 ```
 
+After the optimization has gone through all of its trials, you can run the `validateBO` command
+to run some validation routines on the surrogate model. The `validate` section configures
+how to perform the validation:
+
+> It's important not to change the `config.yaml` between running `foamBO` and `validateBO`
+
+```yaml
+validate:
+  cross_validate: True # Run Ax's cross validation (doesn't run new trials)
+  # if no "trials" and no "pareto_frontier" is present, on the cross-validate from Ax
+  # will run
+  trials: # The utility w
+    - x: 0.2
+    - x: 1.0
+    - x: -100
+  # IF it's a multi-objective optimization, you can generate 10 pareto frontier points
+  # and run them to check how the close the prediction is to the actual metric values
+  #pareto_frontier: 10
+  #primary_objective: "metric_1"
+  #secondary_objective: "metric_2"
+```
+
+The `validateBO` will run the trials using the same configuration used to run the experiment's trials,
+and will result in a CSV file `Validate_<cfg.problem.name>_validate_report.csv` which has the required
+data to perform validation analysis.
+
 ### Generating predictions from models trained with foamBO
 
 `foamBO` will periodically save your experiment to a JSON file, and once the optimization is
 stopped, it will write its current state to another JSON. You can load those again into an Ax client:
 ```python
-# You need to load stuff from core.py to be able to de-serialize them
+# You need to load stuff from core.py to be able to de-serialize the custom runners, metrics, ... etc
 from foambo.core import *
 from ax.service.ax_client import AxClient
 from ax.storage.json_store.load import load_experiment
 cl = AxClient().load_from_json_file('SingleObjF1_client_state.json')
 exp = load_experiment(f"SingleObjF1_experiment.json")
 cl._experiment = exp
-exp = load_experiment(f"SingleObjF1_experiment.json")
 cl.get_model_predictions_for_parameterizations([{'x': 100}, {'x': -50}])
 ```
-This then results in very similar results to what `tutorial.py` reports.
+This then should result in very similar results to what `tutorial.py` reports.

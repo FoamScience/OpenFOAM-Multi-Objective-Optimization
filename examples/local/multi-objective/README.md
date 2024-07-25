@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- You need the Python dependencies: `pip install -r requirements.txt`
+- You need the `foamBO` package: `pip install foamBO`
 - You need an OpenFOAM version. Set `FOAMBO_OPENFOAM` to its installation folder.
   `${FOAMBO_OPENFOAM}/etc/bashrc` will be sourced in cases' `Allrun`.
 
@@ -28,12 +28,13 @@ I describe the workflow in two cases:
 > If you're going with option 1, you can skip setting up the cluster. If you intend to adopt option 2, I
 > recommend you still go through option 1
 >
-> This toolkit relies on [ax-platform](https://ax.dev) to do the optimization, so we support what they support.
+> This toolkit relies on [ax-platform](https://ax.dev) to do the optimization, so we support what they support + a few custom things.
 >
 > Here are few nice words about [Bayesian Optimization](https://ax.dev/docs/bayesopt.html). If you want to extend
 > these tools, you might want to take a look at the [Service and Developer APIs](https://ax.dev/docs/api.html)
 
-> Also, Python scripts are [Hydra Applications](https://hydra.cc/docs/intro/), so you can load different configurations
+> Also, `foamBO`, `foamDash` and `validateBO` scripts are [Hydra Applications](https://hydra.cc/docs/intro/),
+> so you can load different configurations
 > and/or override config values from the command line.
 
 ## Features we're exploring
@@ -41,13 +42,13 @@ I describe the workflow in two cases:
 - Zero-code configuration for running parameter variations.
     - As long as you're able to do stuff through Bash.
 - Unattended algorithm selection for the trial generation strategy and Bayesian optimization.
-- Easy to expand; especially for metric evaluation; it's just a --new Python function--.
+- Ease of use; especially for metric evaluation; it's just a --new Python function--.
 
 ## The example problem
 
 To illustrate the somewhat complex workflow of running optimization studies with this toolkit, I picked
 the `pitzDaily` case from the standard tutorials (the one that works with `simpleFOAM`/`RAS`). The case
-can be ran both in serial and in parallel with 2 processors.
+can run both in serial and in parallel with 2 processors.
 
 ![](pitzDaily/pitzDaily.png)
 
@@ -59,7 +60,7 @@ Our objectives are:
 - Execution Time, extracted straight from the solver log files
 - Continuity Errors, also extracted from log files
 
-> Note that we are not particularly interested in the results of the study;
+> Note that we are **not** particularly interested in the results of the study;
 > All we care about is demonstrating how to optimize this problem with Bayesian algorithms.
 
 
@@ -106,17 +107,14 @@ All subsequent operations are supposed to run on the head node.
 > If you don't want to use the cluster, please adapt the paths to your local machine.
 > Don't forget to clone https://github.com/FoamScience/OpenFOAM-Multi-Objective-Optimization
 
-I've only tested the scripts with Python 3.8, so I recommend you use that version too. Just to avoid any
-surprises.
-
 The best option is to get [Miniconda](https://docs.conda.io/en/latest/miniconda.html) and:
 ```bash
 # Remember /axc on the head node, would be slurm-cluster/var/axc on your machine
 cd /axc/multiOptOF
-conda create -n of-opt python=3.8 pip
+conda create -n of-opt python=3.12 pip
 conda activate of-opt
 # This will install a load of packages
-pip install -r requirements.txt
+pip install foambo
 ```
 
 ## Local runs
@@ -131,10 +129,11 @@ for reference.
 
 ### Design parameters
 
-The configuration file has at least three important sections:
+The configuration file has at least four important sections:
 - `problem`: where you describe your problem inputs
 - `meta`: where you describe control settings for the optimization procedure
-- `visualize`: which an optional section for when you run `foamDash.py`
+- `validate`: where you optionally configure how the cross-validation of fitted models should be performed by `validateBO`
+- `visualize`: where you optionally configure how trials are visualized when you run `foamDash`
 
 The first thing is `problem.template_case` which points to the case you want to use as a base template.
 This case is then cloned each time with the help of PyFOAM. `meta.case_subdirs_to_clone` specifies
