@@ -61,7 +61,7 @@ def _find_logger_basefilename(logger):
 supported_models = {
     "ALEBO": Models.ALEBO,
     "ALEBO_INITIALIZER": Models.ALEBO_INITIALIZER,
-    "BOTORCH": Models.BOTORCH,
+    "BOTORCH": Models.BOTORCH_MODULAR,
     "BOTORCH_MODULAR": Models.BOTORCH_MODULAR,
     "BO_MIXED": Models.BO_MIXED,
     "CONTEXT_SACBO": Models.CONTEXT_SACBO,
@@ -233,12 +233,18 @@ def exp_main(cfg : DictConfig) -> None:
                 html_elements=[plot_config_to_html(feature_importance)], 
                 header=False,
             ))
-        importances = pd.DataFrame([{j['y'][k]:j['x'][k] for k in range(len(cfg.problem.parameters.keys()))} for j in feature_importance.data['data']],
-            index=[feature_importance.data['layout']['updatemenus'][0]['buttons'][i]['label'] for i in range(len(feature_importance.data['data']))])
+        metrics=[ j['label'] for m in feature_importance.data['layout']['updatemenus'] for j in m['buttons'] ]
+        dt = [{
+            "parameter": feature_importance.data['data'][i]['y'][0],
+            "metric": metrics[i//len(exp.parameters)],
+            "importance": feature_importance.data['data'][i]['x'][0]
+            } for i in range(len(feature_importance.data['data'])
+        )]
+        importances = pd.DataFrame(dt)
         importances.to_csv(f"{cfg.problem.name}_feature_importance_report.csv")
         log.info(importances)
     except:
-        log.warning("Could not compute feature importance, no Gaussian process has been called?")
+        log.warning("Something went wrong with feature importance, no Gaussian process has been called?")
 
 if __name__ == "__main__":
     exp_main()
