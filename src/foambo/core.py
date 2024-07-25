@@ -58,13 +58,11 @@ def gen_search_space(cfg):
             e['bounds'] = list(e['bounds'])
         if 'dependents' in e.keys():
             #e['dependents'] = list(e['dependents'])
-            print("#######", e)
             tmp = {}
             for k in e['dependents']:
                 for kk in k.keys():
                     tmp.update({kk: list(k[kk])})
             e['dependents'] = tmp
-            print("########", e)
         l.append(e)    
     return l
 
@@ -139,6 +137,8 @@ def local_status_query(job_id, jobs, cfg):
     """
         Check for job status locally, by polling the Popen object
     """
+    if len(jobs.items()) == 0:
+        return TrialStatus.CANDIDATE
     job = jobs[job_id].config["local"]
     job.poll()
     if  job.returncode is None:
@@ -217,7 +217,7 @@ class HPCJobQueueClient:
     """
 
     jobs: Dict[int, HPCJob] = {}
-    cfg: Any
+    cfg: DictConfig
     dispatcher_map = {
         "local": local_case_run,
         "slurm": slurm_case_run,
@@ -230,8 +230,12 @@ class HPCJobQueueClient:
         "shell": shell_metric_value,
     }
 
+    def __init__(self):
+        self.cfg = DictConfig({})
+        self.jobs = {}
+
     def schedule_job_with_parameters(
-            self, parameters: Dict[str, Union[str, float, int, bool]], case, cfg
+        self, parameters: Dict[str, Union[str, float, int, bool]], case, cfg: DictConfig
             ) -> int:
         """
             Schedules an evaluation job with given parameters and returns job ID.
@@ -258,6 +262,9 @@ class HPCJobQueueClient:
         for key, item in self.cfg.problem.objectives.items():
             metrics.update(self.metrics_value_map[self.cfg.problem.objectives[key].mode](key, case, self.cfg))
         return metrics
+
+    def set_cfg(self, cfg: DictConfig):
+        self.cfg = cfg
 
 HPC_JOB_QUEUE_CLIENT = HPCJobQueueClient()
 
@@ -327,7 +334,7 @@ class HPCJobRunner(Runner):
     
     def __init__(self, cfg) -> None:
         super().__init__()
-        self.cfg = cfg
+        self.cfg = DictConfig(content=cfg)
 
     def run(self, trial: BaseTrial) -> Dict[str, Any]:
         """
@@ -341,6 +348,8 @@ class HPCJobRunner(Runner):
 
         hpc_job_queue = get_hpc_job_queue_client()
         trial._properties['casename'] = case_data["casename"]
+        if len(hpc_job_queue.cfg.items()) == 0:
+            hpc_job_queue.set_cfg(self.cfg)
         job_id = hpc_job_queue.schedule_job_with_parameters(
             parameters=trial.arm.parameters,
             case=case_data["case"],
@@ -366,6 +375,8 @@ class HPCJobRunner(Runner):
         """
         status_dict = defaultdict(set)
         hpc_job_queue = get_hpc_job_queue_client()
+        if len(hpc_job_queue.cfg.items()) == 0:
+            hpc_job_queue.set_cfg(self.cfg)
         for trial in trials:
             status = hpc_job_queue.get_job_status(
                 job_id=trial.run_metadata.get("job_id")
@@ -418,7 +429,7 @@ def config_to_dict(config: DictConfig) -> Union[Dict[DictKeyType, Any], List[Any
     return OmegaConf.to_object(config)
 
 def config_from_json(config: Dict[str, Any]) -> DictConfig:
-    return DictConfig(config)
+    return DictConfig(content=config)
 
 CORE_CLASS_DECODER_REGISTRY["Type[DictConfig]"] = config_from_json
 CORE_ENCODER_REGISTRY[DictConfig] = config_to_dict
