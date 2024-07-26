@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "foambo"
-version = "0.0.8"
+version = "0.1.0"
 authors = [
   { name="Mohammed Elwardi Fadeli", email="elwardifadeli@gmail.com" },
 ]
@@ -33,6 +33,7 @@ dependencies = [
 [project.scripts]
     foamBO = "foambo.foamBO:exp_main"
     foamDash = "foambo.foamDash:dash_main"
+    foamValidateBO = "foambo.foamValidate:val_main"
 
 [project.urls]
 "Homepage" = "https://github.com/FoamScience/OpenFOAM-Multi-Objective-Optimization"

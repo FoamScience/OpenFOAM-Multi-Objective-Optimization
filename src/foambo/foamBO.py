@@ -38,7 +38,7 @@ from ax.service.utils.report_utils import exp_to_df
 from foambo.core import *
 from ax.storage.json_store.save import save_experiment
 
-__version__ = "0.0.8"
+__version__ = "0.1.0"
 
 log = logging.getLogger(__name__)
 
