@@ -114,9 +114,13 @@ def exp_main(cfg : DictConfig) -> None:
     ax_client = AxClient(verbose_logging=False)
     optimization_config = MultiObjectiveOptimizationConfig(objective=MultiObjective(objectives), objective_thresholds=thresholds) \
             if len(objectives) > 1 else OptimizationConfig(objectives[0])
+    parameter_constraints=[]
+    if "parameter_constraints" in cfg.problem.keys():
+        parameter_constraints = cfg.problem.parameter_constraints 
+    print(parameter_constraints)
     exp = Experiment(
         name=f"{cfg.problem.name}_experiment",
-        search_space=ax_client.make_search_space(parameters=search_space, parameter_constraints=[]),
+        search_space=ax_client.make_search_space(parameters=search_space, parameter_constraints=parameter_constraints),
         optimization_config=optimization_config,
         runner=HPCJobRunner(cfg=cfg),
         is_test=False,
@@ -186,7 +190,7 @@ def exp_main(cfg : DictConfig) -> None:
     else:
         try:
             # Plot Pareto frontier
-            log.info("==== Pareto optimal paramters: ===")
+            log.info("==== Pareto optimal parameters: ===")
             pareto_params = scheduler.get_pareto_optimal_parameters()
             log.info(pareto_params)
             log.info(json.dumps(pareto_params, indent=4))
