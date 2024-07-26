@@ -237,6 +237,35 @@ Current limitations that you need to be aware of:
   root values
 - You cannot have any other independent parameters
 
+In addition, if there is a linear constraint (or an order constraint) between some parameters, you
+can specify it in string format:
+
+```yaml
+problem:
+  parameters:
+    turbulenceModel:
+      type: choice
+      value_type: str
+      values: ['k-epsilon', 'k-omega']
+      is_ordered: True
+      dependents: 
+        - k-epsilon: ['epsilon']
+        - k-omega: ['omega']
+    epsilon:
+      type: range
+      value_type: float
+      bounds: [1e-8, 1e-1]
+      log_scale: True
+    omega:
+      type: range
+      value_type: float
+      bounds: [1e-8, 1e-1]
+      log_scale: True
+  parameter_constraints:
+    - "epsilon + 0.8*omega < 10"
+    - "epsilon >= omega"
+```
+
 ### Metrics to evaluate objectives
 
 Using `problem.objectives`, you can supply a list of optimization objectives (at least one is required for parameter variation).
