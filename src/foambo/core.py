@@ -31,7 +31,7 @@ from ax.plot.pareto_frontier import plot_pareto_frontier
 from ax.utils.report.render import render_report_elements
 from typing import Any, Dict, NamedTuple, Union, Iterable, Set, List
 from ax.utils.common.result import Ok, Err
-from ax.storage.metric_registry import register_metric
+from ax.storage.metric_registry import register_metrics, CORE_METRIC_REGISTRY
 from ax.storage.runner_registry import register_runner
 from ax.storage.json_store.registry import (
     CORE_ENCODER_REGISTRY,
@@ -511,4 +511,4 @@ register_runner(HPCJobRunner)
 
 CORE_ENCODER_REGISTRY[HPCJobMetric] = metric_to_dict
 CORE_DECODER_REGISTRY["HPCJobMetric"] = HPCJobMetric
-register_metric(HPCJobMetric)
+register_metrics({HPCJobMetric: len(CORE_METRIC_REGISTRY.items())})
