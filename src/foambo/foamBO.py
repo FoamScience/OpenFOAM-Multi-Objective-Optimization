@@ -59,8 +59,8 @@ def _find_logger_basefilename(logger):
 
 # Straight from Ax docs, not well tested!
 supported_models = {
-    "ALEBO": Models.ALEBO,
-    "ALEBO_INITIALIZER": Models.ALEBO_INITIALIZER,
+    #"ALEBO": Models.ALEBO,
+    #"ALEBO_INITIALIZER": Models.ALEBO_INITIALIZER,
     "BOTORCH": Models.BOTORCH_MODULAR,
     "BOTORCH_MODULAR": Models.BOTORCH_MODULAR,
     "BO_MIXED": Models.BO_MIXED,
