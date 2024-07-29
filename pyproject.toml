@@ -4,19 +4,23 @@ build-backend = "hatchling.build"
 
 [project]
 name = "foambo"
-version = "0.1.1"
+version = "0.1.2"
 authors = [
   { name="Mohammed Elwardi Fadeli", email="elwardifadeli@gmail.com" },
 ]
-description = "Multi-objective Bayesian Optimization on OpenFOAM cases with Ax-platform"
+description = "Configuration-based Multi-objective Bayesian Optimization on OpenFOAM cases with Ax-platform"
 readme = "README.md"
 requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
+    "Environment :: GPU",
+    "Framework :: Dash",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [

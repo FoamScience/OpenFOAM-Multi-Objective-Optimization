@@ -18,7 +18,7 @@ From: {{ CONTAINERS_DIR }}/basic/{{ BASE_CONTAINER }}.sif
     OPENMPI_VERSION=4.1.5
     OPENFOAM_VERSION=2312
     OPENFOAM_GIT_REF=default
-    FOAMBO_VERSION=0.1.1
+    FOAMBO_VERSION=0.1.2
 
 %post
     apt-get update
