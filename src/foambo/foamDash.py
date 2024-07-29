@@ -114,20 +114,43 @@ def dash_main(cfg : DictConfig):
 
     app.layout = html.Div(children=[
         updates,
-        html.H1(children=f'Optimization for {cfg.problem.name}',
+        html.H1(children=f'Bayesian Optimization run for {cfg.problem.name}',
                 style={'text-align':'center', 'padding':'20px'}),
-        html.H2(children=f'Optimization Metrics',
-                style={'padding':'5px'}),
+        dcc.Markdown(
+f"""
+## Optimization metrics
+
+Objectives to minimize where "lower is better":
+{[it[0] for it in cfg.problem.objectives.items() if it[1].minimize and it[1].lower_is_better]}
+
+""", style={'padding':'20px'}),
         dcc.Graph(id='live-update-graph', figure={"layout": {"height": len(cfg.problem.objectives.keys())*GRAPH_HEIGHT}}),
-        html.H2(children=f'Insight into latest trials',
-                style={'padding':'5px'}),
-        html.Div(id='images', style={'padding':'10px'}),
-        html.H2(children=f'Your configuration',
-                style={'padding':'5px'}),
+        dcc.Markdown(
+f"""
+## Insight into latest {cfg.visualize.n_figures} trials
+
+> Screenshot are uploaded to [IMGBB](https://imgbb.com/) by default, so make sure `IMGBB_API_KEY` is set
+
+This section is controlled through `visualize` configuration set from the configuration file.
+Here are the most important settings to look at:
+- `figure_generator` points to a shell script to generate a screenshot of current simulation state.
+- `update_interval` (in seconds) controls how often to **run the generator**. The generator can always
+  cache the uploaded image URL as to not mount a DDOS attack on IMGBB :)
+- `zscore_bar` culls penalized trials (outliers) from the metrics plots (assumed to be failing).
+""", style={'padding':'20px'}),
+        html.Div(id='images', style={'padding':'20px'}),
         html.Div(children=[
-            html.Code(children=OmegaConf.to_yaml(cfg), style={'white-space': 'pre-wrap'})
-            ],
-            style = {'padding': '20px', 'margin': '10px'}
+            dcc.Markdown(
+f"""
+## Your configuration
+
+This visualization was executed with the following configuration file:
+
+```yaml
+{OmegaConf.to_yaml(cfg)}
+```
+""",  style={'white-space': 'pre-wrap'})],
+            style = {'padding': '20px', 'margin': '10px', 'white-space': 'pre-wrap'}
         )
     ])
     app.run_server(debug=False, port=int(cfg.visualize.port), host=cfg.visualize.host)
