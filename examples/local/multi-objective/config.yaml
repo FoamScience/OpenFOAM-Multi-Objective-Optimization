@@ -97,10 +97,9 @@ visualize:
   # How often to update foamDash graphs
   update_interval: 15
   # How many latest trials to generate pictures of
-  n_latest_trials: 3
+  n_figures: 3
   # A threshold zscore to filter outliers if some trials get penalized
   zscore_bar: 15
-  n_figures: 3
   figure_generator: ['echo', 'null']
   graph_height: 400
   # Interface settings for Dash

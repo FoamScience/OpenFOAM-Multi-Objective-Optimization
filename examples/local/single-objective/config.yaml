@@ -43,7 +43,7 @@ meta:
 
 visualize:
   update_interval: 15
-  n_latest_trials: 3
+  n_figures: 3
   zscore_bar: 15
   graph_height: 400
   host: '0.0.0.0'
