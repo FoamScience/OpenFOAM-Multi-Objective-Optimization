@@ -18,8 +18,9 @@ Notes:
 - You can also use a single objective
 """
 
-import hydra, logging, json
+import logging, json, sys, argparse, os
 from omegaconf import DictConfig, OmegaConf
+from .config import load_config, save_default_config, override_config, get_default_config
 import pandas as pd
 from ax.service.ax_client import AxClient, MultiObjective
 from ax.service.scheduler import Scheduler, SchedulerOptions
@@ -81,18 +82,29 @@ def data_from_experiment(scheduler: Scheduler):
     save_experiment(scheduler.experiment, f"{cfg.problem.name}_experiment.json")
 
 
-@hydra.main(version_base=None, config_path=os.getcwd(), config_name="config.yaml")
 def exp_main(cfg : DictConfig) -> None:
     log.info("============= Configuration =============")
     log.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
     log.info("=========================================")
     search_space = gen_search_space(cfg.problem)
     metrics = [HPCJobMetric(name=key, cfg=cfg) for key, _ in cfg.problem.objectives.items()]
-    objectives=[Objective(metric=m, minimize=item.minimize) for m, (_, item) in zip(metrics, cfg.problem.objectives.items())]
-    thresholds=[ObjectiveThreshold(metric=m, bound=float(item.threshold), relative=False) for m, (_, item) in zip(metrics, cfg.problem.objectives.items())]
+    objectives = [Objective(metric=m, minimize=item.minimize) for m, (_, item) in zip(metrics, cfg.problem.objectives.items())]
+    
+    # Make thresholds optional by only including those that are specified and not None
+    thresholds = [
+        ObjectiveThreshold(metric=m, bound=float(item.threshold), relative=False)
+        for m, (_, item) in zip(metrics, cfg.problem.objectives.items())
+        if hasattr(item, 'threshold') and item.threshold is not None
+    ]
     ax_client = AxClient(verbose_logging=False)
-    optimization_config = MultiObjectiveOptimizationConfig(objective=MultiObjective(objectives), objective_thresholds=thresholds) \
-            if len(objectives) > 1 else OptimizationConfig(objectives[0])
+    # Only include thresholds in the optimization config if they exist
+    if len(objectives) > 1:
+        optimization_config = MultiObjectiveOptimizationConfig(
+            objective=MultiObjective(objectives),
+            objective_thresholds=thresholds if thresholds else None
+        )
+    else:
+        optimization_config = OptimizationConfig(objectives[0])
     parameter_constraints=[]
     if "parameter_constraints" in cfg.problem.keys():
         parameter_constraints = cfg.problem.parameter_constraints 
@@ -122,7 +134,8 @@ def exp_main(cfg : DictConfig) -> None:
         experiment=exp,
         generation_strategy=gs,
         options=SchedulerOptions(
-            log_filepath=log.manager.root.handlers[1].baseFilename,
+            # Get log filepath if available, otherwise use default
+            log_filepath=getattr(log.root.handlers[1] if len(log.root.handlers) > 1 else None, 'baseFilename', 'foamBO.log'),
             ttl_seconds_for_trials=cfg.meta.trial_ttl
                 if "trial_ttl" in cfg.meta.keys() else None,
             init_seconds_between_polls=cfg.meta.init_poll_wait
@@ -133,8 +146,8 @@ def exp_main(cfg : DictConfig) -> None:
                 if "timeout_hours" in cfg.meta.keys() else None,
             global_stopping_strategy=ImprovementGlobalStoppingStrategy(
                 min_trials=int(cfg.meta.stopping_strategy.min_trials),
-                window_size=cfg.meta.stopping_strategy.window_size,
-                improvement_bar=cfg.meta.stopping_strategy.improvement_bar,
+                window_size=int(cfg.meta.stopping_strategy.window_size),
+                improvement_bar=float(cfg.meta.stopping_strategy.improvement_bar),
             ),
         ),
     )
@@ -229,5 +242,32 @@ def exp_main(cfg : DictConfig) -> None:
     except:
         log.warning("Something went wrong with feature importance, no Gaussian process has been called?")
 
-if __name__ == "__main__":
-    exp_main()
+def main():
+    # Set up basic logging to file
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler('foamBO.log')
+        ]
+    )
+    
+    parser = argparse.ArgumentParser(description="Multi-objective optimization for OpenFOAM cases.")
+    parser.add_argument('--config', type=str, default=None, help='Path to config YAML file')
+    parser.add_argument('--generate-config', action='store_true', help='Generate a default config file and exit')
+    parser.add_argument('overrides', nargs=argparse.REMAINDER, help='Config overrides in ++key=value format')
+    args = parser.parse_args()
+
+    if args.generate_config:
+        save_default_config()
+        sys.exit(0)
+
+    cfg = load_config(args.config)
+    # Parse CLI overrides (e.g. ++problem.name=TEST)
+    if args.overrides:
+        # Remove '--run' or similar positional commands if present
+        overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
+        if overrides:
+            cfg = override_config(cfg, overrides)
+    exp_main(cfg)
