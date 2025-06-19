@@ -41,8 +41,7 @@ from ax.storage.json_store.registry import (
 from ax.storage.json_store.encoders import metric_to_dict
 from ax.storage.json_store.encoders import runner_to_dict
 
-from PyFoam.RunDictionary.SolutionDirectory import SolutionDirectory
-from PyFoam.RunDictionary.ParsedParameterFile import ParsedParameterFile
+from foamlib import FoamCase, FoamFile
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +51,9 @@ def process_input_command(command, case):
     """
     if isinstance(command, str):
         command = list(command.split())
-    return [c.replace("$CASE_PATH", case.name).replace("$CASE_NAME", os.path.basename(case.name)) for c in command]
+    case_path_str = str(case.path)
+    case_name_str = str(os.path.basename(case.path))
+    return [c.replace("$CASE_PATH", case_path_str).replace("$CASE_NAME", case_name_str) for c in command]
 
 def gen_search_space(cfg):
     """
@@ -176,7 +177,7 @@ def local_case_run(parameters, case, cfg):
     """
         Run shell command on local machine; but does not wait for completion.
     """
-    proc = sb.Popen(list(process_input_command(cfg.meta.case_run_command, case)), cwd=case.name, stdout=sb.PIPE, stderr=sb.PIPE)
+    proc = sb.Popen(list(process_input_command(cfg.meta.case_run_command, case)), cwd=case.path, stdout=sb.PIPE, stderr=sb.PIPE)
     job_id = proc.pid
     job = HPCJob(id=job_id, parameters=parameters, mode=cfg.meta.case_run_mode, config={"local": proc, "case": case})
     return (job_id, job)
@@ -186,10 +187,10 @@ def slurm_case_run(parameters, case, cfg):
         Run SLURM batch job
     """
     curr_cwd = os.getcwd()
-    os.chdir(case.name)
+    os.chdir(case.path)
     job_id = -1
     try:
-        proc_out = sb.check_output(list(process_input_command(cfg.meta.case_run_command, case)), cwd=case.name, stderr=sb.PIPE)
+        proc_out = sb.check_output(list(process_input_command(cfg.meta.case_run_command, case)), cwd=case.path, stderr=sb.PIPE)
         os.chdir(curr_cwd)
         match = re.search(b"[0-9]+", proc_out)
         if match:
@@ -202,7 +203,7 @@ def slurm_case_run(parameters, case, cfg):
     except:
         os.chdir(curr_cwd)
         raise RuntimeError(f"SLURM job disbatch: '{' '.join(process_input_command(cfg.meta.case_run_command, case))}'"
-            f" failed to submit a job, CWD was: {case.name}")
+            f" failed to submit a job, CWD was: {case.path}")
 
 def local_status_query(job_id, jobs, cfg):
     """
@@ -230,7 +231,7 @@ def slurm_status_query(job_id, jobs, cfg):
         if multiple raws are supplied (eg. step status), only the first one is considered
     """
     case = jobs[job_id].config["case"]
-    proc_out = sb.check_output(list(process_input_command(cfg.meta.slurm_status_query, case)), cwd=case.name, stderr=sb.PIPE)
+    proc_out = sb.check_output(list(process_input_command(cfg.meta.slurm_status_query, case)), cwd=case.path, stderr=sb.PIPE)
     # TODO: I have no idea why this isnecessary, but sacct sometimes returns an empty string!
     # Hash clashes maybe?
     if proc_out.decode("utf-8") == "":
@@ -267,7 +268,7 @@ def shell_metric_value(metric, case, cfg):
     # OpenFOAM is annoying in this regard, so, if OpenFOAM utils are used to
     # extract metrics, do a: foamUtility -case $CASEPATH
     hasPath=any([c.find('$CASE_PATH') != -1 for c in item.command])
-    cwd = os.getcwd() if hasPath else case.name
+    cwd = os.getcwd() if hasPath else case.path
     try:
         if "prepare" in item.keys():
             sb.check_output(list(process_input_command(item.prepare, case)), cwd=cwd)
@@ -356,46 +357,43 @@ def preprocesss_case(parameters, cfg):
     hash.update(encoded+f"{time.time()}".encode())
 
     # Clone template case
-    templateCase = SolutionDirectory(f"{cfg.problem.template_case}", archive=None, paraviewLink=False)
-    for d in cfg.meta.case_subdirs_to_clone:
-        templateCase.addToClone(d)
-    newcase = f"{cfg.problem.name}_trial_"+hash.hexdigest()
-    data["casename"] = newcase
-
-    # Run the case through the provided command in the config
-    case = templateCase.cloneCase(cfg.meta.clone_destination+newcase)
+    templateCase = FoamCase(f"{cfg.problem.template_case}")
+    newcase = os.path.join(cfg.meta.clone_destination, f"{cfg.problem.name}_trial_"+hash.hexdigest())
+    case = templateCase.clone(newcase)
+    
     # Process parameters which require file copying (you can have one parameter per case file)
     if "file_copies" in cfg.problem.keys():
         for elm,elmv in cfg.problem.file_copies.items():
             shutil.copyfile(
-                case.name+elmv.template+"."+parameters[elm],
-                case.name+elmv.template
+                os.path.join(case.path, elmv.template + "." + parameters[elm]),
+                os.path.join(case.path, elmv.template)
             )
-    # Process parameters with PyFoam
+    # Process parameters with foamlib
     for elm,elmv in cfg.problem.scopes.items():
-        paramFile = ParsedParameterFile(name=case.name + elm)
-        for param in elmv:
-            splits = elmv[param].split('.')
-            lvl = paramFile[splits[0]]
-            if len(splits) > 1:
-                for i in range(1,len(splits)-1):
-                    scp = splits[i]
+        param_file_path = os.path.join(case.path, elm.lstrip('/'))
+        with FoamFile(param_file_path) as paramFile:
+            for param in elmv:
+                splits = elmv[param].split('.')
+                lvl = paramFile
+                if len(splits) > 1:
+                    for i in range(1,len(splits)-1):
+                        scp = splits[i]
+                        try:
+                            scp = int(splits[i])
+                        except:
+                            pass
+                        lvl = lvl[scp]
                     try:
-                        scp = int(splits[i])
+                        lvl[splits[-1]] = parameters[param]
                     except:
-                        pass
-                    lvl = lvl[scp]
-                try:
-                    lvl[splits[-1]] = parameters[param]
-                except:
-                    log.warn(f"Couldn't substitute {param} value in its scope, if it's a dependent parameter, you can ignore this warning")
-            else:
-                try:
-                    paramFile[elmv[param]] = parameters[param]
-                except:
-                    log.warn(f"Couldn't substitute {param} value in its scope, if it's a dependent parameter, you can ignore this warning")
-        paramFile.writeFile()
+                        log.warn(f"Couldn't substitute {param} value in its scope, if it's a dependent parameter, you can ignore this warning")
+                else:
+                    try:
+                        paramFile[elmv[param]] = parameters[param]
+                    except:
+                        log.warn(f"Couldn't substitute {param} value in its scope, if it's a dependent parameter, you can ignore this warning")
     data["case"] = case
+    data["casename"] = newcase
     return data
 
 class HPCJobRunner(Runner):
@@ -414,7 +412,7 @@ class HPCJobRunner(Runner):
         if not isinstance(trial, Trial):
             raise ValueError("This runner only handles `Trial`.")
 
-        # Preprocessing using pyFOAM or copying
+        # Preprocessing and parameter substitution using foamlib
         case_data = preprocesss_case(trial.arm.parameters, self.cfg)
 
         hpc_job_queue = get_hpc_job_queue_client()
@@ -428,8 +426,8 @@ class HPCJobRunner(Runner):
         )
         # This run metadata will be attached to trial as `trial.run_metadata`
         # by the base `Scheduler`.
-        log.info(f"Trial {trial.index} - Dispatched case: {case_data['case'].name}")
-        return {"job_id": job_id, "case_path": case_data["case"].name, "case_name": case_data["casename"]}
+        log.info(f"Trial {trial.index} - Dispatched case: {case_data['case'].path}")
+        return {"job_id": job_id, "case_path": case_data["case"].path, "case_name": case_data["casename"]}
 
     def poll_trial_status(
         self, trials: Iterable[BaseTrial]

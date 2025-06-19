@@ -5,7 +5,7 @@
 This script defines functions to perform multi-objective optimization on OpenFOAM
 cases given a YAML/JSON config file (Supported through Hydra, default: config.yaml).
 
-We use the Adaptive Experimentation Platform for optimization, PyFOAM for parameter substitution
+We use the Adaptive Experimentation Platform for optimization, foamlib for parameter substitution
 and Hydra for 0-code configuration.
 
 Output: CSV data for experiment trials
