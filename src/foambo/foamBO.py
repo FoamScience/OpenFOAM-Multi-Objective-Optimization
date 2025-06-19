@@ -28,14 +28,14 @@ from ax.core import OptimizationConfig, Experiment, Objective, MultiObjectiveOpt
 from ax.modelbridge.dispatch_utils import choose_generation_strategy
 from ax.plot.pareto_utils import compute_posterior_pareto_frontier
 from ax.plot.feature_importances import plot_feature_importance_by_feature
-from ax.modelbridge.registry import Models
 from ax.modelbridge.generation_strategy import GenerationStrategy
 from ax.modelbridge.generation_node import GenerationStep
 
 from ax.global_stopping.strategies.improvement import ImprovementGlobalStoppingStrategy
 from ax.service.utils.report_utils import exp_to_df
 
-from foambo.core import *
+from .core import *
+from .common import SUPPORTED_MODELS
 from ax.storage.json_store.save import save_experiment
 
 __version__ = "0.1.2"
@@ -58,27 +58,6 @@ def _find_logger_basefilename(logger):
     return log_file 
 
 # Straight from Ax docs, not well tested!
-supported_models = {
-    #"ALEBO": Models.ALEBO,
-    #"ALEBO_INITIALIZER": Models.ALEBO_INITIALIZER,
-    "BOTORCH": Models.BOTORCH_MODULAR,
-    "BOTORCH_MODULAR": Models.BOTORCH_MODULAR,
-    "BO_MIXED": Models.BO_MIXED,
-    "CONTEXT_SACBO": Models.CONTEXT_SACBO,
-    "EMPIRICAL_BAYES_THOMPSON": Models.EMPIRICAL_BAYES_THOMPSON,
-    "FACTORIAL": Models.FACTORIAL,
-    "FULLYBAYESIAN": Models.FULLYBAYESIAN,
-    "FULLYBAYESIANMOO": Models.FULLYBAYESIANMOO,
-    "FULLYBAYESIANMOO_MTGP": Models.FULLYBAYESIANMOO_MTGP,
-    "FULLYBAYESIAN_MTGP": Models.FULLYBAYESIAN_MTGP,
-    "GPEI": Models.GPEI,
-    "MOO": Models.MOO,
-    "SOBOL": Models.SOBOL,
-    "ST_MTGP": Models.ST_MTGP,
-    "ST_MTGP_NEHVI": Models.ST_MTGP_NEHVI,
-    "THOMPSON": Models.THOMPSON,
-    "UNIFORM": Models.UNIFORM,
-}
 
 def data_from_experiment(scheduler: Scheduler):
     # Trial Parameters with corresponding objective values
@@ -133,7 +112,7 @@ def exp_main(cfg : DictConfig) -> None:
         use_saasbo=cfg.meta.use_saasbo,
     ) if cfg.problem.models == 'auto' else GenerationStrategy([
             GenerationStep(
-                model=supported_models[mk],
+                model=SUPPORTED_MODELS[mk],
                 num_trials=cfg.problem.models[mk],
                 max_parallelism=cfg.meta.n_parallel_trials
             )

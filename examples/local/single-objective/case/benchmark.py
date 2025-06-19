@@ -7,7 +7,7 @@
 import sys, os
 import numpy as np
 import plotly.express as px
-from PyFoam.RunDictionary.ParsedParameterFile import ParsedParameterFile
+from foamlib import FoamFile
 
 import argparse
 parser = argparse.ArgumentParser()
@@ -53,6 +53,6 @@ x = np.linspace(-200,200,1000)
 plot1D(x, Fs[args.F], args.k,args.m,args.lb)
 
 if __name__ == '__main__':
-    pFile = ParsedParameterFile(name=os.getcwd()+"/FxDict")
-    x=float(pFile['x'])
+    foamfile = FoamFile(os.path.join(os.getcwd(), "FxDict"))
+    x = float(foamfile['x'])
     print(Fs[args.F](np.array([x,x]), args.k,args.m,args.lb)[0])

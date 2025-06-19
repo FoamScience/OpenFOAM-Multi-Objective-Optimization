@@ -42,6 +42,7 @@ from ax.storage.json_store.encoders import metric_to_dict
 from ax.storage.json_store.encoders import runner_to_dict
 
 from foamlib import FoamCase, FoamFile
+from .common import SLURM_STATUS_MAP, MANUAL_MODEL_NAME
 
 log = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ class ManualGenerator(RandomModel):
         self.generated_points = points
         return points, np.ones(len(points))
 
-MODEL_KEY_TO_MODEL_SETUP["MANUAL"] = ModelSetup(
+MODEL_KEY_TO_MODEL_SETUP[MANUAL_MODEL_NAME] = ModelSetup(
     bridge_class=RandomModelBridge,
     model_class=ManualGenerator,
     transforms=Cont_X_trans,
@@ -161,7 +162,7 @@ class CustomModels(ModelRegistryBase):
     """
         Register custom generators and models
     """
-    Manual = "MANUAL"
+    Manual = MANUAL_MODEL_NAME
 
 class HPCJob(NamedTuple):
     """
@@ -237,22 +238,7 @@ def slurm_status_query(job_id, jobs, cfg):
     if proc_out.decode("utf-8") == "":
         return TrialStatus.COMPLETED
     status = str(proc_out.split()[1].decode("utf-8"))
-    status_map = {
-        "RUNNING": TrialStatus.RUNNING,
-        "CONFIGURING": TrialStatus.RUNNING,
-        "COMPLETING": TrialStatus.RUNNING,
-        "CONFIGURING": TrialStatus.RUNNING,
-        "PENDING": TrialStatus.RUNNING,
-        "PREEMPTED": TrialStatus.FAILED,
-        "FAILED": TrialStatus.FAILED,
-        "SUSPENDED": TrialStatus.ABANDONED,
-        "TIMEOUT": TrialStatus.ABANDONED,
-        "STOPPED": TrialStatus.EARLY_STOPPED,
-        "CANCELED": TrialStatus.EARLY_STOPPED,
-        "CANCELLED+": TrialStatus.EARLY_STOPPED,
-        "COMPLETED": TrialStatus.COMPLETED,
-    }
-    return status_map[status]
+    return getattr(TrialStatus, SLURM_STATUS_MAP[status])
 
 def shell_metric_value(metric, case, cfg):
     """
