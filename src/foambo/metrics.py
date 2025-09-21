@@ -65,9 +65,10 @@ class FoamJob:
             "cwd": case_path,
             "start_time": time.time(),
         }
-        if "runner" in cfg.keys():
-            cmd = list(process_input_command(cfg.runner, FoamCase(case_path)))
-            if cfg.log_runner:
+        cmd = process_input_command(cfg.runner, FoamCase(case_path))
+        if cmd:
+            cmd = list(cmd)
+            if cfg.log_runner == True:
                 log_path = os.path.join(case_path, "log.runner")
                 log_file = open(log_path, "w")
                 proc = sb.Popen(cmd, cwd=case_path, stdout=log_file, stderr=sb.STDOUT, text=True)
@@ -79,7 +80,6 @@ class FoamJob:
                     pipe.close()
                 import threading
                 threading.Thread(target=stream_stderr, args=(proc.stderr,), daemon=True).start()
-
             job_id = proc.pid
             jobs[job_id] = proc
             metadata={

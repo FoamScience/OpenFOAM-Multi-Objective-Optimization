@@ -195,10 +195,12 @@ def func_params(func):
     return OmegaConf.to_yaml(OmegaConf.create(conf_dict))
 
 
-def process_input_command(command: str | List[str], case: FoamCase):
+def process_input_command(command: str | List[str] | None, case: FoamCase):
     """
         Process commands from config files to provide some flexibility
     """
+    if not command:
+        return None
     if isinstance(command, str):
         command = list(command.split())
     case_path_str = str(case.path)
