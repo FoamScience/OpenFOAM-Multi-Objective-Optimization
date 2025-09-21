@@ -161,7 +161,11 @@ cython_debug/
 
 *json
 *csv
-*trial_*/**
 **/outputs/**
 template/**
 *html
+*png
+*_trial_*/
+artifacts/**
+trials/**
+
