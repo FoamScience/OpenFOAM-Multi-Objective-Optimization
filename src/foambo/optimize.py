@@ -105,8 +105,9 @@ def optimize(cfg : DictConfig) -> None:
         metadf = {
             trial_index: {
                 "job_id": trial.run_metadata.get("job_id"),
-                "case_path": trial.run_metadata.get("job", {}).get("case_path"),
+                "generation_node": trial.generator_run._model_key,
                 "status": trial.status.__repr__().strip("<enum 'TrialStatus'>."),
+                "case_path": trial.run_metadata.get("job", {}).get("case_path"),
                 **client._experiment.trials[trial_index].arm.parameters
             }
             for trial_index, trial in client._experiment.trials.items()
