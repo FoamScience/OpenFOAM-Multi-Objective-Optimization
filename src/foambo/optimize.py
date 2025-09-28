@@ -14,12 +14,16 @@ from omegaconf import DictConfig, OmegaConf
 from .config import load_config, save_default_config, override_config
 from .common import *
 from .metrics import streaming_metric
+from .analysis import compute_analysis_cards, plot_pareto_frontier
 from .orchestrate import (
     ExistingTrialsOptions, ExperimentOptions, OptimizationOptions,
     ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
 )
 from ax.api.client import MultiObjective, Orchestrator, db_settings_from_storage_config
 import pandas as pd
+
+from .default_config import get_config_docs
+from .docs import run_docs_tui
 
 from logging import Logger
 from ax.utils.common.logger import get_logger
@@ -107,8 +111,8 @@ def optimize(cfg : DictConfig) -> None:
                 "job_id": trial.run_metadata.get("job_id"),
                 "generation_node": trial.generator_run._model_key,
                 "status": trial.status.__repr__().strip("<enum 'TrialStatus'>."),
+                **client._experiment.trials[trial_index].arm.parameters,
                 "case_path": trial.run_metadata.get("job", {}).get("case_path"),
-                **client._experiment.trials[trial_index].arm.parameters
             }
             for trial_index, trial in client._experiment.trials.items()
         }
@@ -157,48 +161,61 @@ def optimize(cfg : DictConfig) -> None:
     log.info("=========== Best set of parameters ==============")
     best_parameters, prediction = None, None
     if isinstance(client._experiment.optimization_config._objective, MultiObjective):
-        for best_parameters, prediction, _, _ in client.get_pareto_frontier(use_model_predictions=True):
+        front = client.get_pareto_frontier(use_model_predictions=True)
+        for best_parameters, prediction, _, _ in front:
             log.info("Pareto-frontier configuration:\n%s", json.dumps(best_parameters, indent=2))
             log.info("Predictions for Pareto-frontier configuration (mean, variance):\n%s", json.dumps(prediction, indent=2))
+        _ = plot_pareto_frontier(client, front, write_html=True)
     else:
         best_parameters, prediction, _, _ = client.get_best_parameterization(use_model_predictions=True)
         log.info("Best parameter set:\n%s", json.dumps(best_parameters, indent=2))
         log.info("Predictions for best parameter set (mean, variance):\n%s", json.dumps(prediction, indent=2))
 
     log.info("=================================================")
-    cards = client.compute_analyses(display=False)
+    cards = compute_analysis_cards(cfg, client)
     store_cfg.save(client, cards)
-    for card in cards:
-        if not card._repr_html_():
-            continue
-        if card.subtitle.__contains__("error occurred while computing"):
-            log.warning(f"{card.title}, {card.subtitle}")
-            continue
-        html = f"""<!DOCTYPE html><html lang="en" data-theme="light"><head>
-        <title>{card.title}</title>
-        {HTML_CARD_HEADER}
-        </head><body>
-        <h1>{client._experiment.name} - {card.title}</h1>
-        <p>{card.subtitle}</p>
-        {card._repr_html_()}
-        </body>{HTML_CARD_SCRIPT}</html>"""
-        html_path = f"artifacts/{client._experiment.name}_{unixlike_filename(card.title)}.html"
-        with open(html_path, "w") as f:
-            f.write(html)
-            webbrowser.open(html_path)
     log.info("==================== End ========================")
 
 def main():
-    parser = argparse.ArgumentParser(description="Multi-objective optimization for OpenFOAM cases.")
-    parser.add_argument('--config', type=str, default=DEFAULT_CONFIG, help='Path to config YAML file')
-    parser.add_argument('--generate-config', action='store_true', help='Generate a default config file and exit')
-    parser.add_argument('-V', '--version', action='version', version='%(prog)s ' + VERSION)
+    parser = argparse.ArgumentParser(
+        description="Multi-objective optimization with Bayesian Algorithms for OpenFOAM cases.",
+        epilog="""Examples:
+    uvx foamBO --generate-config                         # Generates a default config file: foamBO.yaml
+    uvx foamBO --generate-config --config My.yaml        # Generates a default config file: My.yaml
+    uvx foamBO --config My.yaml                          # Runs optimization from My.yaml
+    uvx foamBO --config My.yaml ++experiment.name=Test2  # Runs optimization from My.yaml with different experiment name
+    uvx foamBO --analysis ++store.read_from=json         # Generates reports for optimization from foamBO.yaml configuration
+    uvx foamBO --docs                                    # Browse the documentation""",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--analysis', action='store_true', help='Generate optimization reports')
+    group.add_argument('--generate-config', action='store_true', help='Generate a default config file and exit')
+    group.add_argument('--docs', action='store_true', help='Open Configuration Docs explorer')
+    group.add_argument('-V', '--version', action='version', version='%(prog)s ' + VERSION)
+    parser.add_argument('--config', type=str, default=DEFAULT_CONFIG, help=f'Path to config YAML file (optional, default={DEFAULT_CONFIG})')
     parser.add_argument('overrides', nargs=argparse.REMAINDER, help='Config overrides in ++key=value format')
     args = parser.parse_args()
+
+    if args.docs:
+        run_docs_tui(get_config_docs())
+        exit(1)
 
     if args.generate_config:
         save_default_config(args.config)
         sys.exit(0)
+
+    if args.analysis:
+        cfg = load_config(args.config)
+        if args.overrides:
+            overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
+            if overrides:
+                cfg = override_config(cfg, overrides)
+        if cfg['store']['read_from'] == "nowhere":
+            log.error(f"Cannot perform analysis without reading in client state\n"
+                      f"Please set store.read_from option to either `json` or `sql`")
+            exit(1)
+        compute_analysis_cards(cfg, None)
+        return
 
     cfg = load_config(args.config)
     if args.overrides:
