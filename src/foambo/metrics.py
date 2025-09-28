@@ -182,12 +182,14 @@ class FoamJobMetric(IMetric):
     Fetch metric values from HPC jobs
     """
     cfg:  DictConfig
+    lower_is_better: bool | None
     dispatcher = {
         "local": FoamJob.local_metric,
     }
     def __init__(self, name: str, cfg):
         super().__init__(name=name)
         self.cfg = cfg
+        self.lower_is_better = cfg['evaluate']['lower_is_better'] if 'lower_is_better' in cfg['evaluate'].keys() else None
     def fetch(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> tuple[int, float | tuple[float, float]]:
         out = self.dispatcher[self.cfg['evaluate']['mode']](metric=self.name,
                     case=FoamCase(trial_metadata['job']['case_path']) if 'job' in trial_metadata and trial_metadata['job'] else None,
@@ -210,6 +212,7 @@ class LocalJobMetric:
     name: str
     command: str
     progress: str
+    lower_is_better: bool | None = None
 
     def to_metric(self):
         cfg = DictConfig({
@@ -217,6 +220,7 @@ class LocalJobMetric:
                 "mode": "local",
                 "progress": self.progress,
                 "command": self.command,
+                "lower_is_better": self.lower_is_better
             }
         })
         return FoamJobMetric(self.name, cfg)
@@ -225,14 +229,24 @@ def streaming_metric(client: Client, opt_cfg: Dict):
     """
     Get progress of trial if progress tracking is on for some metrics.
     """
-    progress_metrics = [metric["name"] for metric in opt_cfg["metrics"] if metric["progress"] and metric["progress"] != "none"]
+    # Parse objective metric names from objective string like "-m1, -m2, -m3"
+    objective_names = set()
+    try:
+        objective_names = {s.strip().lstrip('+-') for s in opt_cfg["objective"].split(',') if s.strip()}
+    except Exception:
+        pass
+    # Consider only metrics that are NOT part of the objective for streaming
+    progress_metrics = [metric["name"] for metric in opt_cfg["metrics"]
+                        if metric["name"] not in objective_names
+                        and metric.get("progress") and metric["progress"] != "none"
+                        and metric["progress"] != "" and metric["progress"] != []]
     init_metrics_tracking = lambda trial_index: init_trial_progression(trial_index, progress_metrics)
     trial_metrics_cfg = lambda trial_idx, metrics_cfg: [
         {
             **metric,
             "progress": (
                 metric["progress"].replace("$STEP", str(trial_progression_step[trial_idx][metric["name"]]))
-                if isinstance(metric["progress"], str)
+                if "progress" in metric and isinstance(metric["progress"], str)
                 else [
                     p.replace("$STEP", str(trial_progression_step[trial_idx][metric["name"]]))
                     if isinstance(p, str) else p
@@ -241,10 +255,11 @@ def streaming_metric(client: Client, opt_cfg: Dict):
             )
         }
         for metric in metrics_cfg
+        if metric["name"] not in objective_names
     ]
-    # If we have no progress items, skip this
-    should_stream_metric = any(cfg["progress"] and cfg["progress"] != "" and cfg["progress"] != "none"
-        for cfg in opt_cfg["metrics"])
+    # If we have no eligible progress items, skip this
+    should_stream_metric = any(cfg.get("progress") and cfg["progress"] != "" and cfg["progress"] != "none"
+        for cfg in opt_cfg["metrics"] if cfg["name"] not in objective_names)
     running_trials = client._experiment.trials_by_status[TrialStatus.RUNNING]
     if (not should_stream_metric) or (len(running_trials) == 0):
         return
