@@ -178,7 +178,7 @@ class ExperimentOptions:
 @dataclass
 class ModelSpecConfig:
     """Configuration for GeneratorSpec"""
-    model_enum: Literal[
+    generator_enum: Literal[
         "SOBOL",
         "FACTORIAL",
         "SAASBO",
@@ -196,14 +196,14 @@ class ModelSpecConfig:
     model_kwargs: Dict | None = None
     
     def to_generator_spec(self) -> GeneratorSpec:
-        if not hasattr(Generators, self.model_enum):
+        if not hasattr(Generators, self.generator_enum):
             from pprint import pformat
-            raise ValueError(f"{self.model_enum} is not a supported generator; supported specs:\n"
+            raise ValueError(f"{self.generator_enum} is not a supported generator; supported specs:\n"
                              f"{pformat([name for name, value in vars(Generators).items() if not name.startswith("_")])}")
-        model = Generators[self.model_enum]
+        model = Generators[self.generator_enum]
         return GeneratorSpec(
-            model_enum=model,
-            #model_kwargs=self.model_kwargs if self.model_kwargs else {},
+            generator_enum=model,
+            model_kwargs=self.model_kwargs if self.model_kwargs else {},
         )
 
 TRANSITION_MAP = {
@@ -221,18 +221,18 @@ TRANSITION_MAP = {
 class GenerationNodeConfig:
     """Configuration for a generation node"""
     node_name: str
-    model_specs: List[ModelSpecConfig]
+    generator_specs: List[ModelSpecConfig]
     transition_criteria: List[reduce(lambda a, b: a | b, TRANSITION_MAP.values())]
 
     
     __nested_fields__ = {
-        "model_specs": ModelSpecConfig,
+        "generator_specs": ModelSpecConfig,
         "transition_criteria": lambda **kwargs: create_from_map(dict(kwargs), TRANSITION_MAP)
     }
     
     def to_generation_node(self) -> GenerationNode:
         spec_list = []
-        for spec in self.model_specs:
+        for spec in self.generator_specs:
             if isinstance(spec, dict):
                 model_spec = ModelSpecConfig(**spec)
                 spec_list.append(model_spec.to_generator_spec())
@@ -241,7 +241,7 @@ class GenerationNodeConfig:
         
         return GenerationNode(
             node_name=self.node_name,
-            model_specs=spec_list,
+            generator_specs=spec_list,
             transition_criteria=self.transition_criteria if self.transition_criteria else None,
         )
 
