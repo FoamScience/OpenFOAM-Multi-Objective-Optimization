@@ -1,0 +1,53 @@
+version: 1.0.0
+experiment:
+  name: SingleObjF1
+  description: Demonstration of single-parameter single-objective optimization
+  parameters:
+  - name: x
+    bounds: [-100.0, 200.0]
+    parameter_type: float
+  parameter_constraints: []
+trial_generation:
+  method: fast
+existing_trials:
+  file_path: ''
+baseline:
+  parameters: null
+optimization:
+  metrics:
+  - name: F1
+    progress: null
+    command: "python3 ../../benchmark.py  --F F1 --k 1 --m 0 --lb 0.01"
+  objective: -F1
+  outcome_constraints: []
+  case_runner:
+    template_case: ./case
+    mode: local
+    runner: null
+    log_runner: false
+    remote_status_query: null
+    remote_early_stop: null
+    trial_destination: ./trials
+    artifacts_folder: ./artifacts
+    file_substitution: []
+    variable_substitution:
+    - file: /FxDict
+      parameter_scopes:
+        x: x
+orchestration_settings:
+  max_trials: 50
+  parallelism: 3
+  initial_seconds_between_polls: 10
+  seconds_between_polls_backoff_factor: 1.0
+  timeout_hours: 24
+  ttl_seconds_for_trials: 10
+  global_stopping_strategy:
+    min_trials: 10
+    window_size: 5
+    improvement_bar: 0.1
+  early_stopping_strategy: null
+store:
+  save_to: json
+  read_from: nowhere
+  backend_options:
+    url: null

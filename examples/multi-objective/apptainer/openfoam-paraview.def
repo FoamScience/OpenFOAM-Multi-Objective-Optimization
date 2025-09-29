@@ -1,0 +1,61 @@
+Bootstrap: localimage
+From: {{ CONTAINERS_DIR }}/basic/{{ BASE_CONTAINER }}.sif
+
+%arguments
+    BASE_CONTAINER=opencfd-openfoam
+    OS_DISTRO=ubuntu
+    OS_VERSION=24.04
+    MPI_IMPLEMENTATION=ompi
+    MPI_VERSION=4.1.5
+    FRAMEWORK_VERSION=2312
+    FRAMEWORK_GIT_REF=default
+
+%post -c /bin/bash
+    set -e
+    apt update
+    DEBIAN_FRONTEND=noninteractive apt install -y \
+        libgl1 libegl1 libxkbcommon0 libglib2.0-bin \
+        libxcursor1 libdbus-1-3 libxcb-cursor0 libxcb-cursor-dev \
+        libxcb1 libopengl-dev
+    pv_version="{{ PARAVIEW_VERSION }}"
+    pv_short_version="${pv_version%.*}"
+    PARAVIEW_URL="https://www.paraview.org/paraview-downloads/download.php?submit=Download&type=binary&version=v${pv_short_version}&downloadFile=ParaView-{{ PARAVIEW_VERSION }}-{{ RENDERER }}-MPI-Linux-Python{{ PYTHON_VERSION }}-{{ ARCH }}.tar.gz"
+    curl -L -o paraview.tar.gz "$PARAVIEW_URL"
+    tar -xzvf paraview.tar.gz -C /opt
+    mv "/opt/ParaView-{{ PARAVIEW_VERSION }}-{{ RENDERER }}-MPI-Linux-Python{{ PYTHON_VERSION }}-{{ ARCH }}" /opt/paraview
+    rm -f paraview.tar.gz
+    echo 'export "PATH=/opt/paraview/bin:$PATH"' > /opt/paraview/bashrc
+    echo 'export "LD_LIBRARY_PATH=/opt/{{ MPI_IMPLEMENTATION }}/lib:/opt/paraview/lib:$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu"' >> /opt/paraview/bashrc
+    jq --arg app paraview --arg version {{ PARAVIEW_VERSION }} \
+        --arg python {{ PYTHON_VERSION }} --arg arch {{ ARCH }} \
+        --arg renderer {{ RENDERER }} \
+        '.[$app] |= if . == null then
+        {
+            path: "/opt/paraview",
+            source_script: "/opt/paraview/bashrc",
+            version: $version,
+            python: $python,
+            renderer: $renderer,
+            arch: $arch
+        }
+        else . +
+        {
+            path: "/opt/paraview",
+            source_script: "/opt/paraview/bashrc",
+            version: $version,
+            python: $python,
+            renderer: $renderer,
+            arch: $arch
+        } end' /apps.json > /tmp/apps.json
+    mv /tmp/apps.json /apps.json
+
+%runscript
+    #!/bin/bash
+    if [ $# -eq 0 ]; then
+        /bin/bash
+    else
+        /bin/bash -c "$@"
+    fi
+
+%labels
+    Description IMFoam for BMOO

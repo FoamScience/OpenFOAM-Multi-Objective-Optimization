@@ -1,0 +1,157 @@
+version: 1.0.0
+
+##########################################################################
+# This configuration requires:
+# - copying scripts folder to /tmp/data/scripts
+# - building and copying the openfoam-paraview.sif container to /tmp/data
+# - mkdir -p /tmp/data/trials artifacts
+##########################################################################
+
+experiment:
+  name: Cavity
+  description: Optimization of OpenFOAM's standard cavity tutorial
+  parameter_constraints: [] #["lidVelocity <= 20000 * viscosity"] # laminar-only trials
+  parameters:
+  - name: viscosity
+    bounds: [1.0e-7, 1.0e-3]
+    parameter_type: float
+  - name: lidVelocity
+    bounds: [1.0e-3, 2.0]
+    parameter_type: float
+  - name: inflowPerturbationAmplitude
+    bounds: [0.0, 0.03] # fraction of lidVelocity
+    parameter_type: float
+  - name: inflowPerturbationSpatialMode
+    bounds: [3, 8]
+    parameter_type: int
+  - name: meshResolution
+    bounds: [2, 8]
+    step_size: 1
+    parameter_type: int
+  - name: meshCFL
+    bounds: [0.5, 1.0]
+    parameter_type: float
+  - name: pLinearSolver
+    values: ["FPCG", "PBiCGStab", "PCG", "PPCG", "PPCR"]
+    parameter_type: str
+  - name: pPreconditioner
+    values: ["DIC", "FDIC", "diagonal", "distributedDIC", "none"]
+    parameter_type: str
+  - name: pTolerance
+    bounds: [1.0e-6, 1.0e-4]
+    scaling: log
+    parameter_type: float
+  - name: pRelTolerance
+    bounds: [0.01, 0.1]
+    scaling: log
+    parameter_type: float
+  - name: UTolerance
+    bounds: [1.0e-5, 1.0e-3]
+    scaling: log
+    parameter_type: float
+
+trial_generation:
+  method: fast
+
+existing_trials:
+  file_path: ''
+
+baseline:
+  parameters:
+    viscosity: 0.01
+    lidVelocity: 1.0
+    inflowPerturbationAmplitude: 0
+    inflowPerturbationSpatialMode: 2
+    meshResolution: 2
+    meshCFL: 0.5
+    pLinearSolver: PCG
+    pPreconditioner: DIC
+    pTolerance: 1.0e-6
+    pRelTolerance: 0.05
+    UTolerance: 1.0e-5
+
+optimization:
+  metrics:
+  - name: continuityErrors
+    command: [ "/tmp/data/scripts/metric.sh", "local", "continuityErrors" ]
+    progress: [ "/tmp/data/scripts/metric.sh", "local", "continuityErrors" ]
+    lower_is_better: True
+  - name: executionTime
+    command: [ "/tmp/data/scripts/metric.sh", "local", "executionTime" ]
+    progress: [ "/tmp/data/scripts/metric.sh", "local", "executionTime" ]
+  - name: wallShearStress
+    command: [ "/tmp/data/scripts/metric.sh", "local", "wallShearStress" ]
+    progress: [] # no progress because the case only writes the last timestep
+  - name: enstrophy
+    command: [ "/tmp/data/scripts/metric.sh", "local", "enstrophy" ]
+    progress: [] # no progress because the case only writes the last timestep
+  objective: "enstrophy, -wallShearStress, -executionTime"
+  outcome_constraints: 
+  - "enstrophy >= 1.1*baseline"
+  - "wallShearStress <= 1.1*baseline"
+  - "executionTime <= 5"
+  case_runner:
+    template_case: ./cavity
+    mode: remote # or: local
+    log_runner: False # active only when mode=local
+    runner: "/tmp/data/scripts/run_on_cluster.sh" # or: ./Allrun /tmp/data/openfoam-paraview.sif
+    remote_status_query: "/tmp/data/scripts/state_on_cluster.sh" # optional, only if mode=remote
+    remote_early_stop: "docker exec slurm-head scancel --name $CASE_NAME" # also optional
+    trial_destination: /tmp/data/trials
+    artifacts_folder: ./artifacts
+    file_substitution: []
+    variable_substitution:
+    - file: /0.orig/U
+      parameter_scopes:
+        lidVelocity: boundaryField.movingWall.codeContext.lidVelocity
+        inflowPerturbationAmplitude: boundaryField.movingWall.codeContext.inflowPerturbationAmplitude
+        inflowPerturbationSpatialMode: boundaryField.movingWall.codeContext.inflowPerturbationSpatialMode
+    - file: /constant/transportProperties
+      parameter_scopes:
+        viscosity: nu
+    - file: /system/fvSolution
+      parameter_scopes:
+        pLinearSolver: solvers.p.solver
+        pPreconditioner: solvers.p.preconditioner
+        pTolerance: solvers.p.tolerance
+        pRelTolerance: solvers.p.relTolerance
+        UTolerance: solvers.U.tolerance
+    - file: /system/blockMeshDict
+      parameter_scopes:
+        meshResolution: meshResolution
+    - file: /system/controlDict
+      parameter_scopes:
+        meshCFL: maxCo
+
+orchestration_settings:
+  max_trials: 70
+  parallelism: 4
+  tolerated_trial_failure_rate: 0.5
+  initial_seconds_between_polls: 10
+  seconds_between_polls_backoff_factor: 1.0
+  timeout_hours: 24
+  ttl_seconds_for_trials: 600
+  global_stopping_strategy:
+    improvement_bar: 0.4
+    min_trials: 30
+    window_size: 10
+  early_stopping_strategy:
+    type: or
+    left: # early-stops whose continuity errors are worse than 25% of trials at a given step
+      type: percentile
+      metric_names: [ "continuityErrors" ]
+      min_progression: 2
+      percentile_threshold: 25
+      trial_indices_to_ignore: !range [0, 30]
+    right:
+      type: percentile
+      metric_names: [ "executionTime" ]
+      min_progression: 2
+      percentile_threshold: 20
+      trial_indices_to_ignore: !range [0, 30]
+
+store:
+  read_from: nowhere
+  save_to: json
+  backend_options:
+    url: null
