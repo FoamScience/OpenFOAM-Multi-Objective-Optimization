@@ -4,7 +4,7 @@ This first tutorial serves as a fast-paced discovery of the most prominent benef
 
 The main objective is to **fit a Gaussian Process (surrogate model)** to the `F1` function from [New Benchmark Functions for Single-Objective Optimization Based on a Zigzag Pattern](https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=9684455) paper, with parameters `k=1, m=0, lambda=0.01`.
 
-![](F1.png)
+![](./F1.png)
 
 <!-- mtoc-start:f93008a -->
 
