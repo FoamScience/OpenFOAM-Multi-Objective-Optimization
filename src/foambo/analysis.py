@@ -20,11 +20,11 @@ from ax.analysis.healthcheck.constraints_feasibility import ConstraintsFeasibili
 from ax.analysis.healthcheck.no_effects_analysis import TestOfNoEffectAnalysis
 from ax.analysis.healthcheck.regression_analysis import RegressionAnalysis
 from ax.analysis.healthcheck.search_space_analysis import SearchSpaceAnalysis
-from ax.plot.pareto_frontier import scatter_plot_with_hypervolume_trace_plotly
+from ax.plot.pareto_frontier import scatter_plot_with_hypervolume_trace_plotly, scatter_plot_with_pareto_frontier_plotly
 from pprint import pformat
 from itertools import combinations
 
-def compute_analysis_cards(cfg: DictConfig, client: Client | None):
+def compute_analysis_cards(cfg: DictConfig, client: Client | None, open_html=False):
     set_experiment_name(cfg['experiment']['name'])
     if not client:
         store_cfg = instantiate_with_nested_fields(StoreOptions, cfg['store'])
@@ -36,12 +36,13 @@ def compute_analysis_cards(cfg: DictConfig, client: Client | None):
                        RegressionAnalysis(),
                        SearchSpaceAnalysis(trial_index=len(exp.trials)-1)]
 
+    experiment_has_choice_params = any([isinstance(exp.parameters[param], ChoiceParameter) for param in exp.parameters])
     for metric in exp.metrics:
         analyses_to_run.append(ParallelCoordinatesPlot(metric_name=metric))
         analyses_to_run.append(ProgressionPlot(metric_name=metric))
         analyses_to_run.append(TopSurfacesAnalysis(metric_name=metric))
-        if any([isinstance(exp.parameters[param], ChoiceParameter) for param in exp.parameters]):
-           analyses_to_run.append(MarginalEffectsPlot(metric_name=metric))
+        if experiment_has_choice_params and metric in [m.metric_names[0] for m in exp.optimization_config.objective.objectives]:
+            analyses_to_run.append(MarginalEffectsPlot(metric_name=metric))
     analyses_to_run.append(SensitivityAnalysisPlot(metric_names=exp.metrics, top_k=10))
 
     if len(exp.metrics) > 1:
@@ -55,6 +56,13 @@ def compute_analysis_cards(cfg: DictConfig, client: Client | None):
                 title=f"{metric_pair[0]} vs. {metric_pair[1]}"
             ))
     cards = client.compute_analyses(display=False, analyses=analyses_to_run)
+    for card in cards:
+        if "Marginal Effects" in card.title:
+            metric_in_card = next(metric for metric in exp.metrics if metric in card._repr_html_())
+            card.title = f"{card.title} on {metric_in_card}"
+        if "Top Surfaces Analysis" in card.title:
+            metric_in_card = next(metric for metric in exp.metrics if metric in card._repr_html_())
+            card.title = f"{card.title} for {metric_in_card}"
 
     for card in cards:
         if not card._repr_html_():
@@ -73,10 +81,11 @@ def compute_analysis_cards(cfg: DictConfig, client: Client | None):
         html_path = f"artifacts/{client._experiment.name}_{unixlike_filename(card.title)}.html"
         with open(html_path, "w") as f:
             f.write(html)
-            webbrowser.open(html_path)
+            if open_html:
+                webbrowser.open(html_path)
     return cards
 
-def plot_pareto_frontier(client, front, write_html=False):
+def plot_pareto_frontier(client, front=None, open_html=False):
     figures = []
     figure_html = []
     if not front:
@@ -87,7 +96,9 @@ def plot_pareto_frontier(client, front, write_html=False):
     figures.append(fig)
     figure_html.append(fig.to_html(full_html=False, include_plotlyjs='cdn'))
 
-    X_labels = [client._experiment.trials[tr].arm.parameters for tr in client._experiment.trials]
+    X_labels = [
+            pformat(client._experiment.trials[tr].arm.parameters, width=1).replace("\n", "<br>").replace('{', '').replace('}', '').replace("'", '')
+            for tr in client._experiment.trials]
     objective_metrics = opt_config.objective.metric_names
     metric_pairs = list(combinations(objective_metrics, 2))
     for metrics in metric_pairs:
@@ -118,25 +129,28 @@ def plot_pareto_frontier(client, front, write_html=False):
             for obj in opt_config.objective.objectives
             if metric in obj.metric_names
         )
-        fig = scatter_plot_with_pareto_frontier_plotly(
-            Y=Y,
-            Y_pareto=Y_pareto,
-            reference_point=ref_point,
-            metric_x=metrics[0],
-            metric_y=metrics[1],
-            minimize=(get_minimize(metrics[0]), get_minimize(metrics[1])),
-            hovertext=X_labels,
-            )
-        hv_line = next(dt for dt in fig.data if dt['line']['shape'] == 'hv')
-        Y_pareto_labels = [
-            pformat(params, width=1).replace("\n", "<br>").replace('{', '').replace('}', '').replace("'", '')
-            for params in X_pareto]
-        hv_line.hovertext = Y_pareto_labels
-        hv_line.mode = 'lines+markers'
-        hv_line.marker.symbol = 'circle'
-        hv_line.marker.size = 16
-        figures.append(fig)
-        figure_html.append(fig.to_html(full_html=False, include_plotlyjs='cdn'))
+        try:
+            fig = scatter_plot_with_pareto_frontier_plotly(
+                Y=Y,
+                Y_pareto=Y_pareto,
+                reference_point=ref_point,
+                metric_x=metrics[0],
+                metric_y=metrics[1],
+                minimize=(get_minimize(metrics[0]), get_minimize(metrics[1])),
+                hovertext=X_labels,
+                )
+            hv_line = next(dt for dt in fig.data if dt['line']['shape'] == 'hv')
+            Y_pareto_labels = [
+                pformat(params, width=1).replace("\n", "<br>").replace('{', '').replace('}', '').replace("'", '')
+                for params in X_pareto]
+            hv_line.hovertext = Y_pareto_labels
+            hv_line.mode = 'lines+markers'
+            hv_line.marker.symbol = 'circle'
+            hv_line.marker.size = 16
+            figures.append(fig)
+            figure_html.append(fig.to_html(full_html=False, include_plotlyjs='cdn'))
+        except Exception:
+            log.error(f"Something went wrong with the generation of Pareto Frontier for {metrics}")
 
     html=f"""<!DOCTYPE html><html lang="en" data-theme="light"><head>
         <title>Pareto frontier analysis for {client._experiment.name} experiment</title>
@@ -160,5 +174,7 @@ def plot_pareto_frontier(client, front, write_html=False):
     html_path = f"artifacts/{client._experiment.name}_pareto_frontier.html"
     with open(html_path, "w") as f:
         f.write(html)
-        webbrowser.open(html_path)
+        if open_html:
+            webbrowser.open(html_path)
+    log.info("==================== End ========================")
     return figures

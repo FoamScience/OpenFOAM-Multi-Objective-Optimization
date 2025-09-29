@@ -9,7 +9,7 @@ We use:
 Artifacts: CSV data for experiment trials
 """
 
-import sys, argparse, pprint, webbrowser, json
+import sys, argparse, pprint, json
 from omegaconf import DictConfig, OmegaConf
 from .config import load_config, save_default_config, override_config
 from .common import *
@@ -165,14 +165,14 @@ def optimize(cfg : DictConfig) -> None:
         for best_parameters, prediction, _, _ in front:
             log.info("Pareto-frontier configuration:\n%s", json.dumps(best_parameters, indent=2))
             log.info("Predictions for Pareto-frontier configuration (mean, variance):\n%s", json.dumps(prediction, indent=2))
-        _ = plot_pareto_frontier(client, front, write_html=True)
+        _ = plot_pareto_frontier(client, front, open_html=False)
     else:
         best_parameters, prediction, _, _ = client.get_best_parameterization(use_model_predictions=True)
         log.info("Best parameter set:\n%s", json.dumps(best_parameters, indent=2))
         log.info("Predictions for best parameter set (mean, variance):\n%s", json.dumps(prediction, indent=2))
 
     log.info("=================================================")
-    cards = compute_analysis_cards(cfg, client)
+    cards = compute_analysis_cards(cfg, client, open_html=False)
     store_cfg.save(client, cards)
     log.info("==================== End ========================")
 
@@ -215,6 +215,7 @@ def main():
                       f"Please set store.read_from option to either `json` or `sql`")
             exit(1)
         compute_analysis_cards(cfg, None)
+        _ = plot_pareto_frontier(client=StoreOptions(**cfg['store']).load(), open_html=False)
         return
 
     cfg = load_config(args.config)
