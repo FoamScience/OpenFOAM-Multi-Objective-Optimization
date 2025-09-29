@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+cd "${0%/*}" || exit 1
+
+container=$1
+mpi_cmd="mpirun -np 2"
+if [ -n "$SLURM_JOB_ID" ]; then
+    mpi_cmd="mpirun "
+fi
+set -euo pipefail
+
+if [ -z "$container" ]; then
+    foamCleanTutorials .
+    cp -rT 0.orig 0
+    blockMesh 2>&1 | tee log.blockMesh
+    decomposePar 2>&1 | tee log.decomposePar
+    mpirun -np 2 icoFoam -parallel 2>&1 | tee log.icoFoam
+    reconstructPar 2>&1 | tee log.reconstructPar
+else
+    apptainer run "$container" 'foamCleanTutorials .'
+    cp -rT 0.orig 0
+    apptainer run "$container" blockMesh | tee log.blockMesh
+    apptainer run "$container" decomposePar | tee log.decomposePar
+    $mpi_cmd apptainer run "$container" 'icoFoam -parallel' | tee log.icoFoam
+    apptainer run "$container" reconstructPar | tee log.reconstructPar
+fi
+

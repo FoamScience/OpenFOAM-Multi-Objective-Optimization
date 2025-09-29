@@ -1,0 +1,30 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2506                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      movingWallBCDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+code
+#{
+    const scalar U(readScalar(codeContext().lookup("lidVelocity")));
+    const scalar amp(readScalar(codeContext().lookup("inflowPerturbationAmplitude")));
+    const scalar L = 0.1;
+    const scalar mode(readScalar(codeContext().lookup("inflowPerturbationSpatialMode")));
+    forAll(patch().faceCells(), i)
+    {
+        const point& pt = patch().Cf()[i];
+        scalar x = pt.x();
+        scalar perturb = amp * sin(mode*M_PI*x/L);
+        operator[](i) = vector(U + perturb, 0, 0);
+    }
+#};

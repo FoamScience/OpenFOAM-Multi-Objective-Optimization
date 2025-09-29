@@ -1,0 +1,31 @@
+containers:
+  basic:
+    opencfd-openfoam:
+      os:
+        distro: ubuntu
+        version: 24.04
+      mpi:
+        implementation: openmpi
+        version: 4.1.5
+      framework:
+        definition: com-openfoam
+        version: 2312
+        git_ref: default 
+  projects:
+    openfoam-paraview:
+      base_container: opencfd-openfoam
+      definition: openfoam-paraview.def
+      build_args:
+        paraview_version:
+          - 5.11.2
+        python_version:
+          - 3.9
+        arch:
+          - x86_64
+        renderer:
+          - egl
+
+pull:
+  try_to_pull: true
+  protocol: oras
+  scope: ghcr.io/foamscience
