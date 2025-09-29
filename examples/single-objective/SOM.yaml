@@ -4,7 +4,7 @@ experiment:
   description: Demonstration of single-parameter single-objective optimization
   parameters:
   - name: x
-    bounds: [-200.0, 200.0]
+    bounds: [-100.0, 200.0]
     parameter_type: float
   parameter_constraints: []
 trial_generation:
