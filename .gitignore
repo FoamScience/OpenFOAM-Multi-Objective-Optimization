@@ -169,3 +169,5 @@ template/**
 artifacts/**
 trials/**
 
+*.sif
+log.*
