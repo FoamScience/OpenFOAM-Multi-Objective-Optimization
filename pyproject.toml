@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "foambo"
-version = "1.0.0"
+version = "1.1.0"
 authors = [
   { name="Mohammed Elwardi Fadeli", email="elwardifadeli@gmail.com" },
 ]
@@ -36,6 +36,9 @@ dependencies = [
     "nbformat>=5.10.4",
     "rich>=14.0.0",
     "prompt-toolkit>=3.0.51",
+    "fastapi>=0.118.0",
+    "uvicorn>=0.37.0",
+    "pyvista>=0.46.3",
 ]
 
 [project.scripts]

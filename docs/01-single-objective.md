@@ -8,13 +8,12 @@ The main objective is to **fit a Gaussian Process (surrogate model)** to the `F1
 
 <!-- mtoc-start:f93008a -->
 
-* [Optimization 101: single-objective, single-parameter setup](#optimization-101-single-objective-single-parameter-setup)
-  * [Prerequisites](#prerequisites)
-  * [Use foamBO to fit a GP model on the F1 curve](#use-foambo-to-fit-a-gp-model-on-the-f1-curve)
-    * [The YAML configuration](#the-yaml-configuration)
-    * [The OpenFOAM case folder](#the-openfoam-case-folder)
-    * [Generating predictions from models trained with foamBO](#generating-predictions-from-models-trained-with-foambo)
-  * [More advanced configuration tweaks](#more-advanced-configuration-tweaks)
+* [Prerequisites](#prerequisites)
+* [Use foamBO to fit a GP model on the F1 curve](#use-foambo-to-fit-a-gp-model-on-the-f1-curve)
+  * [The YAML configuration](#the-yaml-configuration)
+  * [The OpenFOAM case folder](#the-openfoam-case-folder)
+  * [Generating predictions from models trained with foamBO](#generating-predictions-from-models-trained-with-foambo)
+* [More advanced configuration tweaks](#more-advanced-configuration-tweaks)
 
 <!-- mtoc-end:f93008a -->
 
@@ -60,7 +59,7 @@ The configuration for this problem might look like this:
 ```
 
 ```yaml
-version: 1.0.0 # FoamBO version this is supposed to run with
+version: 1.1.0 # FoamBO version this is supposed to run with
 experiment:
   name: SingleObjF1
   description: Demonstration of single-parameter single-objective optimization

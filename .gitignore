@@ -164,6 +164,7 @@ cython_debug/
 **/outputs/**
 template/**
 *html
+!src/foambo/templates/*.html
 *png
 *_trial_*/
 artifacts/**
