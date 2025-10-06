@@ -269,7 +269,7 @@ class ManualGenerationNode(GenerationNode):
         **gs_gen_kwargs,
     ) :
         return GeneratorRun(
-            arms=[Arm(name="baseline", parameters=self.parameters)],
+            arms=[Arm(name=self.node_name, parameters=self.parameters)],
             optimization_config=experiment.optimization_config,
             search_space=experiment.search_space,
 
