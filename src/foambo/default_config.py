@@ -369,10 +369,68 @@ def get_config_docs() -> Dict[str, Any]:
         "orchestration_settings": "[Section] Controls for timeouts, poll times, early-stopping and convergence criteria",
         "orchestration_settings.max_trials": "Maximal number of trials to run, baseline included",
         "orchestration_settings.parallelism": "Maximal number of trials to be running at the same time",
-        "orchestration_settings.initial_seconds_between_polls": "How many seconds to wait to poll trials initially",
-        "orchestration_settings.seconds_between_polls_backoff_factor": "Enlarge/shrink initial waiting time between polls gradually",
-        "orchestration_settings.timeout_hours": "Timeout in hours for the whole experiment; baseline excluded",
-        "orchestration_settings.ttl_seconds_for_trials": "Timeout in seconds for single trials",
+        "orchestration_settings.tolerated_trial_failure_rate": """
+            Maximum fraction of failed trials before the experiment is terminated (default: 0.5).
+            
+            If more than this fraction of trials fail, the orchestrator will stop generating new trials.
+            Set to 1.0 to never stop due to failures, or 0.0 to stop at the first failure.
+            """,
+        "orchestration_settings.min_failed_trials_for_failure_rate_check": """
+            Minimum number of failed trials before checking the failure rate (default: 5).
+            
+            The failure rate check only triggers after at least this many trials have failed.
+            This prevents early termination due to a few initial failures.
+            """,
+        "orchestration_settings.initial_seconds_between_polls": """
+            Initial wait time in seconds before polling trial status (default: 1).
+            
+            This is the starting interval for checking if running trials have completed.
+            The actual wait time increases with the backoff factor.
+            """,
+        "orchestration_settings.min_seconds_before_poll": """
+            Minimum wait time in seconds before any poll (default: 1.0).
+            
+            Even with backoff, the orchestrator will wait at least this long between polls.
+            Prevents excessive polling of trial status.
+            """,
+        "orchestration_settings.seconds_between_polls_backoff_factor": """
+            Multiplier to increase wait time between polls (default: 1.5).
+            
+            After each poll, the wait time is multiplied by this factor (exponential backoff).
+            - Values > 1.0: Wait time increases (recommended for long-running trials)
+            - Value = 1.0: Constant wait time
+            - Values < 1.0: Wait time decreases (not recommended)
+            
+            Example: With initial=60s and factor=1.5, polls happen at 60s, 90s, 135s, 202.5s, ...
+            """,
+        "orchestration_settings.timeout_hours": """
+            Maximum runtime in hours for the entire experiment, excluding baseline trial (default: None).
+            
+            If set, the experiment will terminate after this many hours, even if max_trials
+            has not been reached. Set to None for no timeout.
+            """,
+        "orchestration_settings.ttl_seconds_for_trials": """
+            Time-to-live in seconds for individual trials (default: None).
+            
+            If a trial runs longer than this, it will be marked as failed and stopped.
+            Set to None for no per-trial timeout. Useful for preventing runaway simulations.
+            """,
+        "orchestration_settings.fatal_error_on_metric_trouble": """
+            Whether to terminate the experiment if metric evaluation fails (default: False).
+            
+            - True: Stop the entire experiment if any metric command fails or returns invalid data
+            - False: Mark the trial as failed and continue with other trials
+            
+            Set to True for strict validation, False for robustness to occasional metric failures.
+            """,
+        "orchestration_settings.immutable_search_space": """
+            Whether the search space is fixed after experiment creation (default: True).
+            
+            - True: Parameters and constraints cannot be modified after the first trial
+            - False: Allows dynamic modification of the search space (advanced use only)
+            
+            Most users should keep this as True for reproducibility and consistency.
+            """,
         "orchestration_settings.global_stopping_strategy": f"""
             Defines when to stop the optimization based on the best improvement so far.
 
@@ -442,8 +500,10 @@ def get_config_docs() -> Dict[str, Any]:
 
             Note that the SQL store is currently not well tested.
             """,
+    }
+    python_snippets = {
         "loading_client_state": {
-            "category": "Python snippet, not a configuration!",
+            "category": "Python snippet",
             "content": f"""
             You can load an [Ax](https://ax.dev) client for your experiment with:
             ```python
@@ -454,7 +514,464 @@ def get_config_docs() -> Dict[str, Any]:
             store = StoreOptions(save_to="nowhere", read_from="json", backend_options={{}})
             client = store.load()
             ```
-                """,
+            """,
         },
     }
-    return docs
+    visualizer_api = {
+        "visualizer_ui": {
+            "category": "Visualizer API",
+            "content": """
+            Launch an interactive web UI to explore optimization results and run manual trials.
+            
+            ```python
+            from foambo.visualize import visualizer_ui
+            from foambo.common import load_config
+            
+            cfg = load_config("config.yaml")
+            visualizer_ui(
+                cfg,
+                host="127.0.0.1",      # Server host address
+                port=8099,             # Server port (auto-increments if in use)
+                open_browser=True      # Automatically open browser
+            )
+            ```
+            
+            **Features:**
+            - **Experiment Overview**: View trial history, parameters, and objectives
+            - **Model Fitting**: Force model fitting to existing trials
+            - **Pareto Frontier**: Pick optimal points from multi-objective optimization
+            - **Sensitivity Analysis**: Adjust parameters and predict outcomes in real-time
+            - **Manual Trials**: Run trials with custom parameter values from the UI
+            - **Trial Visualization**: View OpenFOAM results with PyVista (if available)
+            - **Diagnostics & Insights**: Generate automated analysis reports with Plotly
+            
+            **Port Handling:**
+            If the specified port is in use, the visualizer automatically tries the next port
+            (up to 3 attempts). For example, if port 8099 is busy, it tries 8100, then 8101.
+            
+            **Requirements:**
+            - The experiment must already exist (run optimization first or load from storage)
+            - For trial visualization: PyVista must be installed
+            - For insights: Latest Ax version with `InsightsAnalysis` support
+            
+            **UI Tabs:**
+            1. **Optimization**: Main workflow for Pareto analysis and predictions
+            2. **Trial Visualization**: 3D visualization of OpenFOAM trial results
+            3. **Diagnostics & Insights**: Automated experiment analysis and diagnostics
+            
+            **Manual Trial Workflow:**
+            1. Click "Pick most interesting point" to select a Pareto-optimal configuration
+            2. Adjust parameters in the sensitivity analysis section
+            3. Click "Predict Metrics" to see expected outcomes
+            4. Click "Run trial with selected params" to execute the trial
+            5. Monitor trial status in real-time with automatic polling
+            
+            **Access the UI:**
+            Once started, navigate to `http://127.0.0.1:8099` (or the displayed port) in your browser.
+            """,
+        },
+        "visualizer_features": {
+            "category": "Visualizer API",
+            "content": """
+            **Advanced Visualizer Features:**
+            
+            **1. Parameter Deduplication:**
+            The visualizer automatically detects if you're trying to run a trial with parameters
+            that match an existing trial. Instead of running a duplicate, it returns the existing
+            trial index, saving computational resources.
+            
+            **2. Real-time Trial Status:**
+            When running manual trials, the UI polls the server every 2 seconds to show:
+            - "Queueing trial..." (yellow, spinner)
+            - "Trial X is running..." (yellow, spinner)
+            - "Trial X completed successfully" (green)
+            - "Trial X failed: <error>" (red with full error message)
+            
+            **3. Delta Visualization:**
+            When predicting metrics, the UI shows the change from the selected Pareto point:
+            - Green ↓: Improvement (better than Pareto point)
+            - Orange ↑: Worsening (worse than Pareto point)
+            - Gray →: Neutral (< 0.05% change)
+            
+            **4. OpenFOAM Visualization Settings:**
+            For trial visualization, you can configure:
+            - Time step selection (latest or specific time)
+            - Field variable to display
+            - Decompose polyhedra (for complex cells)
+            - Cell-to-point data conversion
+            - Skip zero time directory
+            
+            **5. Plotly Dark Theme:**
+            All diagnostic plots use Plotly's dark theme to match the UI aesthetic.
+            
+            **6. Error Handling:**
+            - Full tracebacks logged to server console
+            - User-friendly error messages in UI
+            - Graceful degradation when features are unavailable
+            
+            **7. Full-Width Layout:**
+            The UI spans the entire browser width for better visualization of:
+            - Wide parameter tables
+            - Large Plotly charts
+            - OpenFOAM mesh visualizations
+            """,
+        },
+        "visualizer_endpoints.api.experiment": {
+            "category": "Visualizer API",
+            "content": """
+            `GET /api/experiment` - Get experiment metadata, parameters, and objectives.
+            
+            **Returns:**
+            ```json
+            {
+                "name": "experiment_name",
+                "trial_count": 42,
+                "parameters": [
+                    {"name": "x", "type": "range", "bounds": [0.0, 1.0]},
+                    {"name": "y", "type": "choice", "values": ["a", "b"]}
+                ],
+                "objectives": [
+                    {"name": "drag", "direction": "Minimize"},
+                    {"name": "lift", "direction": "Maximize"}
+                ]
+            }
+            ```
+            
+            **Example:**
+            ```bash
+            curl http://localhost:8099/api/experiment
+            ```
+            """,
+        },
+        "visualizer_endpoints.api.trials": {
+            "category": "Visualizer API",
+            "content": """
+            `GET /api/trials` - List all trials with their status.
+            
+            **Returns:**
+            ```json
+            {
+                "trials": [
+                    {"index": 0, "status": "COMPLETED", "parameters": {...}},
+                    {"index": 1, "status": "RUNNING", "parameters": {...}}
+                ]
+            }
+            ```
+            """,
+        },
+        "visualizer_endpoints.api.trial_list": {
+            "category": "Visualizer API",
+            "content": """
+            `GET /api/trial_list` - Get detailed trial list with case paths.
+            
+            **Returns:**
+            ```json
+            {
+                "trials": [
+                    {
+                        "index": 0,
+                        "status": "COMPLETED",
+                        "has_case_path": true,
+                        "case_path": "/path/to/trial_0"
+                    }
+                ]
+            }
+            ```
+            
+            Used by the Trial Visualization tab to populate the trial selector.
+            """,
+        },
+        "visualizer_endpoints.api.pareto": {
+            "category": "Visualizer API",
+            "content": """
+            `GET /api/pareto?objective=<name>` - Get Pareto-optimal point for an objective.
+            
+            **Query Parameters:**
+            - `objective` (required): Name of the objective metric to optimize
+            
+            **Returns:**
+            ```json
+            {
+                "objective": "drag",
+                "minimize": true,
+                "parameters": {"x": 0.42, "y": "value1"}
+            }
+            ```
+            
+            Selects the point with the best value for the specified objective, considering:
+            - Objective direction (minimize/maximize)
+            - Prediction uncertainty (prefers lower SEM when values are similar)
+            
+            **Example:**
+            ```bash
+            curl "http://localhost:8099/api/pareto?objective=drag"
+            ```
+            """,
+        },
+        "visualizer_endpoints.api.sensitivity": {
+            "category": "Visualizer API",
+            "content": """
+            `POST /api/sensitivity` - Predict metrics for parameter variations.
+            
+            **Request Body:**
+            ```json
+            {
+                "base_parameters": {"x": 0.5, "y": "value1"},
+                "variations": {}
+            }
+            ```
+            
+            **Returns:**
+            ```json
+            {
+                "predicted_means": {"drag": 0.123, "lift": 2.456},
+                "predicted_sems": {"drag": 0.012, "lift": 0.089}
+            }
+            ```
+            
+            Used by the Sensitivity Analysis section to show real-time predictions
+            as parameters are adjusted.
+            """,
+        },
+        "visualizer_endpoints.api.pareto_html": {
+            "category": "Visualizer API",
+            "content": """
+            `GET /api/pareto_html` - Open Pareto frontier report in browser.
+            
+            **Returns:**
+            ```json
+            {"status": "opened"}
+            ```
+            
+            Generates and opens an interactive Pareto frontier visualization in the default browser.
+            The report includes all Pareto-optimal points and their trade-offs.
+            """,
+        },
+        "visualizer_endpoints.api.run_trial": {
+            "category": "Visualizer API",
+            "content": """
+            `POST /api/run_trial` - Queue a manual trial with custom parameters.
+            
+            **Request Body:**
+            ```json
+            {
+                "parameters": {"x": 0.5, "y": "value1"}
+            }
+            ```
+            
+            **Returns (new trial):**
+            ```json
+            {
+                "status": "queued",
+                "trial_index": 42
+            }
+            ```
+            
+            **Returns (duplicate detected):**
+            ```json
+            {
+                "status": "existing",
+                "trial_index": 15,
+                "message": "Trial 15 already exists with these parameters"
+            }
+            ```
+            
+            **Features:**
+            - Automatic parameter deduplication (MD5 hash comparison)
+            - Background execution with status tracking
+            - Real-time status updates via `/api/trial_status/{index}`
+            
+            **Example:**
+            ```bash
+            curl -X POST http://localhost:8099/api/run_trial \
+              -H "Content-Type: application/json" \
+              -d '{"parameters": {"x": 0.5, "y": "value1"}}'
+            ```
+            """,
+        },
+        "visualizer_endpoints.api.trial_status": {
+            "category": "Visualizer API",
+            "content": """
+            `GET /api/trial_status/{index}` - Get real-time status of a running trial.
+            
+            **Path Parameters:**
+            - `index`: Trial index number
+            
+            **Returns:**
+            ```json
+            {
+                "trial_index": 42,
+                "status": "running"  // or "completed", "failed: <error>", "not_found"
+            }
+            ```
+            
+            **Status Values:**
+            - `"running"`: Trial is currently executing
+            - `"completed"`: Trial finished successfully
+            - `"failed: <error>"`: Trial failed with error message (truncated to 200 chars)
+            - `"not_found"`: Trial index doesn't exist
+            - `"COMPLETED"`, `"FAILED"`, etc.: Ax trial status names (for non-manual trials)
+            
+            The UI polls this endpoint every 2 seconds to update trial status in real-time.
+            """,
+        },
+        "visualizer_endpoints.api.fit_model": {
+            "category": "Visualizer API",
+            "content": """
+            `POST /api/fit_model` - Force model fitting to existing trials.
+            
+            **Returns:**
+            ```json
+            {
+                "status": "Model fitting step executed"
+            }
+            ```
+            
+            Triggers a generation step to force the Bayesian model to fit to existing trial data.
+            Useful when predictions fail due to insufficient model training.
+            
+            **When to use:**
+            - After loading an experiment from storage
+            - When prediction errors mention "not enough trials"
+            - Before running sensitivity analysis on a new experiment
+            """,
+        },
+        "visualizer_endpoints.api.viz_settings": {
+            "category": "Visualizer API",
+            "content": """
+            `GET /api/viz_settings` - Get current visualization settings.
+            
+            **Returns:**
+            ```json
+            {
+                "time_step": "latest",
+                "field": "auto",
+                "mesh_parts": "internal",
+                "camera_angle": "isometric",
+                "decompose_polyhedra": true,
+                "cell_to_point": true,
+                "skip_zero_time": true
+            }
+            ```
+            
+            Settings are stored server-side and persist across all trial visualizations
+            until the server is restarted.
+            """,
+        },
+        "visualizer_endpoints.api.viz_settings_update": {
+            "category": "Visualizer API",
+            "content": """
+            `POST /api/viz_settings` - Update visualization settings.
+            
+            **Request Body:**
+            ```json
+            {
+                "time_step": "latest",
+                "field": "U",
+                "mesh_parts": "internal,inlet,outlet",
+                "camera_angle": "xy",
+                "decompose_polyhedra": true,
+                "cell_to_point": true,
+                "skip_zero_time": true
+            }
+            ```
+            
+            **Returns:**
+            ```json
+            {
+                "status": "ok",
+                "settings": { /* updated settings */ }
+            }
+            ```
+            
+            **Settings Options:**
+            - `time_step`: "latest" or time index (e.g., "0", "1", "2")
+            - `field`: "auto" or field name (e.g., "U", "p", "T")
+            - `mesh_parts`: Comma-separated list (e.g., "internal", "all_patches", "inlet,outlet")
+            - `camera_angle`: "isometric", "xy", "xz", "yz", "x", "y", "z"
+            - `decompose_polyhedra`: true/false - Decompose complex cells
+            - `cell_to_point`: true/false - Convert cell data to point data
+            - `skip_zero_time`: true/false - Skip /0 time directory
+            
+            Settings are applied to all subsequent trial visualizations.
+            """,
+        },
+        "visualizer_endpoints.api.trial_visualization": {
+            "category": "Visualizer API",
+            "content": """
+            `GET /api/trial_visualization/{index}` - Get PyVista visualization HTML.
+            
+            **Path Parameters:**
+            - `index`: Trial index number
+            
+            **Returns:**
+            ```json
+            {
+                "html": "<div>...PyVista screenshot...</div>",
+                "trial_index": 42,
+                "case_path": "/path/to/trial_42",
+                "n_points": 125000,
+                "n_cells": 120000,
+                "time_points": ["0", "100", "200"],
+                "arrays": ["U", "p", "T"],
+                "mesh_names": ["internal", "inlet", "outlet", "walls"]
+            }
+            ```
+            
+            **Visualization Settings:**
+            Uses server-side settings from `/api/viz_settings`. The UI automatically:
+            1. Loads settings on page load
+            2. Updates settings when user clicks "Apply Settings"
+            3. Uses saved settings for all trial visualizations
+            
+            **Mesh Parts:**
+            - `"internal"`: Internal mesh only
+            - `"all_patches"`: All boundary patches
+            - `"inlet,outlet"`: Specific patches (comma-separated)
+            - Multiple parts are rendered with different colors
+            
+            **Camera Angles:**
+            - `"isometric"`: 3D angled view (default)
+            - `"xy"`: Top view (XY plane)
+            - `"xz"`: Front view (XZ plane)
+            - `"yz"`: Side view (YZ plane)
+            - `"x"`, `"y"`, `"z"`: Direct axis views
+            
+            **Requirements:**
+            - PyVista must be installed
+            - Trial must have a valid case path with OpenFOAM results
+            - OpenFOAM case must have a `.foam` file (created automatically if missing)
+            
+            **Output:**
+            The HTML contains a high-quality screenshot (1400x1000px) with mesh info overlay.
+            Settings are persistent across trials for consistent visualization.
+            """,
+        },
+        "visualizer_endpoints.api.insights": {
+            "category": "Visualizer API",
+            "content": """
+            `GET /api/insights` - Generate diagnostic analysis and insights.
+            
+            **Returns:**
+            ```json
+            {
+                "html": "<div>...Plotly charts and analysis...</div>"
+            }
+            ```
+            
+            **Features:**
+            - Automated experiment diagnostics (DiagnosticAnalysis)
+            - Optimization insights and recommendations (InsightsAnalysis)
+            - Interactive Plotly charts with dark theme
+            - Parameter importance analysis
+            - Convergence diagnostics
+            
+            **Requirements:**
+            - Latest Ax version with `InsightsAnalysis` support
+            - Plotly for interactive charts
+            
+            The HTML includes embedded Plotly.js scripts that execute automatically in the UI.
+            """,
+        },
+    }
+    return {**docs, **python_snippets, **visualizer_api}
