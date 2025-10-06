@@ -1,0 +1,1155 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FoamBO Visualizer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script charset="utf-8" src="https://cdn.plot.ly/plotly-3.0.1.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class'
+    }
+  </script>
+  <style>
+    .slider-row { margin: 0.5rem 0; }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .tab-button {
+      padding: 0.75rem 1.5rem;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+    .tab-button.active {
+      border-bottom-color: #06b6d4;
+      color: #06b6d4;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+  <div class="w-full px-4 py-6">
+    <h1 class="text-3xl font-bold mb-6 text-slate-50">FoamBO Visualizer</h1>
+
+    <!-- Tab Navigation -->
+    <div class="bg-slate-800  border-b border-slate-700 mb-0">
+      <div class="flex space-x-1 px-4">
+        <button onclick="switchTab('optimization')" id="tab-optimization" class="tab-button active text-slate-300 hover:text-slate-100">
+          Optimization
+        </button>
+        <button onclick="switchTab('visualization')" id="tab-visualization" class="tab-button text-slate-300 hover:text-slate-100">
+          Trial Visualization
+        </button>
+        <button onclick="switchTab('insights')" id="tab-insights" class="tab-button text-slate-300 hover:text-slate-100">
+          Diagnostics & Insights
+        </button>
+      </div>
+    </div>
+
+    <!-- Optimization Tab Content -->
+    <div id="content-optimization" class="tab-content active">
+
+    <!-- Experiment Panel -->
+    <div class="bg-slate-800 shadow-lg mb-6 border border-slate-700" id="exp-info">
+      <div class="bg-slate-700 px-6 py-3 border-b border-slate-600">
+        <h2 class="text-lg font-semibold text-slate-50">Experiment</h2>
+      </div>
+      <div class="p-6">
+        <div class="flex flex-wrap gap-3 items-center mb-4">
+          <button onclick="refreshExperiment()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white transition-colors">
+            Refresh
+          </button>
+          <span id="exp-name" class="text-slate-300 font-medium"></span>
+        </div>
+        <div class="flex flex-wrap gap-3 items-center mb-4">
+          <label class="text-slate-300 font-medium min-w-[140px]">Objective:</label>
+          <select id="objective" class="px-3 py-2 bg-slate-700 border border-slate-600 text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"></select>
+        </div>
+        <div id="exp-data" class="overflow-x-auto"></div>
+      </div>
+    </div>
+
+    <!-- Model Fitting Panel -->
+    <div class="bg-slate-800  shadow-lg mb-6 border border-slate-700" id="model-fit">
+      <div class="bg-slate-700 px-6 py-3  border-b border-slate-600">
+        <h2 class="text-lg font-semibold text-slate-50">Model Fitting</h2>
+      </div>
+      <div class="p-6">
+        <div class="flex flex-wrap gap-3 mb-4">
+          <button id="btn-fit" onclick="fitModel()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white  transition-colors">
+            Fit data to model
+          </button>
+        </div>
+        <div id="status-fit" class="hidden mt-3 p-3 " role="alert"></div>
+        <p class="text-slate-400 text-sm mt-2">Runs one generation step to force the current strategy to fit
+        a predictive model to existing trials. Do this once if the prediction is complaining about not enough trials.</p>
+      </div>
+    </div>
+
+    <!-- Pareto Frontier Panel -->
+    <div class="bg-slate-800  shadow-lg mb-6 border border-slate-700" id="pareto">
+      <div class="bg-slate-700 px-6 py-3  border-b border-slate-600">
+        <h2 class="text-lg font-semibold text-slate-50">Pareto Frontier</h2>
+      </div>
+      <div class="p-6">
+        <div class="flex flex-wrap gap-3 mb-4">
+          <button id="btn-pareto" onclick="pickInteresting()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white  transition-colors">
+            Pick most interesting point
+          </button>
+          <button id="btn-run" onclick="runSelectedTrial()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white  transition-colors">
+            Run trial with selected params
+          </button>
+          <button id="btn-open-pareto" onclick="openParetoHtml()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white  transition-colors">
+            Open Pareto Report
+          </button>
+        </div>
+        <div id="status-pareto" class="hidden mt-3 p-3 " role="alert"></div>
+        <div id="status-run" class="hidden mt-3 p-3 " role="alert"></div>
+        <div id="selected-params" class="mt-4 overflow-x-auto"></div>
+      </div>
+    </div>
+
+    <!-- Sensitivity Panel -->
+    <div class="bg-slate-800  shadow-lg mb-6 border border-slate-700" id="sensitivity">
+      <div class="bg-slate-700 px-6 py-3  border-b border-slate-600">
+        <h2 class="text-lg font-semibold text-slate-50">Sensitivity Analysis</h2>
+      </div>
+      <div class="p-6">
+        <div id="sensitivity-placeholder" class="text-center py-8 text-slate-400">
+          <svg class="mx-auto h-12 w-12 mb-3 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+          <p class="text-lg">Pick an interesting Pareto point first</p>
+        </div>
+        <div id="sensitivity-content" class="hidden">
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- Parameters Table -->
+            <div>
+              <h3 class="text-md font-semibold text-slate-200 mb-3">Parameters</h3>
+              <div class="bg-slate-700  overflow-hidden">
+                <table class="min-w-full divide-y divide-slate-600 text-sm">
+                  <thead class="bg-slate-600">
+                    <tr>
+                      <th class="px-4 py-2 text-left text-slate-100 font-semibold">Parameter</th>
+                      <th class="px-4 py-2 text-left text-slate-100 font-semibold">Value</th>
+                    </tr>
+                  </thead>
+                  <tbody id="param-table-body" class="divide-y divide-slate-600">
+                  </tbody>
+                </table>
+              </div>
+              <button onclick="predict()" class="mt-4 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white  transition-colors w-full">
+                Predict Metrics
+              </button>
+              <div id="status-predict" class="hidden mt-3 p-3 " role="alert"></div>
+            </div>
+            <!-- Predictions Table -->
+            <div>
+              <h3 class="text-md font-semibold text-slate-200 mb-3">Predicted Objectives</h3>
+              <div id="predictions" class="bg-slate-700  overflow-hidden">
+                <div class="text-center py-8 text-slate-400">
+                  <p>Click "Predict Metrics" to see results</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    </div>
+    <!-- End Optimization Tab -->
+
+    <!-- Trial Visualization Tab Content -->
+    <div id="content-visualization" class="tab-content">
+      <div class="bg-slate-800  shadow-lg mb-6 border border-slate-700">
+        <div class="bg-slate-700 px-6 py-3  border-b border-slate-600">
+          <h2 class="text-lg font-semibold text-slate-50">OpenFOAM Trial Visualization</h2>
+        </div>
+        <div class="p-6">
+          <div class="mb-4">
+            <label class="text-slate-300 font-medium block mb-2">Select Trial:</label>
+            <div class="flex gap-3 items-center">
+              <select id="trial-select" class="px-3 py-2 bg-slate-700 border border-slate-600  text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500">
+                <option value="">-- Select a trial --</option>
+              </select>
+              <button onclick="loadTrialVisualization()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white  transition-colors">
+                Load Visualization
+              </button>
+              <button onclick="refreshTrialList()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white  transition-colors">
+                Refresh List
+              </button>
+              <button id="viz-settings-btn-top" onclick="toggleVizSettings()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors">
+                <svg class="w-5 h-5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                </svg>
+                Settings
+              </button>
+            </div>
+          </div>
+          <div id="status-viz" class="hidden mt-3 p-3 " role="alert"></div>
+          
+          <!-- Wrapper for viz container and settings overlay -->
+          <div class="relative mt-4">
+            <div id="viz-container" class="bg-slate-900" style="min-height: 600px;">
+              <div id="viz-content">
+                <div class="text-center py-20 text-slate-400">
+                  <svg class="mx-auto h-16 w-16 mb-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                  </svg>
+                  <p class="text-lg">Select a trial to visualize OpenFOAM results</p>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Settings Overlay (outside viz-container but in same wrapper) -->
+            <div id="viz-settings" class="hidden absolute top-4 right-4 bg-slate-800 border border-slate-600  p-4 shadow-xl" style="width: 280px; z-index: 1000;">
+              <div class="flex justify-between items-center mb-3">
+                <h3 class="text-sm font-semibold text-slate-200">Visualization Settings</h3>
+                <button onclick="toggleVizSettings()" class="text-slate-400 hover:text-slate-200">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                  </svg>
+                </button>
+              </div>
+              
+              <div class="space-y-3">
+                <div>
+                  <label class="text-xs text-slate-300 block mb-1">Time Step</label>
+                  <select id="viz-time-step" class="w-full px-2 py-1 text-sm bg-slate-700 border border-slate-600  text-slate-100">
+                    <option value="latest">Latest</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label class="text-xs text-slate-300 block mb-1">Field Variable</label>
+                  <select id="viz-field" class="w-full px-2 py-1 text-sm bg-slate-700 border border-slate-600  text-slate-100">
+                    <option value="auto">Auto (first available)</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label class="text-xs text-slate-300 block mb-2">Mesh Parts</label>
+                  <div class="space-y-1">
+                    <label class="flex items-center text-xs text-slate-300">
+                      <input type="checkbox" id="viz-mesh-internal" checked class="mr-2">
+                      Internal Mesh
+                    </label>
+                    <label class="flex items-center text-xs text-slate-300">
+                      <input type="checkbox" id="viz-mesh-all-patches" class="mr-2">
+                      All Patches
+                    </label>
+                    <div id="viz-mesh-patches-list" class="ml-4 space-y-1">
+                      <!-- Individual patches will be populated here -->
+                    </div>
+                  </div>
+                </div>
+                
+                <div>
+                  <label class="text-xs text-slate-300 block mb-1">Camera Angle</label>
+                  <select id="viz-camera" class="w-full px-2 py-1 text-sm bg-slate-700 border border-slate-600  text-slate-100">
+                    <option value="isometric">Isometric</option>
+                    <option value="xy">XY Plane (Top)</option>
+                    <option value="xz">XZ Plane (Front)</option>
+                    <option value="yz">YZ Plane (Side)</option>
+                    <option value="x">X Axis</option>
+                    <option value="y">Y Axis</option>
+                    <option value="z">Z Axis</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label class="flex items-center text-xs text-slate-300">
+                    <input type="checkbox" id="viz-decompose" checked class="mr-2">
+                    Decompose Polyhedra
+                  </label>
+                  <p class="text-xs text-slate-500 mt-1">Decompose complex cells for visualization</p>
+                </div>
+                
+                <div>
+                  <label class="flex items-center text-xs text-slate-300">
+                    <input type="checkbox" id="viz-cell-to-point" checked class="mr-2">
+                    Cell to Point Data
+                  </label>
+                  <p class="text-xs text-slate-500 mt-1">Convert cell data to point data</p>
+                </div>
+                
+                <div>
+                  <label class="flex items-center text-xs text-slate-300">
+                    <input type="checkbox" id="viz-skip-zero" class="mr-2">
+                    Skip Zero Time
+                  </label>
+                  <p class="text-xs text-slate-500 mt-1">Ignore the /0 time directory</p>
+                </div>
+                
+                <button onclick="applyVizSettings()" class="w-full mt-2 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white text-sm  transition-colors">
+                  Apply Settings
+                </button>
+              </div>
+            </div>
+            
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- End Trial Visualization Tab -->
+
+    <!-- Insights Tab Content -->
+    <div id="content-insights" class="tab-content">
+      <div class="bg-slate-800  shadow-lg mb-6 border border-slate-700">
+        <div class="p-6">
+          <div class="mb-4">
+            <button onclick="generateInsights()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white transition-colors">
+              Generate Insights
+            </button>
+          </div>
+          <div id="status-insights" class="hidden mt-3 p-3" role="alert"></div>
+          <div id="insights-container" class="mt-4">
+            <div class="text-center py-20 text-slate-400">
+              <svg class="mx-auto h-16 w-16 mb-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
+              </svg>
+              <p class="text-lg">Click "Generate Insights" to analyze your experiment</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- End Insights Tab -->
+
+  </div>
+
+  <script>
+  let exp = null;
+  let selectedParams = {};
+  let paretoObjectives = {}; // Store Pareto point objective values for comparison
+  let objectiveDirections = {}; // Store minimize/maximize direction for each objective
+  let currentParetoTrialId = null; // Track the trial ID of the currently running Pareto point
+  
+  // Visualization settings (loaded from server)
+  let vizSettings = null;
+  
+  async function refreshTrialList() {
+    const selector = document.getElementById('trial-select');
+    selector.innerHTML = '<option value="">-- Select a trial --</option>';
+    
+    // Add current Pareto trial if available
+    if (currentParetoTrialId !== null) {
+      const opt = document.createElement('option');
+      opt.value = currentParetoTrialId;
+      opt.textContent = `Trial ${currentParetoTrialId} (Current Pareto Point)`;
+      selector.appendChild(opt);
+    }
+    
+    // Fetch all trials from experiment
+    try {
+      const r = await fetch('/api/trial_list');
+      const j = await r.json();
+      
+      if (j.trials) {
+        j.trials.forEach(trial => {
+          if (trial.index !== currentParetoTrialId) {
+            const opt = document.createElement('option');
+            opt.value = trial.index;
+            const caseStatus = trial.has_case_path ? '✓' : '✗';
+            opt.textContent = `Trial ${trial.index} [${caseStatus}] - ${trial.status || 'Unknown'}`;
+            selector.appendChild(opt);
+          }
+        });
+      }
+    } catch (e) {
+      console.error('Failed to fetch trial list:', e);
+    }
+  }
+  
+  function toggleVizSettings() {
+    const settings = document.getElementById('viz-settings');
+    if (!settings) {
+      console.error('Settings overlay not found!');
+      return;
+    }
+    
+    if (settings.classList.contains('hidden')) {
+      settings.classList.remove('hidden');
+      console.log('Settings overlay shown');
+    } else {
+      settings.classList.add('hidden');
+      console.log('Settings overlay hidden');
+    }
+  }
+  
+  async function applyVizSettings() {
+    // Save settings from UI to persistent state
+    saveVizSettings();
+    // Re-load visualization with new settings
+    console.log('Applying visualization settings...');
+    await loadTrialVisualization();
+    toggleVizSettings();
+  }
+  
+  async function generateInsights() {
+    setStatus('status-insights', 'running', 'Generating insights...');
+    
+    try {
+      const r = await fetch('/api/insights');
+      const j = await r.json();
+      
+      if (!r.ok) {
+        throw new Error(j.detail || 'Failed to generate insights');
+      }
+      
+      if (j.html) {
+        const container = document.getElementById('insights-container');
+        container.innerHTML = j.html;
+        
+        // Execute any script tags in the inserted HTML (for Plotly)
+        const scripts = container.querySelectorAll('script');
+        scripts.forEach(oldScript => {
+          const newScript = document.createElement('script');
+          Array.from(oldScript.attributes).forEach(attr => {
+            newScript.setAttribute(attr.name, attr.value);
+          });
+          newScript.appendChild(document.createTextNode(oldScript.innerHTML));
+          oldScript.parentNode.replaceChild(newScript, oldScript);
+        });
+        
+        setStatus('status-insights', 'success', 'Insights generated successfully');
+      } else {
+        throw new Error('No insights data returned');
+      }
+    } catch (e) {
+      const msg = e && e.message ? e.message : 'Insights generation failed';
+      const el = document.getElementById('status-insights');
+      if (el) {
+        el.classList.remove('hidden');
+        el.classList.add('bg-red-900', 'border', 'border-red-700', 'text-red-200');
+        el.textContent = msg;
+      }
+    }
+  }
+  
+  async function loadVizSettings() {
+    // Load settings from server
+    try {
+      const r = await fetch('/api/viz_settings');
+      vizSettings = await r.json();
+      console.log('Settings loaded from server:', vizSettings);
+    } catch (e) {
+      console.error('Failed to load settings:', e);
+      // Use defaults
+      vizSettings = {
+        time_step: 'latest',
+        field: 'auto',
+        mesh_parts: 'internal',
+        camera_angle: 'isometric',
+        decompose_polyhedra: true,
+        cell_to_point: true,
+        skip_zero_time: false
+      };
+    }
+  }
+  
+  async function saveVizSettings() {
+    // Save current settings from UI to server
+    const meshParts = [];
+    if (document.getElementById('viz-mesh-internal')?.checked) {
+      meshParts.push('internal');
+    }
+    if (document.getElementById('viz-mesh-all-patches')?.checked) {
+      meshParts.push('all_patches');
+    }
+    // Get individual patch checkboxes
+    document.querySelectorAll('[id^="viz-mesh-patch-"]').forEach(cb => {
+      if (cb.checked) {
+        meshParts.push(cb.dataset.patchName);
+      }
+    });
+    
+    const cameraValue = document.getElementById('viz-camera')?.value;
+    console.log('Camera dropdown value:', cameraValue);
+    
+    const settings = {
+      time_step: document.getElementById('viz-time-step')?.value || 'latest',
+      field: document.getElementById('viz-field')?.value || 'auto',
+      mesh_parts: meshParts.join(','),
+      camera_angle: cameraValue || 'isometric',
+      decompose_polyhedra: document.getElementById('viz-decompose')?.checked ?? true,
+      cell_to_point: document.getElementById('viz-cell-to-point')?.checked ?? true,
+      skip_zero_time: document.getElementById('viz-skip-zero')?.checked ?? false
+    };
+    
+    try {
+      const r = await fetch('/api/viz_settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(settings)
+      });
+      const result = await r.json();
+      vizSettings = result.settings;
+      console.log('Settings saved to server:', vizSettings);
+    } catch (e) {
+      console.error('Failed to save settings:', e);
+    }
+  }
+  
+  function restoreVizSettings() {
+    // Restore settings from persistent state to UI
+    if (!vizSettings) return;
+    
+    if (document.getElementById('viz-time-step')) {
+      document.getElementById('viz-time-step').value = vizSettings.time_step;
+    }
+    if (document.getElementById('viz-field')) {
+      document.getElementById('viz-field').value = vizSettings.field;
+    }
+    if (document.getElementById('viz-camera')) {
+      document.getElementById('viz-camera').value = vizSettings.camera_angle;
+    }
+    if (document.getElementById('viz-decompose')) {
+      document.getElementById('viz-decompose').checked = vizSettings.decompose_polyhedra;
+    }
+    if (document.getElementById('viz-cell-to-point')) {
+      document.getElementById('viz-cell-to-point').checked = vizSettings.cell_to_point;
+    }
+    if (document.getElementById('viz-skip-zero')) {
+      document.getElementById('viz-skip-zero').checked = vizSettings.skip_zero_time;
+    }
+    
+    // Parse mesh_parts (comma-separated string from server)
+    const meshPartsArray = vizSettings.mesh_parts.split(',').map(s => s.trim());
+    
+    // Restore mesh part checkboxes
+    if (document.getElementById('viz-mesh-internal')) {
+      document.getElementById('viz-mesh-internal').checked = meshPartsArray.includes('internal');
+    }
+    if (document.getElementById('viz-mesh-all-patches')) {
+      document.getElementById('viz-mesh-all-patches').checked = meshPartsArray.includes('all_patches');
+    }
+    // Restore individual patch checkboxes
+    document.querySelectorAll('[id^="viz-mesh-patch-"]').forEach(cb => {
+      cb.checked = meshPartsArray.includes(cb.dataset.patchName);
+    });
+    
+    console.log('Settings restored:', vizSettings);
+  }
+  
+  async function loadTrialVisualization() {
+    const trialIndex = document.getElementById('trial-select').value;
+    if (!trialIndex && trialIndex !== '0') {
+      alert('Please select a trial');
+      return;
+    }
+    
+    setStatus('status-viz', 'running', 'Loading trial visualization...');
+    
+    // Settings are stored server-side, just call the endpoint
+    console.log('Loading visualization with server-side settings');
+    
+    try {
+      const url = `/api/trial_visualization/${trialIndex}`;
+      console.log('Fetching:', url);
+      const r = await fetch(url);
+      const j = await r.json();
+      
+      if (!r.ok) {
+        throw new Error(j.detail || 'Failed to load visualization');
+      }
+      
+      // Display the visualization (HTML from PyVista)
+      if (j.html) {
+        // Only replace the content div, not the entire container (preserves settings overlay)
+        document.getElementById('viz-content').innerHTML = j.html;
+        
+        // Show settings button (the one in the toolbar)
+        const settingsBtnTop = document.getElementById('viz-settings-btn-top');
+        if (settingsBtnTop) {
+          settingsBtnTop.classList.remove('hidden');
+          console.log('Settings button shown');
+        } else {
+          console.error('Settings button not found!');
+        }
+        
+        // Populate time steps and fields if available
+        if (j.time_points && j.time_points.length > 0) {
+          const timeSelect = document.getElementById('viz-time-step');
+          if (timeSelect) {
+            timeSelect.innerHTML = '<option value="latest">Latest</option>' + 
+              j.time_points.map((t, i) => `<option value="${i}">${t}</option>`).join('');
+          }
+        }
+        if (j.arrays && j.arrays.length > 0) {
+          const fieldSelect = document.getElementById('viz-field');
+          if (fieldSelect) {
+            fieldSelect.innerHTML = '<option value="auto">Auto (first available)</option>' + 
+              j.arrays.map(a => `<option value="${a}">${a}</option>`).join('');
+          }
+        }
+        if (j.mesh_names && j.mesh_names.length > 0) {
+          const patchesList = document.getElementById('viz-mesh-patches-list');
+          if (patchesList) {
+            // Filter out 'internal' from mesh_names to get only patches
+            const patches = j.mesh_names.filter(name => name !== 'internal');
+            patchesList.innerHTML = patches.map(name => 
+              `<label class="flex items-center text-xs text-slate-300">
+                <input type="checkbox" id="viz-mesh-patch-${name}" data-patch-name="${name}" class="mr-2">
+                ${name}
+              </label>`
+            ).join('');
+            
+            // Restore patch checkboxes after creating them
+            document.querySelectorAll('[id^="viz-mesh-patch-"]').forEach(cb => {
+              cb.checked = vizSettings.mesh_parts.includes(cb.dataset.patchName);
+            });
+          }
+        }
+        
+        // Restore UI to show current settings (but don't overwrite vizSettings!)
+        restoreVizSettings();
+        
+        setStatus('status-viz', 'success', `Trial ${trialIndex} loaded from ${j.case_path || 'unknown path'}`);
+      } else {
+        throw new Error(`No visualization data returned. Does ${j.case_path} exist?`);
+      }
+    } catch (e) {
+      const msg = e && e.message ? e.message : 'Visualization failed';
+      const el = document.getElementById('status-viz');
+      if (el) {
+        el.classList.remove('hidden');
+        el.classList.add('bg-red-900', 'border', 'border-red-700', 'text-red-200');
+        el.textContent = msg;
+      }
+    }
+  }
+
+  function renderJSONTable(value) {
+    if (value === null || value === undefined) return '<em class="text-slate-400">null</em>';
+    if (Array.isArray(value)) {
+      if (value.length === 0) return '<em class="text-slate-400">[]</em>';
+      // If array of objects with same keys, render as a table
+      if (typeof value[0] === 'object') {
+        const keys = Array.from(value.reduce((s, o) => { Object.keys(o).forEach(k => s.add(k)); return s; }, new Set()));
+        const rows = value.map((o, i) => `<tr class="${i % 2 === 0 ? 'bg-slate-700' : 'bg-slate-750'}">` + keys.map(k => `<td class="px-4 py-2 text-slate-200">${o[k] !== undefined ? o[k] : ''}</td>`).join('') + '</tr>').join('');
+        return `<table class="min-w-full divide-y divide-slate-600 text-sm"><thead class="bg-slate-600"><tr>${keys.map(k => `<th class="px-4 py-2 text-left text-slate-100 font-semibold">${k}</th>`).join('')}</tr></thead><tbody class="divide-y divide-slate-600">${rows}</tbody></table>`;
+      }
+      return `<table class="min-w-full divide-y divide-slate-600 text-sm"><tbody class="divide-y divide-slate-600">${value.map((v, i) => `<tr class="${i % 2 === 0 ? 'bg-slate-700' : 'bg-slate-750'}"><td class="px-4 py-2 text-slate-200">${v}</td></tr>`).join('')}</tbody></table>`;
+    }
+    if (typeof value === 'object') {
+      const rows = Object.entries(value).map(([k, v], i) => `<tr class="${i % 2 === 0 ? 'bg-slate-700' : 'bg-slate-750'}"><th class="px-4 py-2 text-left text-slate-300 font-medium">${k}</th><td class="px-4 py-2 text-slate-200">${typeof v === 'object' ? renderJSONTable(v) : v}</td></tr>`).join('');
+      return `<table class="min-w-full divide-y divide-slate-600 text-sm"><tbody class="divide-y divide-slate-600">${rows}</tbody></table>`;
+    }
+    return String(value);
+  }
+
+  function setStatus(id, phase, message) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.remove('hidden', 'bg-slate-600', 'bg-yellow-900', 'bg-green-900', 'border-yellow-700', 'border-green-700', 'text-yellow-200', 'text-green-200');
+    if (phase === 'running') {
+      el.classList.remove('hidden');
+      el.classList.add('bg-yellow-900', 'border', 'border-yellow-700', 'text-yellow-200');
+      el.innerHTML = `<div class="flex items-center"><svg class="animate-spin h-5 w-5 mr-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><div>${message || 'Task running...'}</div></div>`;
+    } else if (phase === 'success') {
+      el.classList.remove('hidden');
+      el.classList.add('bg-green-900', 'border', 'border-green-700', 'text-green-200');
+      el.textContent = message || 'Task completed';
+    } else {
+      el.classList.add('hidden');
+      el.textContent = message || '';
+    }
+  }
+
+  // Helper: detect if a range parameter should be integer-valued
+  function isIntegerParam(p) {
+    if (p.type !== 'range') return false;
+    const lo = Array.isArray(p.bounds) ? p.bounds[0] : undefined;
+    const hi = Array.isArray(p.bounds) ? p.bounds[1] : undefined;
+    const step = p.step;
+    return Number.isInteger(lo) && Number.isInteger(hi) && (step == null || Number.isInteger(step));
+  }
+
+  // Helper: coerce raw UI value into correct type expected by Ax
+  function coerceValue(p, raw) {
+    if (p.type === 'choice') {
+      // If values are numeric, cast accordingly
+      if (Array.isArray(p.values) && p.values.length > 0 && p.values.every(v => typeof v === 'number')) {
+        const num = Number(raw);
+        return p.values.every(v => Number.isInteger(v)) ? Math.round(num) : num;
+      }
+      // Otherwise keep as string
+      return raw;
+    } else {
+      let num = Number(raw);
+      if (isNaN(num)) return raw;
+      if (isIntegerParam(p)) num = Math.round(num);
+      return num;
+    }
+  }
+
+  async function refreshExperiment() {
+    const r = await fetch('/api/experiment');
+    const j = await r.json();
+    exp = j;
+    const maxTrialsText = j.max_trials ? ` / ${j.max_trials}` : '';
+    document.getElementById('exp-name').innerText = `${j.name} (trials: ${j.trial_count}${maxTrialsText})`;
+    document.getElementById('exp-data').innerHTML = renderJSONTable(j);
+    const sel = document.getElementById('objective');
+    // Normalize and render all options at once
+    const objList = Array.isArray(j.objectives) ? j.objectives : (j.objectives ? Object.values(j.objectives) : []);
+    console.log('Objectives from /api/experiment:', objList);
+    
+    // Render objectives with direction labels
+    sel.innerHTML = objList.map(o => {
+      const name = typeof o === 'string' ? o : o.name;
+      const direction = typeof o === 'object' && o.direction ? ` (${o.direction})` : '';
+      return `<option value="${name}">${name}${direction}</option>`;
+    }).join('');
+    
+    const btnPareto = document.getElementById('btn-pareto');
+    const btnRun = document.getElementById('btn-run');
+    const btnOpen = document.getElementById('btn-open-pareto');
+    const hasObjectives = objList.length > 0;
+    if (hasObjectives) {
+      const firstObj = typeof objList[0] === 'string' ? objList[0] : objList[0].name;
+      sel.value = firstObj;
+    } else {
+      sel.innerHTML = '<option value="" disabled selected>(no objectives found)</option>';
+    }
+    // Enable/disable actions depending on whether objectives are present
+    [btnPareto, btnRun, btnOpen].forEach(b => { if (b) b.disabled = !hasObjectives; });
+    // Show a count badge next to the select for quick visibility
+    let countBadge = document.getElementById('objective-count');
+    if (!countBadge) {
+      countBadge = document.createElement('span');
+      countBadge.id = 'objective-count';
+      countBadge.className = 'inline-flex items-center px-2.5 py-0.5 -full text-xs font-medium bg-slate-600 text-slate-200 ml-2';
+      sel.parentNode.appendChild(countBadge);
+    }
+    countBadge.textContent = `${objList.length}`;
+    
+    // Store objective directions for delta coloring
+    objectiveDirections = {};
+    objList.forEach(o => {
+      const name = typeof o === 'string' ? o : o.name;
+      const direction = typeof o === 'object' && o.direction ? o.direction : 'Unknown';
+      objectiveDirections[name] = direction;
+    });
+    
+    buildSliders(j.parameters);
+  }
+
+  window.addEventListener('DOMContentLoaded', () => {
+    // Only refresh if we're on the optimization tab
+    if (document.getElementById('exp-info')) {
+      refreshExperiment();
+    }
+    // Load visualization settings from server
+    loadVizSettings();
+  });
+
+  function buildSliders(params) {
+    const root = document.getElementById('sliders');
+    if (!root) return; // Element doesn't exist
+    root.innerHTML = '';
+    params.forEach(p => {
+      const div = document.createElement('div');
+      div.className = 'slider-row flex flex-wrap items-center gap-3';
+      if (p.type === 'choice') {
+        const html = `<label class="text-slate-300 font-medium min-w-[140px]">${p.name}</label>
+          <select id="s-${p.name}" class="px-3 py-2 bg-slate-700 border border-slate-600  text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500">${p.values.map(v => `<option value="${v}">${v}</option>`).join('')}</select>`;
+        div.innerHTML = html;
+      } else {
+        const [lo, hi] = p.bounds;
+        const step = p.step ?? (hi - lo) / 100.0;
+        const html = `<label class="text-slate-300 font-medium min-w-[140px]">${p.name} (${lo}..${hi})</label>
+          <input type="range" min="${lo}" max="${hi}" step="${step}" id="s-${p.name}" class="flex-1 h-2 bg-slate-700  appearance-none cursor-pointer accent-cyan-600" />
+          <input type="text" id="t-${p.name}" size="8" class="px-3 py-2 bg-slate-700 border border-slate-600  text-slate-100 w-24 focus:outline-none focus:ring-2 focus:ring-cyan-500" />`;
+        div.innerHTML = html;
+        setTimeout(() => {
+          const slider = document.getElementById('s-' + p.name);
+          const text = document.getElementById('t-' + p.name);
+          slider.value = (lo + hi) / 2.0;
+          text.value = slider.value;
+          slider.addEventListener('input', () => text.value = slider.value);
+          text.addEventListener('input', () => slider.value = text.value);
+        }, 0);
+      }
+      root.appendChild(div);
+    });
+  }
+
+  function populateSensitivitySection() {
+    if (!selectedParams || Object.keys(selectedParams).length === 0) {
+      document.getElementById('sensitivity-placeholder').classList.remove('hidden');
+      document.getElementById('sensitivity-content').classList.add('hidden');
+      return;
+    }
+    
+    document.getElementById('sensitivity-placeholder').classList.add('hidden');
+    document.getElementById('sensitivity-content').classList.remove('hidden');
+    
+    // Populate parameter table with sliders/pickers
+    const tbody = document.getElementById('param-table-body');
+    tbody.innerHTML = '';
+    
+    if (!exp || !exp.parameters) return;
+    
+    exp.parameters.forEach((p, idx) => {
+      const tr = document.createElement('tr');
+      tr.className = idx % 2 === 0 ? 'bg-slate-700' : 'bg-slate-750';
+      
+      const tdName = document.createElement('td');
+      tdName.className = 'px-4 py-3 text-slate-300 font-medium';
+      tdName.textContent = p.name;
+      
+      const tdValue = document.createElement('td');
+      tdValue.className = 'px-4 py-3';
+      
+      if (p.type === 'choice') {
+        const select = document.createElement('select');
+        select.id = `s-${p.name}`;
+        select.className = 'w-full px-3 py-2 bg-slate-600 border border-slate-500  text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500';
+        p.values.forEach(v => {
+          const opt = document.createElement('option');
+          opt.value = v;
+          opt.textContent = v;
+          if (selectedParams[p.name] === v) opt.selected = true;
+          select.appendChild(opt);
+        });
+        tdValue.appendChild(select);
+      } else {
+        const container = document.createElement('div');
+        container.className = 'flex items-center gap-2';
+        
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        slider.id = `s-${p.name}`;
+        slider.min = p.bounds[0];
+        slider.max = p.bounds[1];
+        const integerLike = isIntegerParam(p);
+        slider.step = p.step ?? (integerLike ? 1 : (p.bounds[1] - p.bounds[0]) / 100.0);
+        let initVal = selectedParams[p.name] ?? (p.bounds[0] + p.bounds[1]) / 2.0;
+        slider.value = integerLike ? Math.round(initVal) : initVal;
+        slider.className = 'flex-1 h-2 bg-slate-600  appearance-none cursor-pointer accent-cyan-600';
+        
+        const text = document.createElement('input');
+        text.type = 'text';
+        text.id = `t-${p.name}`;
+        text.value = slider.value;
+        text.className = 'px-3 py-2 bg-slate-600 border border-slate-500  text-slate-100 w-24 focus:outline-none focus:ring-2 focus:ring-cyan-500';
+        
+        slider.addEventListener('input', () => {
+          text.value = slider.value;
+        });
+        text.addEventListener('input', () => {
+          const val = integerLike ? Math.round(Number(text.value)) : Number(text.value);
+          if (!Number.isNaN(val)) slider.value = val;
+        });
+        
+        container.appendChild(slider);
+        container.appendChild(text);
+        tdValue.appendChild(container);
+      }
+      
+      tr.appendChild(tdName);
+      tr.appendChild(tdValue);
+      tbody.appendChild(tr);
+    });
+    
+    // Clear predictions
+    document.getElementById('predictions').innerHTML = '<div class="text-center py-8 text-slate-400"><p>Click "Predict Metrics" to see results</p></div>';
+  }
+
+  async function loadPareto() {
+    const objective = document.getElementById('objective').value;
+    const r = await fetch(`/api/pareto?objective=${encodeURIComponent(objective)}`);
+    const j = await r.json();
+    selectedParams = j.parameters;
+    document.getElementById('selected-params').innerHTML = renderJSONTable(selectedParams);
+    setStatus('status-pareto', 'success', 'Pareto point selected');
+    
+    // Get predictions for the Pareto point
+    paretoObjectives = {};
+    try {
+      const predR = await fetch('/api/sensitivity', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ base_parameters: selectedParams, variations: {} })
+      });
+      const predJ = await predR.json();
+      if (predJ.predicted_means) {
+        paretoObjectives = predJ.predicted_means;
+      }
+    } catch (e) {
+      console.warn('Could not fetch Pareto point predictions:', e);
+    }
+    
+    populateSensitivitySection();
+  }
+
+  async function pickInteresting() {
+    setStatus('status-pareto', 'running', 'Fetching Pareto frontier...');
+    await loadPareto();
+  }
+
+  async function runSelectedTrial() {
+    setStatus('status-run', 'running', 'Queueing trial...');
+    
+    const r = await fetch('/api/run_trial', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({parameters: selectedParams})
+    });
+    const j = await r.json();
+    
+    if (j.trial_index !== undefined) {
+      currentParetoTrialId = j.trial_index;
+      
+      // Check if trial already exists
+      if (j.status === 'existing') {
+        setStatus('status-run', 'success', j.message || `Trial ${j.trial_index} already exists with these parameters`);
+        return;
+      }
+      
+      // Poll for trial status
+      const pollStatus = async () => {
+        try {
+          const statusR = await fetch(`/api/trial_status/${j.trial_index}`);
+          const statusJ = await statusR.json();
+          
+          if (statusJ.status === 'running') {
+            setStatus('status-run', 'running', `Trial ${j.trial_index} is running...`);
+            setTimeout(pollStatus, 2000); // Poll every 2 seconds
+          } else if (statusJ.status === 'completed') {
+            setStatus('status-run', 'success', `Trial ${j.trial_index} completed successfully`);
+            // Stop polling on completion
+            return;
+          } else if (statusJ.status && statusJ.status.startsWith('failed')) {
+            const el = document.getElementById('status-run');
+            if (el) {
+              el.classList.remove('hidden', 'bg-yellow-900', 'border-yellow-700', 'text-yellow-200', 'bg-green-900', 'border-green-700', 'text-green-200');
+              el.classList.add('bg-red-900', 'border', 'border-red-700', 'text-red-200');
+              // Extract error message after "failed: " prefix
+              const errorMsg = statusJ.status.substring(8); // Remove "failed: " prefix
+              el.innerHTML = `<div><strong>Trial ${j.trial_index} failed:</strong><br/><span class="text-sm">${errorMsg}</span><br/><span class="text-xs text-red-300 mt-1">See server logs for full traceback</span></div>`;
+            }
+            // Stop polling on failure
+            return;
+          } else {
+            setStatus('status-run', 'success', `Trial ${j.trial_index} queued`);
+          }
+        } catch (e) {
+          console.error('Failed to poll trial status:', e);
+        }
+      };
+      
+      setStatus('status-run', 'success', `Trial ${j.trial_index} queued`);
+      setTimeout(pollStatus, 1000); // Start polling after 1 second
+    } else {
+      setStatus('status-run', 'success', 'Trial queued');
+    }
+  }
+
+  async function predict() {
+    setStatus('status-predict', 'running', 'Computing predictions...');
+    const params = {};
+    (exp.parameters || []).forEach(p => {
+      const id = 's-' + p.name;
+      const el = document.getElementById(id);
+      if (!el) return;
+      const raw = el.value;
+      params[p.name] = coerceValue(p, raw);
+    });
+    
+    try {
+      const r = await fetch('/api/sensitivity', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ base_parameters: params, variations: {} })
+      });
+      const j = await r.json();
+      
+      // Render predictions as a table with confidence intervals and deltas
+      if (j.predicted_means && j.predicted_sems) {
+        const rows = Object.entries(j.predicted_means).map(([metric, mean], idx) => {
+          const sem = j.predicted_sems[metric] || 0;
+          const ci95 = 1.96 * sem; // 95% confidence interval
+          const lower = mean - ci95;
+          const upper = mean + ci95;
+          
+          // Calculate relative error as percentage of mean
+          const relativeError = mean !== 0 ? (sem / Math.abs(mean) * 100) : 0;
+          
+          // Calculate delta from currently picked Pareto point
+          let deltaHtml = '';
+          if (paretoObjectives[metric] !== undefined) {
+            const delta = mean - paretoObjectives[metric];
+            const deltaPercent = paretoObjectives[metric] !== 0 ? (delta / Math.abs(paretoObjectives[metric]) * 100) : 0;
+            
+            // Check if delta is effectively zero (neutral)
+            const isNeutral = Math.abs(deltaPercent) < 0.05; // Less than 0.05% is considered neutral
+            
+            let color, arrow;
+            if (isNeutral) {
+              // Neutral: no significant change
+              color = 'text-slate-400';
+              arrow = '→';
+            } else {
+              // Determine if this is an improvement based on objective direction
+              const direction = objectiveDirections[metric] || 'Minimize';
+              let isImprovement = false;
+              if (direction === 'Minimize') {
+                isImprovement = delta < 0; // Lower is better
+              } else if (direction === 'Maximize') {
+                isImprovement = delta > 0; // Higher is better
+              }
+              
+              color = isImprovement ? 'text-green-400' : 'text-orange-400';
+              arrow = isImprovement ? '↓' : '↑';
+            }
+            
+            deltaHtml = `<div class="${color} text-xs mt-1">${arrow} ${delta >= 0 ? '+' : ''}${delta.toFixed(4)} (${deltaPercent >= 0 ? '+' : ''}${deltaPercent.toFixed(1)}%)</div>`;
+          }
+          
+          return `<tr class="${idx % 2 === 0 ? 'bg-slate-700' : 'bg-slate-750'}">
+            <td class="px-4 py-3 text-slate-300 font-medium">${metric}</td>
+            <td class="px-4 py-3 text-slate-200">
+              <div>${mean.toFixed(4)} <span class="text-xs text-slate-400">(±${relativeError.toFixed(2)}%)</span></div>
+              <div class="text-xs text-slate-400 mt-1">95% CI: [${lower.toFixed(4)}, ${upper.toFixed(4)}]</div>
+              ${deltaHtml}
+            </td>
+          </tr>`;
+        }).join('');
+        
+        document.getElementById('predictions').innerHTML = `
+          <table class="min-w-full divide-y divide-slate-600 text-sm">
+            <thead class="bg-slate-600">
+              <tr>
+                <th class="px-4 py-2 text-left text-slate-100 font-semibold">Objective</th>
+                <th class="px-4 py-2 text-left text-slate-100 font-semibold">Predicted Value</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-600">${rows}</tbody>
+          </table>`;
+      } else if (j.predicted_means) {
+        // Fallback if no SEM data
+        const rows = Object.entries(j.predicted_means).map(([metric, value], idx) => 
+          `<tr class="${idx % 2 === 0 ? 'bg-slate-700' : 'bg-slate-750'}">
+            <td class="px-4 py-3 text-slate-300 font-medium">${metric}</td>
+            <td class="px-4 py-3 text-slate-200">${typeof value === 'number' ? value.toFixed(4) : value}</td>
+          </tr>`
+        ).join('');
+        
+        document.getElementById('predictions').innerHTML = `
+          <table class="min-w-full divide-y divide-slate-600 text-sm">
+            <thead class="bg-slate-600">
+              <tr>
+                <th class="px-4 py-2 text-left text-slate-100 font-semibold">Objective</th>
+                <th class="px-4 py-2 text-left text-slate-100 font-semibold">Predicted Value</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-600">${rows}</tbody>
+          </table>`;
+      } else {
+        document.getElementById('predictions').innerHTML = renderJSONTable(j);
+      }
+      setStatus('status-predict', 'success', 'Prediction complete');
+    } catch (error) {
+      document.getElementById('predictions').innerHTML = `<div class="text-center py-8 text-red-400"><p>Error: ${error.message || 'Prediction failed'}</p></div>`;
+      setStatus('status-predict', 'hidden', '');
+    }
+  }
+
+  async function openParetoHtml() {
+    await fetch('/api/pareto_html');
+  }
+  
+  function switchTab(tabName) {
+    // Hide all tab contents
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab-button').forEach(el => el.classList.remove('active'));
+    
+    // Show selected tab
+    document.getElementById(`content-${tabName}`).classList.add('active');
+    document.getElementById(`tab-${tabName}`).classList.add('active');
+    
+    // Load trial list when switching to visualization tab
+    if (tabName === 'visualization') {
+      loadTrialList();
+    }
+  }
+  
+  async function loadTrialList() {
+    try {
+      const r = await fetch('/api/trial_list');
+      const j = await r.json();
+      const select = document.getElementById('trial-select');
+      if (!select) return;
+      select.innerHTML = '<option value="">-- Select a trial --</option>';
+      if (j.trials) {
+        j.trials.forEach(t => {
+          const opt = document.createElement('option');
+          opt.value = t.index;
+          opt.textContent = `Trial ${t.index} - ${t.status || 'Unknown'}`;
+          select.appendChild(opt);
+        });
+      }
+    } catch (e) {
+      console.error('Failed to load trial list:', e);
+    }
+  }
+  
+  async function loadTrialVisualization() {
+    const trialIndex = document.getElementById('trial-select').value;
+    if (!trialIndex) {
+      alert('Please select a trial first');
+      return;
+    }
+    
+    setStatus('status-viz', 'running', 'Loading trial visualization...');
+    try {
+      const r = await fetch(`/api/trial_visualization/${trialIndex}`);
+      const j = await r.json();
+      
+      if (j.html) {
+        document.getElementById('viz-container').innerHTML = j.html;
+        setStatus('status-viz', 'success', 'Visualization loaded');
+      } else {
+        throw new Error(`No visualization data returned.<br>${j.detail}`);
+      }
+    } catch (e) {
+      setStatus('status-viz', 'hidden', '');
+      document.getElementById('viz-container').innerHTML = `<div class="text-center py-20 text-red-400"><p>Failed to load visualization: ${e.message}</p></div>`;
+    }
+  }
+  
+  async function fitModel() {
+    const btn = document.getElementById('btn-fit');
+    try {
+      if (btn) btn.disabled = true;
+      setStatus('status-fit', 'running', 'Fitting model to existing trials...');
+      const r = await fetch('/api/fit_model', { method: 'POST' });
+      const j = await r.json();
+      if (!r.ok) {
+        throw new Error(j.detail || 'Failed to fit model');
+      }
+      setStatus('status-fit', 'success', j.status || 'Model fitting step executed');
+    } catch (e) {
+      const msg = e && e.message ? e.message : 'Model fitting failed';
+      const el = document.getElementById('status-fit');
+      if (el) {
+        el.classList.remove('hidden');
+        el.classList.add('bg-red-900', 'border', 'border-red-700', 'text-red-200');
+        el.textContent = msg;
+      }
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+  </script>
+</body>
+</html>
