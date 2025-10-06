@@ -15,6 +15,7 @@ from .config import load_config, save_default_config, override_config
 from .common import *
 from .metrics import streaming_metric
 from .analysis import compute_analysis_cards, plot_pareto_frontier
+from .visualize import visualizer_ui
 from .orchestrate import (
     ExistingTrialsOptions, ExperimentOptions, OptimizationOptions,
     ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
@@ -185,12 +186,14 @@ def main():
     uvx foamBO --config My.yaml                          # Runs optimization from My.yaml
     uvx foamBO --config My.yaml ++experiment.name=Test2  # Runs optimization from My.yaml with different experiment name
     uvx foamBO --analysis ++store.read_from=json         # Generates reports for optimization from foamBO.yaml configuration
-    uvx foamBO --docs                                    # Browse the documentation""",
+    uvx foamBO --docs                                    # Browse the documentation
+    uvx foamBO --visualize                               # Run visualization UI for current experiment state""",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--analysis', action='store_true', help='Generate optimization reports')
     group.add_argument('--generate-config', action='store_true', help='Generate a default config file and exit')
     group.add_argument('--docs', action='store_true', help='Open Configuration Docs explorer')
+    group.add_argument('--visualize', action='store_true', help='Run visualization UI for current experiment state')
     group.add_argument('-V', '--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('--config', type=str, default=DEFAULT_CONFIG, help=f'Path to config YAML file (optional, default={DEFAULT_CONFIG})')
     parser.add_argument('overrides', nargs=argparse.REMAINDER, help='Config overrides in ++key=value format')
@@ -216,6 +219,19 @@ def main():
             exit(1)
         compute_analysis_cards(cfg, None)
         _ = plot_pareto_frontier(client=StoreOptions(**cfg['store']).load(), open_html=False)
+        return
+
+    if args.visualize:
+        cfg = load_config(args.config)
+        if args.overrides:
+            overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
+            if overrides:
+                cfg = override_config(cfg, overrides)
+        if cfg['store']['read_from'] == "nowhere":
+            log.error(f"Cannot perform analysis without reading in client state\n"
+                      f"Please set store.read_from option to either `json` or `sql`")
+            exit(1)
+        visualizer_ui(cfg)
         return
 
     cfg = load_config(args.config)
