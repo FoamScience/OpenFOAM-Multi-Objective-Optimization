@@ -206,15 +206,32 @@ def api_pareto(objective: str = Query(..., description="Objective metric name to
     ensure_loaded()
     try:
         front = state.client.get_pareto_frontier(use_model_predictions=True)
+        if len(front) == 0:
+            front = state.client.get_pareto_frontier(use_model_predictions=False)
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
         log.error(f"Failed to compute Pareto frontier:\n{error_trace}")
         raise HTTPException(status_code=500, detail=f"Failed to compute Pareto frontier: {
                             e}\n\nSee server logs for full traceback.")
+
+    if not front or len(front) == 0:
+        raise HTTPException(
+            status_code=404,
+            detail="No Pareto frontier points found. The model may not be fitted yet, or there are no completed trials with predictions. Try running 'Fit data to model' first."
+        )
+
     name_to_min = get_objective_minimize_map(state.client)
     minimize = name_to_min.get(objective, True)
     params = pick_interesting_point(front, objective, minimize)
+
+    if not params or len(params) == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No valid parameters found for objective '{objective}'. The Pareto frontier may not have predictions for this objective. Try a different objective or run more trials."
+        )
+
+    log.info(f"Selected Pareto point for objective '{objective}': {params}")
     return {"objective": objective, "minimize": minimize, "parameters": params}
 
 
@@ -313,6 +330,7 @@ def api_fit_model():
 @app.post("/api/sensitivity")
 def api_sensitivity(req: SensitivityRequest):
     ensure_loaded()
+    log.info(f"Sensitivity request received: base_parameters={req.base_parameters}, variations={req.variations}")
     try:
         predictions = state.client.predict([req.base_parameters])
         if not predictions or len(predictions) == 0:
@@ -324,6 +342,9 @@ def api_sensitivity(req: SensitivityRequest):
                      for metric, values in pred_dict.items()}
         return {"predicted_means": means_dict, "predicted_sems": sems_dict}
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        log.error(f"Sensitivity analysis failed:\n{error_trace}")
         error_msg = str(e)
         if "UnsupportedError" in type(e).__name__ or "not predictive" in error_msg.lower():
             raise HTTPException(
@@ -337,7 +358,7 @@ def api_sensitivity(req: SensitivityRequest):
             )
         else:
             raise HTTPException(
-                status_code=500, detail=f"Prediction failed: {error_msg}")
+                status_code=500, detail=f"Prediction failed: {error_msg}\n\nSee server logs for full traceback.")
 
 
 @app.get("/api/pareto_html")
