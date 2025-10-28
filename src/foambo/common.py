@@ -14,7 +14,7 @@ from logging import Logger
 from ax.utils.common.logger import get_logger
 log : Logger = get_logger(__name__)
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # Default config filename
 DEFAULT_CONFIG = "foamBO.yaml"
@@ -272,11 +272,12 @@ def preprocess_case(parameters, cfg):
             with FoamFile(param_file_path) as paramFile:
                 for param in elmv:
                     try:
-                        log.debug(f"##### replacing {elmv[param]} with {parameters[param]} in {param_file_path}")
-                        new_val = assign_foam_path(paramFile, elmv[param], parameters[param])
-                        log.debug(f"##### new value = {new_val}")
-                    except Exception:
-                        log.exception(
+                        if param in parameters.keys():
+                            log.debug(f"##### replacing {elmv[param]} with {parameters[param]} in {param_file_path}")
+                            new_val = assign_foam_path(paramFile, elmv[param], parameters[param])
+                            log.debug(f"##### new value = {new_val}")
+                    except:
+                        log.warn(
                             f"Something went wrong when substituting:\n"
                             f"{elmv[param]} in {param_file_path} with {parameters[param]}\n"
                             f"If it's not a dependent parameter, this is serious..."
