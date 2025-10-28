@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -34,20 +34,31 @@
     }
   </style>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen">
+<body class="bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 min-h-screen transition-colors">
   <div class="w-full px-4 py-6">
-    <h1 class="text-3xl font-bold mb-6 text-slate-50">FoamBO Visualizer</h1>
+    <div class="flex justify-between items-center mb-6">
+      <h1 class="text-3xl font-bold text-slate-900 dark:text-slate-50">FoamBO Visualizer</h1>
+      <button id="theme-toggle" onclick="toggleTheme()" class="px-4 py-2 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-900 dark:text-slate-100 rounded-lg transition-colors flex items-center gap-2">
+        <svg id="theme-icon-sun" class="w-5 h-5 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path>
+        </svg>
+        <svg id="theme-icon-moon" class="w-5 h-5 block dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path>
+        </svg>
+        <span id="theme-text">Light</span>
+      </button>
+    </div>
 
     <!-- Tab Navigation -->
-    <div class="bg-slate-800  border-b border-slate-700 mb-0">
+    <div class="bg-slate-100 dark:bg-slate-800 border-b border-slate-300 dark:border-slate-700 mb-0">
       <div class="flex space-x-1 px-4">
-        <button onclick="switchTab('optimization')" id="tab-optimization" class="tab-button active text-slate-300 hover:text-slate-100">
+        <button onclick="switchTab('optimization')" id="tab-optimization" class="tab-button active text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100">
           Optimization
         </button>
-        <button onclick="switchTab('visualization')" id="tab-visualization" class="tab-button text-slate-300 hover:text-slate-100">
+        <button onclick="switchTab('visualization')" id="tab-visualization" class="tab-button text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100">
           Trial Visualization
         </button>
-        <button onclick="switchTab('insights')" id="tab-insights" class="tab-button text-slate-300 hover:text-slate-100">
+        <button onclick="switchTab('insights')" id="tab-insights" class="tab-button text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100">
           Diagnostics & Insights
         </button>
       </div>
@@ -57,46 +68,46 @@
     <div id="content-optimization" class="tab-content active">
 
     <!-- Experiment Panel -->
-    <div class="bg-slate-800 shadow-lg mb-6 border border-slate-700" id="exp-info">
-      <div class="bg-slate-700 px-6 py-3 border-b border-slate-600">
-        <h2 class="text-lg font-semibold text-slate-50">Experiment</h2>
+    <div class="bg-white dark:bg-slate-800 shadow-lg mb-6 border border-slate-300 dark:border-slate-700" id="exp-info">
+      <div class="bg-slate-200 dark:bg-slate-700 px-6 py-3 border-b border-slate-300 dark:border-slate-600">
+        <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-50">Experiment</h2>
       </div>
       <div class="p-6">
         <div class="flex flex-wrap gap-3 items-center mb-4">
           <button onclick="refreshExperiment()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white transition-colors">
             Refresh
           </button>
-          <span id="exp-name" class="text-slate-300 font-medium"></span>
+          <span id="exp-name" class="text-slate-700 dark:text-slate-300 font-medium"></span>
         </div>
         <div class="flex flex-wrap gap-3 items-center mb-4">
-          <label class="text-slate-300 font-medium min-w-[140px]">Objective:</label>
-          <select id="objective" class="px-3 py-2 bg-slate-700 border border-slate-600 text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"></select>
+          <label class="text-slate-700 dark:text-slate-300 font-medium min-w-[140px]">Objective:</label>
+          <select id="objective" class="px-3 py-2 bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500"></select>
         </div>
         <div id="exp-data" class="overflow-x-auto"></div>
       </div>
     </div>
 
     <!-- Model Fitting Panel -->
-    <div class="bg-slate-800  shadow-lg mb-6 border border-slate-700" id="model-fit">
-      <div class="bg-slate-700 px-6 py-3  border-b border-slate-600">
-        <h2 class="text-lg font-semibold text-slate-50">Model Fitting</h2>
+    <div class="bg-white dark:bg-slate-800 shadow-lg mb-6 border border-slate-300 dark:border-slate-700" id="model-fit">
+      <div class="bg-slate-200 dark:bg-slate-700 px-6 py-3 border-b border-slate-300 dark:border-slate-600">
+        <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-50">Model Fitting</h2>
       </div>
       <div class="p-6">
         <div class="flex flex-wrap gap-3 mb-4">
-          <button id="btn-fit" onclick="fitModel()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white  transition-colors">
+          <button id="btn-fit" onclick="fitModel()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white transition-colors">
             Fit data to model
           </button>
         </div>
-        <div id="status-fit" class="hidden mt-3 p-3 " role="alert"></div>
-        <p class="text-slate-400 text-sm mt-2">Runs one generation step to force the current strategy to fit
+        <div id="status-fit" class="hidden mt-3 p-3" role="alert"></div>
+        <p class="text-slate-600 dark:text-slate-400 text-sm mt-2">Runs one generation step to force the current strategy to fit
         a predictive model to existing trials. Do this once if the prediction is complaining about not enough trials.</p>
       </div>
     </div>
 
     <!-- Pareto Frontier Panel -->
-    <div class="bg-slate-800  shadow-lg mb-6 border border-slate-700" id="pareto">
-      <div class="bg-slate-700 px-6 py-3  border-b border-slate-600">
-        <h2 class="text-lg font-semibold text-slate-50">Pareto Frontier</h2>
+    <div class="bg-white dark:bg-slate-800 shadow-lg mb-6 border border-slate-300 dark:border-slate-700" id="pareto">
+      <div class="bg-slate-200 dark:bg-slate-700 px-6 py-3 border-b border-slate-300 dark:border-slate-600">
+        <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-50">Pareto Frontier</h2>
       </div>
       <div class="p-6">
         <div class="flex flex-wrap gap-3 mb-4">
@@ -117,13 +128,13 @@
     </div>
 
     <!-- Sensitivity Panel -->
-    <div class="bg-slate-800  shadow-lg mb-6 border border-slate-700" id="sensitivity">
-      <div class="bg-slate-700 px-6 py-3  border-b border-slate-600">
-        <h2 class="text-lg font-semibold text-slate-50">Sensitivity Analysis</h2>
+    <div class="bg-white dark:bg-slate-800 shadow-lg mb-6 border border-slate-300 dark:border-slate-700" id="sensitivity">
+      <div class="bg-slate-200 dark:bg-slate-700 px-6 py-3 border-b border-slate-300 dark:border-slate-600">
+        <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-50">Sensitivity Analysis</h2>
       </div>
       <div class="p-6">
-        <div id="sensitivity-placeholder" class="text-center py-8 text-slate-400">
-          <svg class="mx-auto h-12 w-12 mb-3 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div id="sensitivity-placeholder" class="text-center py-8 text-slate-600 dark:text-slate-400">
+          <svg class="mx-auto h-12 w-12 mb-3 text-slate-400 dark:text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
           </svg>
           <p class="text-lg">Pick an interesting Pareto point first</p>
@@ -132,29 +143,30 @@
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <!-- Parameters Table -->
             <div>
-              <h3 class="text-md font-semibold text-slate-200 mb-3">Parameters</h3>
-              <div class="bg-slate-700  overflow-hidden">
-                <table class="min-w-full divide-y divide-slate-600 text-sm">
-                  <thead class="bg-slate-600">
+              <h3 class="text-md font-semibold text-slate-800 dark:text-slate-200 mb-3">Parameters</h3>
+              <div class="bg-slate-100 dark:bg-slate-700 overflow-hidden">
+                <table class="min-w-full divide-y divide-slate-300 dark:divide-slate-600 text-sm">
+                  <thead class="bg-slate-200 dark:bg-slate-600">
                     <tr>
-                      <th class="px-4 py-2 text-left text-slate-100 font-semibold">Parameter</th>
-                      <th class="px-4 py-2 text-left text-slate-100 font-semibold">Value</th>
+                      <th class="px-4 py-2 text-left text-slate-900 dark:text-slate-100 font-semibold w-8"></th>
+                      <th class="px-4 py-2 text-left text-slate-900 dark:text-slate-100 font-semibold">Parameter</th>
+                      <th class="px-4 py-2 text-left text-slate-900 dark:text-slate-100 font-semibold">Value</th>
                     </tr>
                   </thead>
-                  <tbody id="param-table-body" class="divide-y divide-slate-600">
+                  <tbody id="param-table-body" class="divide-y divide-slate-300 dark:divide-slate-600">
                   </tbody>
                 </table>
               </div>
-              <button onclick="predict()" class="mt-4 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white  transition-colors w-full">
+              <button onclick="predict()" class="mt-4 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white transition-colors w-full">
                 Predict Metrics
               </button>
-              <div id="status-predict" class="hidden mt-3 p-3 " role="alert"></div>
+              <div id="status-predict" class="hidden mt-3 p-3" role="alert"></div>
             </div>
             <!-- Predictions Table -->
             <div>
-              <h3 class="text-md font-semibold text-slate-200 mb-3">Predicted Objectives</h3>
-              <div id="predictions" class="bg-slate-700  overflow-hidden">
-                <div class="text-center py-8 text-slate-400">
+              <h3 class="text-md font-semibold text-slate-800 dark:text-slate-200 mb-3">Predicted Objectives</h3>
+              <div id="predictions" class="bg-slate-100 dark:bg-slate-700 overflow-hidden">
+                <div class="text-center py-8 text-slate-600 dark:text-slate-400">
                   <p>Click "Predict Metrics" to see results</p>
                 </div>
               </div>
@@ -168,15 +180,15 @@
 
     <!-- Trial Visualization Tab Content -->
     <div id="content-visualization" class="tab-content">
-      <div class="bg-slate-800  shadow-lg mb-6 border border-slate-700">
-        <div class="bg-slate-700 px-6 py-3  border-b border-slate-600">
-          <h2 class="text-lg font-semibold text-slate-50">OpenFOAM Trial Visualization</h2>
+      <div class="bg-white dark:bg-slate-800 shadow-lg mb-6 border border-slate-300 dark:border-slate-700">
+        <div class="bg-slate-200 dark:bg-slate-700 px-6 py-3 border-b border-slate-300 dark:border-slate-600">
+          <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-50">OpenFOAM Trial Visualization</h2>
         </div>
         <div class="p-6">
           <div class="mb-4">
-            <label class="text-slate-300 font-medium block mb-2">Select Trial:</label>
+            <label class="text-slate-700 dark:text-slate-300 font-medium block mb-2">Select Trial:</label>
             <div class="flex gap-3 items-center">
-              <select id="trial-select" class="px-3 py-2 bg-slate-700 border border-slate-600  text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500">
+              <select id="trial-select" class="px-3 py-2 bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500">
                 <option value="">-- Select a trial --</option>
               </select>
               <button onclick="loadTrialVisualization()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white  transition-colors">
@@ -185,7 +197,7 @@
               <button onclick="refreshTrialList()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white  transition-colors">
                 Refresh List
               </button>
-              <button id="viz-settings-btn-top" onclick="toggleVizSettings()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors">
+              <button id="viz-settings-btn-top" onclick="toggleVizSettings()" class="px-4 py-2 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-900 dark:text-slate-200 transition-colors">
                 <svg class="w-5 h-5 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
@@ -198,9 +210,9 @@
           
           <!-- Wrapper for viz container and settings overlay -->
           <div class="relative mt-4">
-            <div id="viz-container" class="bg-slate-900" style="min-height: 600px;">
+            <div id="viz-container" class="bg-slate-50 dark:bg-slate-900" style="min-height: 600px;">
               <div id="viz-content">
-                <div class="text-center py-20 text-slate-400">
+                <div class="text-center py-20 text-slate-600 dark:text-slate-400">
                   <svg class="mx-auto h-16 w-16 mb-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
                   </svg>
@@ -210,10 +222,10 @@
             </div>
             
             <!-- Settings Overlay (outside viz-container but in same wrapper) -->
-            <div id="viz-settings" class="hidden absolute top-4 right-4 bg-slate-800 border border-slate-600  p-4 shadow-xl" style="width: 280px; z-index: 1000;">
+            <div id="viz-settings" class="hidden absolute top-4 right-4 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 p-4 shadow-xl" style="width: 280px; z-index: 1000;">
               <div class="flex justify-between items-center mb-3">
-                <h3 class="text-sm font-semibold text-slate-200">Visualization Settings</h3>
-                <button onclick="toggleVizSettings()" class="text-slate-400 hover:text-slate-200">
+                <h3 class="text-sm font-semibold text-slate-900 dark:text-slate-200">Visualization Settings</h3>
+                <button onclick="toggleVizSettings()" class="text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200">
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                   </svg>
@@ -222,27 +234,27 @@
               
               <div class="space-y-3">
                 <div>
-                  <label class="text-xs text-slate-300 block mb-1">Time Step</label>
-                  <select id="viz-time-step" class="w-full px-2 py-1 text-sm bg-slate-700 border border-slate-600  text-slate-100">
+                  <label class="text-xs text-slate-700 dark:text-slate-300 block mb-1">Time Step</label>
+                  <select id="viz-time-step" class="w-full px-2 py-1 text-sm bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-900 dark:text-slate-100">
                     <option value="latest">Latest</option>
                   </select>
                 </div>
                 
                 <div>
-                  <label class="text-xs text-slate-300 block mb-1">Field Variable</label>
-                  <select id="viz-field" class="w-full px-2 py-1 text-sm bg-slate-700 border border-slate-600  text-slate-100">
+                  <label class="text-xs text-slate-700 dark:text-slate-300 block mb-1">Field Variable</label>
+                  <select id="viz-field" class="w-full px-2 py-1 text-sm bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-900 dark:text-slate-100">
                     <option value="auto">Auto (first available)</option>
                   </select>
                 </div>
                 
                 <div>
-                  <label class="text-xs text-slate-300 block mb-2">Mesh Parts</label>
+                  <label class="text-xs text-slate-700 dark:text-slate-300 block mb-2">Mesh Parts</label>
                   <div class="space-y-1">
-                    <label class="flex items-center text-xs text-slate-300">
+                    <label class="flex items-center text-xs text-slate-700 dark:text-slate-300">
                       <input type="checkbox" id="viz-mesh-internal" checked class="mr-2">
                       Internal Mesh
                     </label>
-                    <label class="flex items-center text-xs text-slate-300">
+                    <label class="flex items-center text-xs text-slate-700 dark:text-slate-300">
                       <input type="checkbox" id="viz-mesh-all-patches" class="mr-2">
                       All Patches
                     </label>
@@ -253,8 +265,8 @@
                 </div>
                 
                 <div>
-                  <label class="text-xs text-slate-300 block mb-1">Camera Angle</label>
-                  <select id="viz-camera" class="w-full px-2 py-1 text-sm bg-slate-700 border border-slate-600  text-slate-100">
+                  <label class="text-xs text-slate-700 dark:text-slate-300 block mb-1">Camera Angle</label>
+                  <select id="viz-camera" class="w-full px-2 py-1 text-sm bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-900 dark:text-slate-100">
                     <option value="isometric">Isometric</option>
                     <option value="xy">XY Plane (Top)</option>
                     <option value="xz">XZ Plane (Front)</option>
@@ -266,27 +278,27 @@
                 </div>
                 
                 <div>
-                  <label class="flex items-center text-xs text-slate-300">
+                  <label class="flex items-center text-xs text-slate-700 dark:text-slate-300">
                     <input type="checkbox" id="viz-decompose" checked class="mr-2">
                     Decompose Polyhedra
                   </label>
-                  <p class="text-xs text-slate-500 mt-1">Decompose complex cells for visualization</p>
+                  <p class="text-xs text-slate-600 dark:text-slate-500 mt-1">Decompose complex cells for visualization</p>
                 </div>
-                
+
                 <div>
-                  <label class="flex items-center text-xs text-slate-300">
+                  <label class="flex items-center text-xs text-slate-700 dark:text-slate-300">
                     <input type="checkbox" id="viz-cell-to-point" checked class="mr-2">
                     Cell to Point Data
                   </label>
-                  <p class="text-xs text-slate-500 mt-1">Convert cell data to point data</p>
+                  <p class="text-xs text-slate-600 dark:text-slate-500 mt-1">Convert cell data to point data</p>
                 </div>
-                
+
                 <div>
-                  <label class="flex items-center text-xs text-slate-300">
+                  <label class="flex items-center text-xs text-slate-700 dark:text-slate-300">
                     <input type="checkbox" id="viz-skip-zero" class="mr-2">
                     Skip Zero Time
                   </label>
-                  <p class="text-xs text-slate-500 mt-1">Ignore the /0 time directory</p>
+                  <p class="text-xs text-slate-600 dark:text-slate-500 mt-1">Ignore the /0 time directory</p>
                 </div>
                 
                 <button onclick="applyVizSettings()" class="w-full mt-2 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white text-sm  transition-colors">
@@ -303,7 +315,7 @@
 
     <!-- Insights Tab Content -->
     <div id="content-insights" class="tab-content">
-      <div class="bg-slate-800  shadow-lg mb-6 border border-slate-700">
+      <div class="bg-white dark:bg-slate-800 shadow-lg mb-6 border border-slate-300 dark:border-slate-700">
         <div class="p-6">
           <div class="mb-4">
             <button onclick="generateInsights()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white transition-colors">
@@ -312,8 +324,8 @@
           </div>
           <div id="status-insights" class="hidden mt-3 p-3" role="alert"></div>
           <div id="insights-container" class="mt-4">
-            <div class="text-center py-20 text-slate-400">
-              <svg class="mx-auto h-16 w-16 mb-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="text-center py-20 text-slate-600 dark:text-slate-400">
+              <svg class="mx-auto h-16 w-16 mb-4 text-slate-400 dark:text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
               </svg>
               <p class="text-lg">Click "Generate Insights" to analyze your experiment</p>
@@ -332,9 +344,73 @@
   let paretoObjectives = {}; // Store Pareto point objective values for comparison
   let objectiveDirections = {}; // Store minimize/maximize direction for each objective
   let currentParetoTrialId = null; // Track the trial ID of the currently running Pareto point
-  
+  let excludedParams = new Set(); // Track parameters excluded from prediction
+
   // Visualization settings (loaded from server)
   let vizSettings = null;
+
+  // Theme management
+  function initTheme() {
+    const theme = localStorage.getItem('theme') || 'dark';
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+      updateThemeButton('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      updateThemeButton('light');
+    }
+  }
+
+  function toggleTheme() {
+    const isDark = document.documentElement.classList.contains('dark');
+    if (isDark) {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('theme', 'light');
+      updateThemeButton('light');
+    } else {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('theme', 'dark');
+      updateThemeButton('dark');
+    }
+
+    // Update Plotly charts if they exist
+    updatePlotlyTheme();
+  }
+
+  function updateThemeButton(theme) {
+    const themeText = document.getElementById('theme-text');
+    if (themeText) {
+      themeText.textContent = theme === 'dark' ? 'Light' : 'Dark';
+    }
+  }
+
+  function updatePlotlyTheme() {
+    // Find all Plotly divs and update their layout
+    const plotlyDivs = document.querySelectorAll('[data-plotly-rendered="true"]');
+    const isDark = document.documentElement.classList.contains('dark');
+
+    plotlyDivs.forEach(div => {
+      if (div && div.data) {
+        const update = {
+          paper_bgcolor: isDark ? '#0f172a' : '#ffffff',
+          plot_bgcolor: isDark ? '#1e293b' : '#f8fafc',
+          font: { color: isDark ? '#e2e8f0' : '#1e293b' },
+          xaxis: {
+            gridcolor: isDark ? '#334155' : '#cbd5e1',
+            color: isDark ? '#e2e8f0' : '#1e293b'
+          },
+          yaxis: {
+            gridcolor: isDark ? '#334155' : '#cbd5e1',
+            color: isDark ? '#e2e8f0' : '#1e293b'
+          }
+        };
+        Plotly.relayout(div, update);
+      }
+    });
+  }
+
+  // Initialize theme on page load
+  initTheme();
   
   async function refreshTrialList() {
     const selector = document.getElementById('trial-select');
@@ -597,7 +673,7 @@
             // Filter out 'internal' from mesh_names to get only patches
             const patches = j.mesh_names.filter(name => name !== 'internal');
             patchesList.innerHTML = patches.map(name => 
-              `<label class="flex items-center text-xs text-slate-300">
+              `<label class="flex items-center text-xs text-slate-700 dark:text-slate-300">
                 <input type="checkbox" id="viz-mesh-patch-${name}" data-patch-name="${name}" class="mr-2">
                 ${name}
               </label>`
@@ -629,20 +705,20 @@
   }
 
   function renderJSONTable(value) {
-    if (value === null || value === undefined) return '<em class="text-slate-400">null</em>';
+    if (value === null || value === undefined) return '<em class="text-slate-600 dark:text-slate-400">null</em>';
     if (Array.isArray(value)) {
-      if (value.length === 0) return '<em class="text-slate-400">[]</em>';
+      if (value.length === 0) return '<em class="text-slate-600 dark:text-slate-400">[]</em>';
       // If array of objects with same keys, render as a table
       if (typeof value[0] === 'object') {
         const keys = Array.from(value.reduce((s, o) => { Object.keys(o).forEach(k => s.add(k)); return s; }, new Set()));
-        const rows = value.map((o, i) => `<tr class="${i % 2 === 0 ? 'bg-slate-700' : 'bg-slate-750'}">` + keys.map(k => `<td class="px-4 py-2 text-slate-200">${o[k] !== undefined ? o[k] : ''}</td>`).join('') + '</tr>').join('');
-        return `<table class="min-w-full divide-y divide-slate-600 text-sm"><thead class="bg-slate-600"><tr>${keys.map(k => `<th class="px-4 py-2 text-left text-slate-100 font-semibold">${k}</th>`).join('')}</tr></thead><tbody class="divide-y divide-slate-600">${rows}</tbody></table>`;
+        const rows = value.map((o, i) => `<tr class="${i % 2 === 0 ? 'bg-slate-50 dark:bg-slate-700' : 'bg-white dark:bg-slate-800'}">` + keys.map(k => `<td class="px-4 py-2 text-slate-800 dark:text-slate-200">${o[k] !== undefined ? o[k] : ''}</td>`).join('') + '</tr>').join('');
+        return `<table class="min-w-full divide-y divide-slate-300 dark:divide-slate-600 text-sm"><thead class="bg-slate-200 dark:bg-slate-600"><tr>${keys.map(k => `<th class="px-4 py-2 text-left text-slate-900 dark:text-slate-100 font-semibold">${k}</th>`).join('')}</tr></thead><tbody class="divide-y divide-slate-300 dark:divide-slate-600">${rows}</tbody></table>`;
       }
-      return `<table class="min-w-full divide-y divide-slate-600 text-sm"><tbody class="divide-y divide-slate-600">${value.map((v, i) => `<tr class="${i % 2 === 0 ? 'bg-slate-700' : 'bg-slate-750'}"><td class="px-4 py-2 text-slate-200">${v}</td></tr>`).join('')}</tbody></table>`;
+      return `<table class="min-w-full divide-y divide-slate-300 dark:divide-slate-600 text-sm"><tbody class="divide-y divide-slate-300 dark:divide-slate-600">${value.map((v, i) => `<tr class="${i % 2 === 0 ? 'bg-slate-50 dark:bg-slate-700' : 'bg-white dark:bg-slate-800'}"><td class="px-4 py-2 text-slate-800 dark:text-slate-200">${v}</td></tr>`).join('')}</tbody></table>`;
     }
     if (typeof value === 'object') {
-      const rows = Object.entries(value).map(([k, v], i) => `<tr class="${i % 2 === 0 ? 'bg-slate-700' : 'bg-slate-750'}"><th class="px-4 py-2 text-left text-slate-300 font-medium">${k}</th><td class="px-4 py-2 text-slate-200">${typeof v === 'object' ? renderJSONTable(v) : v}</td></tr>`).join('');
-      return `<table class="min-w-full divide-y divide-slate-600 text-sm"><tbody class="divide-y divide-slate-600">${rows}</tbody></table>`;
+      const rows = Object.entries(value).map(([k, v], i) => `<tr class="${i % 2 === 0 ? 'bg-slate-50 dark:bg-slate-700' : 'bg-white dark:bg-slate-800'}"><th class="px-4 py-2 text-left text-slate-700 dark:text-slate-300 font-medium">${k}</th><td class="px-4 py-2 text-slate-800 dark:text-slate-200">${typeof v === 'object' ? renderJSONTable(v) : v}</td></tr>`).join('');
+      return `<table class="min-w-full divide-y divide-slate-300 dark:divide-slate-600 text-sm"><tbody class="divide-y divide-slate-300 dark:divide-slate-600">${rows}</tbody></table>`;
     }
     return String(value);
   }
@@ -728,7 +804,7 @@
     if (!countBadge) {
       countBadge = document.createElement('span');
       countBadge.id = 'objective-count';
-      countBadge.className = 'inline-flex items-center px-2.5 py-0.5 -full text-xs font-medium bg-slate-600 text-slate-200 ml-2';
+      countBadge.className = 'inline-flex items-center px-2.5 py-0.5 -full text-xs font-medium bg-slate-200 dark:bg-slate-600 text-slate-800 dark:text-slate-200 ml-2';
       sel.parentNode.appendChild(countBadge);
     }
     countBadge.textContent = `${objList.length}`;
@@ -761,15 +837,15 @@
       const div = document.createElement('div');
       div.className = 'slider-row flex flex-wrap items-center gap-3';
       if (p.type === 'choice') {
-        const html = `<label class="text-slate-300 font-medium min-w-[140px]">${p.name}</label>
-          <select id="s-${p.name}" class="px-3 py-2 bg-slate-700 border border-slate-600  text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500">${p.values.map(v => `<option value="${v}">${v}</option>`).join('')}</select>`;
+        const html = `<label class="text-slate-700 dark:text-slate-300 font-medium min-w-[140px]">${p.name}</label>
+          <select id="s-${p.name}" class="px-3 py-2 bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500">${p.values.map(v => `<option value="${v}">${v}</option>`).join('')}</select>`;
         div.innerHTML = html;
       } else {
         const [lo, hi] = p.bounds;
         const step = p.step ?? (hi - lo) / 100.0;
-        const html = `<label class="text-slate-300 font-medium min-w-[140px]">${p.name} (${lo}..${hi})</label>
-          <input type="range" min="${lo}" max="${hi}" step="${step}" id="s-${p.name}" class="flex-1 h-2 bg-slate-700  appearance-none cursor-pointer accent-cyan-600" />
-          <input type="text" id="t-${p.name}" size="8" class="px-3 py-2 bg-slate-700 border border-slate-600  text-slate-100 w-24 focus:outline-none focus:ring-2 focus:ring-cyan-500" />`;
+        const html = `<label class="text-slate-700 dark:text-slate-300 font-medium min-w-[140px]">${p.name} (${lo}..${hi})</label>
+          <input type="range" min="${lo}" max="${hi}" step="${step}" id="s-${p.name}" class="flex-1 h-2 bg-slate-200 dark:bg-slate-700 appearance-none cursor-pointer accent-cyan-600" />
+          <input type="text" id="t-${p.name}" size="8" class="px-3 py-2 bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-900 dark:text-slate-100 w-24 focus:outline-none focus:ring-2 focus:ring-cyan-500" />`;
         div.innerHTML = html;
         setTimeout(() => {
           const slider = document.getElementById('s-' + p.name);
@@ -784,13 +860,33 @@
     });
   }
 
+  function toggleParameterExclusion(paramName) {
+    const row = document.getElementById(`param-row-${paramName}`);
+    if (!row) return;
+
+    if (excludedParams.has(paramName)) {
+      // Re-include the parameter
+      excludedParams.delete(paramName);
+      row.style.opacity = '1';
+      row.style.textDecoration = 'none';
+    } else {
+      // Exclude the parameter
+      excludedParams.add(paramName);
+      row.style.opacity = '0.5';
+      row.style.textDecoration = 'line-through';
+    }
+  }
+
   function populateSensitivitySection() {
     if (!selectedParams || Object.keys(selectedParams).length === 0) {
       document.getElementById('sensitivity-placeholder').classList.remove('hidden');
       document.getElementById('sensitivity-content').classList.add('hidden');
       return;
     }
-    
+
+    // Reset excluded params when re-populating
+    excludedParams.clear();
+
     document.getElementById('sensitivity-placeholder').classList.add('hidden');
     document.getElementById('sensitivity-content').classList.remove('hidden');
     
@@ -802,19 +898,33 @@
     
     exp.parameters.forEach((p, idx) => {
       const tr = document.createElement('tr');
-      tr.className = idx % 2 === 0 ? 'bg-slate-700' : 'bg-slate-750';
-      
+      tr.className = idx % 2 === 0 ? 'bg-slate-50 dark:bg-slate-700' : 'bg-white dark:bg-slate-800';
+      tr.id = `param-row-${p.name}`;
+
+      // Delete button cell
+      const tdDelete = document.createElement('td');
+      tdDelete.className = 'px-2 py-3 text-center';
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors';
+      deleteBtn.innerHTML = '&times;';
+      deleteBtn.style.fontSize = '1.5rem';
+      deleteBtn.style.lineHeight = '1';
+      deleteBtn.title = 'Exclude parameter from prediction';
+      deleteBtn.onclick = () => toggleParameterExclusion(p.name);
+      tdDelete.appendChild(deleteBtn);
+
       const tdName = document.createElement('td');
-      tdName.className = 'px-4 py-3 text-slate-300 font-medium';
+      tdName.className = 'px-4 py-3 text-slate-700 dark:text-slate-300 font-medium';
       tdName.textContent = p.name;
-      
+
       const tdValue = document.createElement('td');
       tdValue.className = 'px-4 py-3';
       
       if (p.type === 'choice') {
         const select = document.createElement('select');
         select.id = `s-${p.name}`;
-        select.className = 'w-full px-3 py-2 bg-slate-600 border border-slate-500  text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500';
+        select.className = 'w-full px-3 py-2 bg-slate-100 dark:bg-slate-600 border border-slate-300 dark:border-slate-500 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500';
         p.values.forEach(v => {
           const opt = document.createElement('option');
           opt.value = v;
@@ -836,13 +946,13 @@
         slider.step = p.step ?? (integerLike ? 1 : (p.bounds[1] - p.bounds[0]) / 100.0);
         let initVal = selectedParams[p.name] ?? (p.bounds[0] + p.bounds[1]) / 2.0;
         slider.value = integerLike ? Math.round(initVal) : initVal;
-        slider.className = 'flex-1 h-2 bg-slate-600  appearance-none cursor-pointer accent-cyan-600';
-        
+        slider.className = 'flex-1 h-2 bg-slate-200 dark:bg-slate-600 appearance-none cursor-pointer accent-cyan-600';
+
         const text = document.createElement('input');
         text.type = 'text';
         text.id = `t-${p.name}`;
         text.value = slider.value;
-        text.className = 'px-3 py-2 bg-slate-600 border border-slate-500  text-slate-100 w-24 focus:outline-none focus:ring-2 focus:ring-cyan-500';
+        text.className = 'px-3 py-2 bg-slate-100 dark:bg-slate-600 border border-slate-300 dark:border-slate-500 text-slate-900 dark:text-slate-100 w-24 focus:outline-none focus:ring-2 focus:ring-cyan-500';
         
         slider.addEventListener('input', () => {
           text.value = slider.value;
@@ -856,24 +966,50 @@
         container.appendChild(text);
         tdValue.appendChild(container);
       }
-      
+
+      tr.appendChild(tdDelete);
       tr.appendChild(tdName);
       tr.appendChild(tdValue);
       tbody.appendChild(tr);
     });
     
     // Clear predictions
-    document.getElementById('predictions').innerHTML = '<div class="text-center py-8 text-slate-400"><p>Click "Predict Metrics" to see results</p></div>';
+    document.getElementById('predictions').innerHTML = '<div class="text-center py-8 text-slate-600 dark:text-slate-400"><p>Click "Predict Metrics" to see results</p></div>';
   }
 
   async function loadPareto() {
     const objective = document.getElementById('objective').value;
     const r = await fetch(`/api/pareto?objective=${encodeURIComponent(objective)}`);
+
+    if (!r.ok) {
+      const j = await r.json();
+      const errorMsg = j.detail || 'Failed to fetch Pareto frontier';
+      const el = document.getElementById('status-pareto');
+      if (el) {
+        el.classList.remove('hidden', 'bg-yellow-900', 'border-yellow-700', 'text-yellow-200');
+        el.classList.add('bg-red-900', 'border', 'border-red-700', 'text-red-200');
+        el.textContent = errorMsg;
+      }
+      return;
+    }
+
     const j = await r.json();
     selectedParams = j.parameters;
+
+    // Validate that we got valid parameters
+    if (!selectedParams || Object.keys(selectedParams).length === 0) {
+      const el = document.getElementById('status-pareto');
+      if (el) {
+        el.classList.remove('hidden', 'bg-yellow-900', 'border-yellow-700', 'text-yellow-200');
+        el.classList.add('bg-red-900', 'border', 'border-red-700', 'text-red-200');
+        el.textContent = 'No valid parameters found in Pareto frontier. Try running "Fit data to model" first or use a different objective.';
+      }
+      return;
+    }
+
     document.getElementById('selected-params').innerHTML = renderJSONTable(selectedParams);
     setStatus('status-pareto', 'success', 'Pareto point selected');
-    
+
     // Get predictions for the Pareto point
     paretoObjectives = {};
     try {
@@ -882,14 +1018,20 @@
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ base_parameters: selectedParams, variations: {} })
       });
-      const predJ = await predR.json();
-      if (predJ.predicted_means) {
-        paretoObjectives = predJ.predicted_means;
+
+      if (!predR.ok) {
+        const predJ = await predR.json();
+        console.warn('Could not fetch Pareto point predictions:', predJ.detail || 'Unknown error');
+      } else {
+        const predJ = await predR.json();
+        if (predJ.predicted_means) {
+          paretoObjectives = predJ.predicted_means;
+        }
       }
     } catch (e) {
       console.warn('Could not fetch Pareto point predictions:', e);
     }
-    
+
     populateSensitivitySection();
   }
 
@@ -959,6 +1101,9 @@
     setStatus('status-predict', 'running', 'Computing predictions...');
     const params = {};
     (exp.parameters || []).forEach(p => {
+      // Skip excluded parameters
+      if (excludedParams.has(p.name)) return;
+
       const id = 's-' + p.name;
       const el = document.getElementById(id);
       if (!el) return;
@@ -1015,51 +1160,52 @@
             deltaHtml = `<div class="${color} text-xs mt-1">${arrow} ${delta >= 0 ? '+' : ''}${delta.toFixed(4)} (${deltaPercent >= 0 ? '+' : ''}${deltaPercent.toFixed(1)}%)</div>`;
           }
           
-          return `<tr class="${idx % 2 === 0 ? 'bg-slate-700' : 'bg-slate-750'}">
-            <td class="px-4 py-3 text-slate-300 font-medium">${metric}</td>
-            <td class="px-4 py-3 text-slate-200">
+          return `<tr class="${idx % 2 === 0 ? 'bg-slate-50 dark:bg-slate-700' : 'bg-white dark:bg-slate-800'}">
+            <td class="px-4 py-3 text-slate-700 dark:text-slate-300 font-medium">${metric}</td>
+            <td class="px-4 py-3 text-slate-800 dark:text-slate-200">
               <div>${mean.toFixed(4)} <span class="text-xs text-slate-400">(±${relativeError.toFixed(2)}%)</span></div>
               <div class="text-xs text-slate-400 mt-1">95% CI: [${lower.toFixed(4)}, ${upper.toFixed(4)}]</div>
               ${deltaHtml}
             </td>
           </tr>`;
         }).join('');
-        
+
+
         document.getElementById('predictions').innerHTML = `
-          <table class="min-w-full divide-y divide-slate-600 text-sm">
-            <thead class="bg-slate-600">
+          <table class="min-w-full divide-y divide-slate-300 dark:divide-slate-600 text-sm">
+            <thead class="bg-slate-200 dark:bg-slate-600">
               <tr>
-                <th class="px-4 py-2 text-left text-slate-100 font-semibold">Objective</th>
-                <th class="px-4 py-2 text-left text-slate-100 font-semibold">Predicted Value</th>
+                <th class="px-4 py-2 text-left text-slate-900 dark:text-slate-100 font-semibold">Objective</th>
+                <th class="px-4 py-2 text-left text-slate-900 dark:text-slate-100 font-semibold">Predicted Value</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-slate-600">${rows}</tbody>
+            <tbody class="divide-y divide-slate-300 dark:divide-slate-600">${rows}</tbody>
           </table>`;
       } else if (j.predicted_means) {
         // Fallback if no SEM data
-        const rows = Object.entries(j.predicted_means).map(([metric, value], idx) => 
-          `<tr class="${idx % 2 === 0 ? 'bg-slate-700' : 'bg-slate-750'}">
-            <td class="px-4 py-3 text-slate-300 font-medium">${metric}</td>
-            <td class="px-4 py-3 text-slate-200">${typeof value === 'number' ? value.toFixed(4) : value}</td>
+        const rows = Object.entries(j.predicted_means).map(([metric, value], idx) =>
+          `<tr class="${idx % 2 === 0 ? 'bg-slate-50 dark:bg-slate-700' : 'bg-white dark:bg-slate-800'}">
+            <td class="px-4 py-3 text-slate-700 dark:text-slate-300 font-medium">${metric}</td>
+            <td class="px-4 py-3 text-slate-800 dark:text-slate-200">${typeof value === 'number' ? value.toFixed(4) : value}</td>
           </tr>`
         ).join('');
-        
+
         document.getElementById('predictions').innerHTML = `
-          <table class="min-w-full divide-y divide-slate-600 text-sm">
-            <thead class="bg-slate-600">
+          <table class="min-w-full divide-y divide-slate-300 dark:divide-slate-600 text-sm">
+            <thead class="bg-slate-200 dark:bg-slate-600">
               <tr>
-                <th class="px-4 py-2 text-left text-slate-100 font-semibold">Objective</th>
-                <th class="px-4 py-2 text-left text-slate-100 font-semibold">Predicted Value</th>
+                <th class="px-4 py-2 text-left text-slate-900 dark:text-slate-100 font-semibold">Objective</th>
+                <th class="px-4 py-2 text-left text-slate-900 dark:text-slate-100 font-semibold">Predicted Value</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-slate-600">${rows}</tbody>
+            <tbody class="divide-y divide-slate-300 dark:divide-slate-600">${rows}</tbody>
           </table>`;
       } else {
         document.getElementById('predictions').innerHTML = renderJSONTable(j);
       }
       setStatus('status-predict', 'success', 'Prediction complete');
     } catch (error) {
-      document.getElementById('predictions').innerHTML = `<div class="text-center py-8 text-red-400"><p>Error: ${error.message || 'Prediction failed'}</p></div>`;
+      document.getElementById('predictions').innerHTML = `<div class="text-center py-8 text-red-600 dark:text-red-400"><p>Error: ${error.message || 'Prediction failed'}</p></div>`;
       setStatus('status-predict', 'hidden', '');
     }
   }
@@ -1123,7 +1269,7 @@
       }
     } catch (e) {
       setStatus('status-viz', 'hidden', '');
-      document.getElementById('viz-container').innerHTML = `<div class="text-center py-20 text-red-400"><p>Failed to load visualization: ${e.message}</p></div>`;
+      document.getElementById('viz-container').innerHTML = `<div class="text-center py-20 text-red-600 dark:text-red-400"><p>Failed to load visualization: ${e.message}</p></div>`;
     }
   }
   
