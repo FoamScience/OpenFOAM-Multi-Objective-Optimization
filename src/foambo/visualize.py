@@ -340,7 +340,46 @@ def api_sensitivity(req: SensitivityRequest):
                       for metric, values in pred_dict.items()}
         sems_dict = {metric: float(values[1])
                      for metric, values in pred_dict.items()}
-        return {"predicted_means": means_dict, "predicted_sems": sems_dict}
+
+        response = {"predicted_means": means_dict, "predicted_sems": sems_dict}
+
+        # Check if custom visualization callback is configured
+        if state.cfg.get('visualizer', {}).get('sensitivity_callback'):
+            callback_path = state.cfg['visualizer']['sensitivity_callback']
+            try:
+                import importlib
+                import sys
+                import os
+
+                # Add current working directory to sys.path to allow imports from experiment directory
+                cwd = os.getcwd()
+                if cwd not in sys.path:
+                    sys.path.insert(0, cwd)
+
+                # Split module path and function name
+                module_path, func_name = callback_path.rsplit('.', 1)
+                module = importlib.import_module(module_path)
+                callback_func = getattr(module, func_name)
+
+                # Call the callback with the parameters
+                image_base64 = callback_func(req.base_parameters)
+
+                # Validate that it's a string (base64 image)
+                if not isinstance(image_base64, str):
+                    raise TypeError(f"Callback must return a base64-encoded image string, got {type(image_base64)}")
+
+                # Include the base64 image in response
+                response["visualization"] = image_base64
+                log.info(f"Successfully generated custom visualization using {callback_path}")
+
+            except Exception as viz_error:
+                import traceback
+                viz_trace = traceback.format_exc()
+                log.warning(f"Custom visualization failed, but predictions succeeded:\n{viz_trace}")
+                response["visualization_error"] = f"Visualization failed: {str(viz_error)}"
+
+        return response
+
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()

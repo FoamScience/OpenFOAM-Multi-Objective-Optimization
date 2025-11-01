@@ -160,6 +160,9 @@ def get_default_config() -> Dict[str, Any]:
             "backend_options": {
                 "url": None
             }
+        },
+        "visualizer": {
+            "sensitivity_callback": None
         }
     }
     return default
@@ -499,6 +502,84 @@ def get_config_docs() -> Dict[str, Any]:
             ```
 
             Note that the SQL store is currently not well tested.
+            """,
+        "visualizer": "[Section] Settings for the web-based visualizer UI",
+        "visualizer.sensitivity_callback": """
+            Optional Python callback function to visualize parameter changes in sensitivity analysis.
+
+            When configured, the visualizer will automatically generate a custom plot when the user
+            clicks "Predict Metrics" in the sensitivity analysis section. This allows you to provide
+            domain-specific visualizations of how parameter changes affect your system.
+
+            **Configuration:**
+            ```yaml
+            visualizer:
+              sensitivity_callback: "mymodule.myvisualizer.plot_function"
+            ```
+
+            **Callback Signature:**
+            The callback function must accept a dictionary of parameters and return a base64-encoded image:
+            ```python
+            import matplotlib.pyplot as plt
+            import io
+            import base64
+
+            def plot_function(parameters: dict) -> str:
+                '''
+                Visualize the system based on parameter values.
+
+                Args:
+                    parameters: Dictionary mapping parameter names to their values
+                                e.g., {"x": 0.5, "y": "choice1", "z": 1.23}
+
+                Returns:
+                    A base64-encoded PNG image string
+                '''
+                # Extract parameters
+                x = parameters.get('x', 0.0)
+                y = parameters.get('y', 'default')
+
+                # Generate visualization data
+                # ... your custom logic here ...
+
+                # Create matplotlib figure
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.plot([...], [...])
+                ax.set_title("Custom Visualization")
+                ax.set_xlabel("X axis")
+                ax.set_ylabel("Y axis")
+                plt.tight_layout()
+
+                # Convert to base64
+                buffer = io.BytesIO()
+                plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
+                plt.close(fig)
+                buffer.seek(0)
+                image_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+
+                return image_base64
+            ```
+
+            **Error Handling:**
+            - If the callback raises an exception, the visualizer will display an error message
+              but sensitivity analysis will still work
+            - If the module cannot be imported, a warning is shown to the user
+            - If the callback returns a non-string object, an error is displayed
+
+            **Requirements:**
+            - The callback module must be importable from the experiment directory
+            - The function must return a base64-encoded image string
+            - Matplotlib (or any plotting library that can generate base64 images) must be available
+
+            **When to Use:**
+            Use this feature when you want to help users understand the physical or geometric
+            implications of parameter changes beyond just predicted metric values. Examples:
+            - Visualizing geometry changes (airfoil shapes, duct profiles, etc.)
+            - Showing control system responses (PID tuning, filter responses)
+            - Displaying material property curves (stress-strain, phase diagrams)
+            - Plotting field distributions (temperature, velocity, concentration)
+
+            Set to `null` or omit to disable custom visualization (default behavior).
             """,
     }
     python_snippets = {

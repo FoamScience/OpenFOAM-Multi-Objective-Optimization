@@ -170,6 +170,11 @@
                   <p>Click "Predict Metrics" to see results</p>
                 </div>
               </div>
+              <!-- Custom Visualization -->
+              <div id="custom-viz-container" class="hidden mt-6">
+                <h3 class="text-md font-semibold text-slate-800 dark:text-slate-200 mb-3">Parameter Visualization</h3>
+                <div id="custom-viz-plot" class="bg-slate-100 dark:bg-slate-700 p-4 text-center"></div>
+              </div>
             </div>
           </div>
         </div>
@@ -1203,10 +1208,50 @@
       } else {
         document.getElementById('predictions').innerHTML = renderJSONTable(j);
       }
+
+      // Handle custom visualization if present
+      const vizContainer = document.getElementById('custom-viz-container');
+      const vizPlot = document.getElementById('custom-viz-plot');
+
+      if (j.visualization) {
+        try {
+          // Clear any previous content
+          vizPlot.innerHTML = '';
+
+          // Display the base64 image
+          const img = document.createElement('img');
+          img.src = `data:image/png;base64,${j.visualization}`;
+          img.alt = 'Parameter Visualization';
+          img.className = 'max-w-full h-auto mx-auto';
+          img.style.maxHeight = '600px';
+          vizPlot.appendChild(img);
+
+          // Show the container
+          vizContainer.classList.remove('hidden');
+        } catch (vizError) {
+          console.error('Failed to render custom visualization:', vizError);
+          vizPlot.innerHTML = `<div class="text-center py-4 text-orange-600 dark:text-orange-400">
+            <p>Failed to render visualization: ${vizError.message}</p>
+          </div>`;
+          vizContainer.classList.remove('hidden');
+        }
+      } else if (j.visualization_error) {
+        // Show visualization error but don't fail the whole prediction
+        vizPlot.innerHTML = `<div class="text-center py-4 text-orange-600 dark:text-orange-400">
+          <p>${j.visualization_error}</p>
+        </div>`;
+        vizContainer.classList.remove('hidden');
+      } else {
+        // No visualization configured - hide the container
+        vizContainer.classList.add('hidden');
+      }
+
       setStatus('status-predict', 'success', 'Prediction complete');
     } catch (error) {
       document.getElementById('predictions').innerHTML = `<div class="text-center py-8 text-red-600 dark:text-red-400"><p>Error: ${error.message || 'Prediction failed'}</p></div>`;
       setStatus('status-predict', 'hidden', '');
+      // Hide visualization on error
+      document.getElementById('custom-viz-container').classList.add('hidden');
     }
   }
 
