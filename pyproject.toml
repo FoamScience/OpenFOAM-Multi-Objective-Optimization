@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "foambo"
-version = "1.1.2"
+version = "1.1.3"
 authors = [
   { name="Mohammed Elwardi Fadeli", email="elwardifadeli@gmail.com" },
 ]
@@ -55,3 +55,13 @@ dev = [
 ]
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+exclude = [
+    "examples/",
+]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "examples/",
+]

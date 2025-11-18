@@ -14,7 +14,7 @@ from logging import Logger
 from ax.utils.common.logger import get_logger
 log : Logger = get_logger(__name__)
 
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 
 # Default config filename
 DEFAULT_CONFIG = "foamBO.yaml"

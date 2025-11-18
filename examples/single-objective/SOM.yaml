@@ -1,4 +1,4 @@
-version: 1.1.2
+version: 1.1.3
 experiment:
   name: SingleObjF1
   description: Demonstration of single-parameter single-objective optimization
