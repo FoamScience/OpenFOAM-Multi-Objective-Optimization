@@ -348,6 +348,7 @@ def api_sensitivity(req: SensitivityRequest):
             callback_path = state.cfg['visualizer']['sensitivity_callback']
             try:
                 import importlib
+                import importlib.util
                 import sys
                 import os
 
@@ -358,7 +359,18 @@ def api_sensitivity(req: SensitivityRequest):
 
                 # Split module path and function name
                 module_path, func_name = callback_path.rsplit('.', 1)
-                module = importlib.import_module(module_path)
+
+                try:
+                    module = importlib.import_module(module_path)
+                except ModuleNotFoundError:
+                    file_path = os.path.join(cwd, *module_path.split('.')) + '.py'
+                    if not os.path.exists(file_path):
+                        raise ModuleNotFoundError(f"Cannot find module '{module_path}' or file '{file_path}'")
+                    spec = importlib.util.spec_from_file_location(module_path, file_path)
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules[module_path] = module
+                    spec.loader.exec_module(module)
+
                 callback_func = getattr(module, func_name)
 
                 # Call the callback with the parameters
@@ -404,7 +416,7 @@ def api_sensitivity(req: SensitivityRequest):
 def api_pareto_html():
     ensure_loaded()
     try:
-        _ = plot_pareto_frontier(client=state.client, open_html=True)
+        _ = plot_pareto_frontier(cfg=state.cfg, client=state.client, open_html=True)
         return {"status": "opened"}
     except Exception as e:
         raise HTTPException(
