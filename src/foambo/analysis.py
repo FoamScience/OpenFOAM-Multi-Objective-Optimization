@@ -16,6 +16,7 @@ from ax.analysis.plotly.progression import ProgressionPlot
 from ax.analysis.plotly.scatter import ScatterPlot
 from ax.analysis.plotly.sensitivity import SensitivityAnalysisPlot
 from ax.analysis.plotly.top_surfaces import TopSurfacesAnalysis
+from ax.analysis.plotly.plotly_analysis import PlotlyAnalysisCard
 from ax.analysis.healthcheck.constraints_feasibility import ConstraintsFeasibilityAnalysis
 from ax.analysis.healthcheck.no_effects_analysis import TestOfNoEffectAnalysis
 from ax.analysis.healthcheck.regression_analysis import RegressionAnalysis
@@ -24,12 +25,17 @@ from ax.plot.pareto_frontier import scatter_plot_with_hypervolume_trace_plotly, 
 from pprint import pformat
 from itertools import combinations
 
-def compute_analysis_cards(cfg: DictConfig, client: Client | None, open_html=False):
+def compute_analysis_cards(cfg: DictConfig, client: Client | None, open_html=False, export_json=False):
     set_experiment_name(cfg['experiment']['name'])
     if not client:
         store_cfg = instantiate_with_nested_fields(StoreOptions, cfg['store'])
         client = store_cfg.load()
     exp = client._experiment
+    artifacts_folder = cfg['optimization']['case_runner']['artifacts_folder']
+    if export_json:
+        figures_folder = f"{artifacts_folder}/figures"
+        os.makedirs(figures_folder, exist_ok=True)
+
     analyses_to_run = [OverviewAnalysis(),
                        ConstraintsFeasibilityAnalysis(),
                        TestOfNoEffectAnalysis(),
@@ -78,14 +84,36 @@ def compute_analysis_cards(cfg: DictConfig, client: Client | None, open_html=Fal
         <p>{card.subtitle}</p>
         {card._repr_html_()}
         </body>{HTML_CARD_SCRIPT}</html>"""
-        html_path = f"artifacts/{client._experiment.name}_{unixlike_filename(card.title)}.html"
+        html_path = f"{artifacts_folder}/{client._experiment.name}_{unixlike_filename(card.title)}.html"
         with open(html_path, "w") as f:
             f.write(html)
             if open_html:
                 webbrowser.open(html_path)
+
+        if export_json:
+            if isinstance(card, PlotlyAnalysisCard):
+                try:
+                    fig = card.get_figure()
+                    json_path = f"{figures_folder}/{client._experiment.name}_{unixlike_filename(card.title)}.json"
+                    with open(json_path, "w") as f:
+                        f.write(fig.to_json())
+                except Exception as e:
+                    log.warning(f"Failed to export {card.title} to JSON: {e}")
+            elif hasattr(card, 'fig') and card.fig is not None:
+                try:
+                    json_path = f"{figures_folder}/{client._experiment.name}_{unixlike_filename(card.title)}.json"
+                    with open(json_path, "w") as f:
+                        f.write(card.fig.to_json())
+                except Exception as e:
+                    log.warning(f"Failed to export {card.title} to JSON: {e}")
     return cards
 
-def plot_pareto_frontier(client, front=None, open_html=False):
+def plot_pareto_frontier(cfg: DictConfig, client, front=None, open_html=False, export_json=False):
+    artifacts_folder = cfg['optimization']['case_runner']['artifacts_folder']
+    if export_json:
+        figures_folder = f"{artifacts_folder}/figures"
+        os.makedirs(figures_folder, exist_ok=True)
+
     figures = []
     figure_html = []
     if not front:
@@ -95,6 +123,11 @@ def plot_pareto_frontier(client, front=None, open_html=False):
     fig = scatter_plot_with_hypervolume_trace_plotly(client._experiment)
     figures.append(fig)
     figure_html.append(fig.to_html(full_html=False, include_plotlyjs='cdn'))
+
+    if export_json:
+        json_path = f"{figures_folder}/{client._experiment.name}_hypervolume_trace.json"
+        with open(json_path, "w") as f:
+            f.write(fig.to_json())
 
     X_labels = [
             pformat(client._experiment.trials[tr].arm.parameters, width=1).replace("\n", "<br>").replace('{', '').replace('}', '').replace("'", '')
@@ -149,6 +182,11 @@ def plot_pareto_frontier(client, front=None, open_html=False):
             hv_line.marker.size = 16
             figures.append(fig)
             figure_html.append(fig.to_html(full_html=False, include_plotlyjs='cdn'))
+
+            if export_json:
+                json_path = f"{figures_folder}/{client._experiment.name}_pareto_frontier_{metrics[0]}_vs_{metrics[1]}.json"
+                with open(json_path, "w") as f:
+                    f.write(fig.to_json())
         except Exception:
             log.error(f"Something went wrong with the generation of Pareto Frontier for {metrics}")
 
@@ -171,7 +209,7 @@ def plot_pareto_frontier(client, front=None, open_html=False):
     for fg in range(1, len(figure_html)):
         html = f"""{html} <div> {figure_html[fg]} </div>"""
     html = f"""{html} </body>{HTML_CARD_SCRIPT}</html>"""
-    html_path = f"artifacts/{client._experiment.name}_pareto_frontier.html"
+    html_path = f"{artifacts_folder}/{client._experiment.name}_pareto_frontier.html"
     with open(html_path, "w") as f:
         f.write(html)
         if open_html:

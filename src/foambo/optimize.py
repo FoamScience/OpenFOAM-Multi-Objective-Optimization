@@ -166,7 +166,7 @@ def optimize(cfg : DictConfig) -> None:
         for best_parameters, prediction, _, _ in front:
             log.info("Pareto-frontier configuration:\n%s", json.dumps(best_parameters, indent=2))
             log.info("Predictions for Pareto-frontier configuration (mean, variance):\n%s", json.dumps(prediction, indent=2))
-        _ = plot_pareto_frontier(client, front, open_html=False)
+        _ = plot_pareto_frontier(cfg, client, front, open_html=False)
     else:
         best_parameters, prediction, _, _ = client.get_best_parameterization(use_model_predictions=True)
         log.info("Best parameter set:\n%s", json.dumps(best_parameters, indent=2))
@@ -186,6 +186,7 @@ def main():
     uvx foamBO --config My.yaml                          # Runs optimization from My.yaml
     uvx foamBO --config My.yaml ++experiment.name=Test2  # Runs optimization from My.yaml with different experiment name
     uvx foamBO --analysis ++store.read_from=json         # Generates reports for optimization from foamBO.yaml configuration
+    uvx foamBO --analysis --json                         # Generates reports and exports Plotly figures as JSON
     uvx foamBO --docs                                    # Browse the documentation
     uvx foamBO --visualize                               # Run visualization UI for current experiment state""",
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -196,8 +197,12 @@ def main():
     group.add_argument('--visualize', action='store_true', help='Run visualization UI for current experiment state')
     group.add_argument('-V', '--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('--config', type=str, default=DEFAULT_CONFIG, help=f'Path to config YAML file (optional, default={DEFAULT_CONFIG})')
+    parser.add_argument('--json', action='store_true', help='Export Plotly figures as JSON (only valid with --analysis)')
     parser.add_argument('overrides', nargs=argparse.REMAINDER, help='Config overrides in ++key=value format')
     args = parser.parse_args()
+
+    if args.json and not args.analysis:
+        parser.error('--json can only be used with --analysis')
 
     if args.docs:
         run_docs_tui(get_config_docs())
@@ -217,8 +222,8 @@ def main():
             log.error(f"Cannot perform analysis without reading in client state\n"
                       f"Please set store.read_from option to either `json` or `sql`")
             exit(1)
-        compute_analysis_cards(cfg, None)
-        _ = plot_pareto_frontier(client=StoreOptions(**cfg['store']).load(), open_html=False)
+        compute_analysis_cards(cfg, None, export_json=args.json)
+        _ = plot_pareto_frontier(cfg, client=StoreOptions(**cfg['store']).load(), open_html=False, export_json=args.json)
         return
 
     if args.visualize:
