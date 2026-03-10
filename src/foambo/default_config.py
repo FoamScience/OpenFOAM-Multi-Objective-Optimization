@@ -102,6 +102,7 @@ def get_default_config() -> Dict[str, Any]:
                     "name": "metric",
                     "progress": [ "echo", "$STEP" ],
                     "command": [ "echo", "0" ],
+                    "progression_source": None,
                 },
             ],
             "objective": "-metric",
@@ -273,22 +274,43 @@ def get_config_docs() -> Dict[str, Any]:
             A metric has the following properties:
             ```yaml
             name: metric_name,
-            command: "echo 1"     # A shell command to evaluate the metric at trial completion
-            progress: []          # An optional shell command to evaluate the metric while the trial is still running
-            lower_is_better: True # Required only if the metric is not an objective and early-stopping is on
+            command: "echo 1"       # A shell command to evaluate the metric at trial completion
+            progress: []            # An optional shell command to evaluate the metric while the trial is still running
+            lower_is_better: True   # Required only if the metric is not an objective and early-stopping is on
+            progression_source: null  # How to index progression steps (see below)
             ```
-            
+
             The `command` entry can be a list of strings or a string, specifying a shell command to evaluate the metric:
-            - As a blocking operation; it must return a value, even if the returned value is NaN 
+            - As a blocking operation; it must return a value, even if the returned value is NaN
             - It has to write either a `<scalar>` or a `<mean>, <sem>` to its standard output (NaN is supported as a "scalar")
             - It always runs locally with the trial's folder as its CWD
             - Any appearances of `$CASE_NAME` or `$CASE_PATH` in the command will be replaced by the respective corresponding
               values
-            
+
             The `progress` entry is similar to `command`, but also:
             - Runs every time the BO algorithm polls for trial completion, which is affected by the `orchestration_settings`
               section
             - Supports `$STEP` replacing with the progression step
+
+            The `progression_source` entry controls what value is used as the progression key when streaming
+            intermediate metric data for early stopping. By default (`null`), a simple poll counter is used.
+            This can be unfair when optimization parameters affect simulation speed (e.g. AMR/LB),
+            because faster trials accumulate less poll-based steps and get compared unfairly against slower ones.
+
+            Supported values:
+            - `null` — poll count (default, incremented each time the metric is polled)
+            - `"foam_time: log.<solver>"` — parse the latest `Time = ...` line from the solver log.
+              This ties progression to simulation time, so trials at different mesh resolutions are
+              compared at the same physical time. Example:
+              ```yaml
+              progression_source: "foam_time: log.simpleFoam"
+              ```
+            - `"command: <shell_cmd>"` — run a command that prints a single number to stdout.
+              The command runs in the trial's directory and supports `$CASE_PATH`/`$CASE_NAME`
+              substitution. Example:
+              ```yaml
+              progression_source: "command: ./getIteration.sh"
+              ```
 
             **Note: Since these commands are blocking-ops, and may run frequently, it's recommended to move any heavy-lifting
             to the case runner, and only consult logs with the metric commands**

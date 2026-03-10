@@ -88,12 +88,19 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
 
     @model_validator(mode="after")
     def resolve_composite_stoppers(self):
-        es = self.early_stopping_strategy
-        if es is not None:
-            if hasattr(es, 'left') and isinstance(es.left, dict | DictConfig):
-                es.left = create_from_map(dict(es.left), EARLY_STOPPER_MAP)
-            if hasattr(es, 'right') and isinstance(es.right, dict | DictConfig):
-                es.right = create_from_map(dict(es.right), EARLY_STOPPER_MAP)
+        def _resolve(strategy):
+            if strategy is None:
+                return strategy
+            if hasattr(strategy, 'left'):
+                if isinstance(strategy.left, dict | DictConfig):
+                    strategy.left = create_from_map(dict(strategy.left), EARLY_STOPPER_MAP)
+                _resolve(strategy.left)
+            if hasattr(strategy, 'right'):
+                if isinstance(strategy.right, dict | DictConfig):
+                    strategy.right = create_from_map(dict(strategy.right), EARLY_STOPPER_MAP)
+                _resolve(strategy.right)
+            return strategy
+        _resolve(self.early_stopping_strategy)
         return self
 
     def to_scheduler_options(self) -> OrchestratorOptions:

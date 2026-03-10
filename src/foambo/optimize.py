@@ -91,6 +91,35 @@ def optimize(cfg : DictConfig) -> None:
     client.configure_runner(**opt_cfg.to_runner_dict())
     client.set_early_stopping_strategy(orch_cfg.early_stopping_strategy)
 
+    # Risk 7: Warn if early stopping references objective metrics (they don't stream)
+    if orch_cfg.early_stopping_strategy is not None:
+        objective_names = {s.strip().lstrip('+-') for s in opt_cfg.objective.split(',') if s.strip()}
+        streaming_names = {m.name for m in opt_cfg.metrics
+                           if m.name not in objective_names and m.progress and m.progress != "none"}
+        def _collect_es_metric_names(strategy):
+            names = set()
+            if strategy is None:
+                return names
+            if hasattr(strategy, 'metric_names') and strategy.metric_names:
+                names.update(strategy.metric_names)
+            if hasattr(strategy, 'metric_threshold') and strategy.metric_threshold:
+                names.update(strategy.metric_threshold.keys())
+            if hasattr(strategy, 'left'):
+                names.update(_collect_es_metric_names(strategy.left))
+            if hasattr(strategy, 'right'):
+                names.update(_collect_es_metric_names(strategy.right))
+            return names
+        es_metric_names = _collect_es_metric_names(orch_cfg.early_stopping_strategy)
+        obj_in_es = es_metric_names & objective_names
+        if obj_in_es:
+            log.warning(f"Early stopping strategy references objective metric(s) {obj_in_es}, "
+                        f"but only non-objective metrics with a 'progress' command stream intermediate data. "
+                        f"Early stopping will NEVER trigger for these metrics.")
+        no_stream = es_metric_names - objective_names - streaming_names
+        if no_stream:
+            log.warning(f"Early stopping strategy references metric(s) {no_stream} that have no "
+                        f"'progress' command configured. Early stopping will not trigger for these.")
+
     data_attacher = ExistingTrialsOptions.model_validate(dict(cfg["existing_trials"]))
     data_attacher.load_data(client)
 
