@@ -703,13 +703,12 @@ def visualizer_ui(cfg: DictConfig, host: str = "127.0.0.1", port: int = 8099, op
     """
     state.cfg = cfg
     set_experiment_name(cfg["experiment"]["name"])
-    state.orch_opts = instantiate_with_nested_fields(
-        ConfigOrchestratorOptions, cfg["orchestration_settings"])
-    state.orch_opts.global_stopping_strategy = None
-    state.orch_opts.early_stopping_strategy = None
-    state.opt_opts = instantiate_with_nested_fields(
-        OptimizationOptions, cfg["optimization"])
-    store_cfg = instantiate_with_nested_fields(StoreOptions, cfg["store"])
+    orch_dict = dict(cfg["orchestration_settings"])
+    orch_dict["global_stopping_strategy"] = None
+    orch_dict["early_stopping_strategy"] = None
+    state.orch_opts = ConfigOrchestratorOptions.model_validate(orch_dict)
+    state.opt_opts = OptimizationOptions.model_validate(dict(cfg["optimization"]))
+    store_cfg = StoreOptions.model_validate(dict(cfg["store"]))
     state.client = store_cfg.load()
 
     if not hasattr(state.client, "_experiment"):

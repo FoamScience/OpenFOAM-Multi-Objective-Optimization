@@ -28,7 +28,7 @@ from itertools import combinations
 def compute_analysis_cards(cfg: DictConfig, client: Client | None, open_html=False, export_json=False):
     set_experiment_name(cfg['experiment']['name'])
     if not client:
-        store_cfg = instantiate_with_nested_fields(StoreOptions, cfg['store'])
+        store_cfg = StoreOptions.model_validate(dict(cfg['store']))
         client = store_cfg.load()
     exp = client._experiment
     artifacts_folder = cfg['optimization']['case_runner']['artifacts_folder']

@@ -7,8 +7,9 @@ from ax.storage.json_store.decoder import AuxiliaryExperimentCheck
 from ax.storage.json_store.registry import CenterGenerationNode
 from foambo.metrics import FoamJobRunner, LocalJobMetric
 from .common import *
-from dataclasses import dataclass, asdict
-from typing import Iterable, List, Literal, Dict
+from .common import FoamBOBaseModel
+from pydantic import field_validator, model_validator
+from typing import Any, Iterable, List, Literal, Dict
 from functools import reduce
 from ax.global_stopping.strategies import BaseGlobalStoppingStrategy, ImprovementGlobalStoppingStrategy
 from ax.api.configs import StorageConfig, RangeParameterConfig, ChoiceParameterConfig
@@ -22,22 +23,20 @@ from ax.generation_strategy.transition_criterion import (
     MaxTrials, MinTrials, AutoTransitionAfterGen,
     IsSingleObjective, MinimumPreferenceOccurances, MinimumTrialsInStatus
 )
-    
+from omegaconf import DictConfig, ListConfig
+
 def create_from_map(cfg, map):
-    try:
-        transition_type = cfg["type"]
-        if transition_type == "none":
-            return None
-        if transition_type not in map.keys():
-            raise ValueError(f"Type {transition_type} not supported. Suported ones are:\n{map.keys()}")
-        cfg = dict(cfg)
-        cfg.pop("type")
-    except:
+    cfg = dict(cfg)
+    transition_type = cfg.pop("type", None)
+    if transition_type is None:
         from pprint import pformat
-        raise ValueError(f"Something went wrong using\n{pformat(cfg)}\nto create one of the objects:\n{pformat(map)}."
-                         "Please check Ax's docs to see what ctors for these objects take. Don't forget to add a type keyword:\n"
-                         f"{pformat({'type': 'target_type', 'arg1': 'val1'})}")
-    return instantiate_with_nested_fields(map[transition_type], cfg)
+        raise ValueError(f"Missing 'type' key in config:\n{pformat(cfg)}\n"
+                         f"Supported types: {pformat(list(map.keys()))}")
+    if transition_type == "none":
+        return None
+    if transition_type not in map:
+        raise ValueError(f"Type {transition_type} not supported. Supported ones are:\n{list(map.keys())}")
+    return map[transition_type](**cfg)
 
 EARLY_STOPPER_MAP = {
     "none": None,
@@ -47,16 +46,16 @@ EARLY_STOPPER_MAP = {
     "or": OrEarlyStoppingStrategy,
 }
 
-@dataclass
-class ConfigOrchestratorOptions():
+
+class ConfigOrchestratorOptions(FoamBOBaseModel):
     """
     Configuration hub for trial orchestration that handles stopping strategy
     (early/global)
     """
     max_trials: int
     parallelism: int
-    global_stopping_strategy: BaseGlobalStoppingStrategy
-    early_stopping_strategy: reduce(lambda a, b: a | b, EARLY_STOPPER_MAP.values())
+    global_stopping_strategy: Any  # BaseGlobalStoppingStrategy
+    early_stopping_strategy: Any
     tolerated_trial_failure_rate: float = 0.5
     min_failed_trials_for_failure_rate_check: int = 5
     initial_seconds_between_polls: int = 1
@@ -67,33 +66,35 @@ class ConfigOrchestratorOptions():
     fatal_error_on_metric_trouble: bool = False
     immutable_search_space: bool = True
 
-    def __post_init__(self):
-        if hasattr(self.early_stopping_strategy, 'left'):
-            self.early_stopping_strategy.left = create_from_map(self.early_stopping_strategy.left, EARLY_STOPPER_MAP)
-        if hasattr(self.early_stopping_strategy, 'right'):
-            self.early_stopping_strategy.right = create_from_map(self.early_stopping_strategy.right, EARLY_STOPPER_MAP)
-
+    @field_validator("global_stopping_strategy", mode="before")
     @classmethod
-    def create_global_stopping_strategy(
-        cls,
-        min_trials: int,
-        window_size: int,
-        improvement_bar: float,
-        ) -> BaseGlobalStoppingStrategy :
-        """
-        For now the only option is Improvement-based stopping
-        """
-        return ImprovementGlobalStoppingStrategy(
-            min_trials=min_trials,
-            window_size=window_size,
-            improvement_bar=improvement_bar,
-            inactive_when_pending_trials=True)
+    def parse_global_stopping(cls, v):
+        if isinstance(v, dict | DictConfig):
+            v = dict(v)
+            return ImprovementGlobalStoppingStrategy(
+                min_trials=v["min_trials"],
+                window_size=v["window_size"],
+                improvement_bar=v["improvement_bar"],
+                inactive_when_pending_trials=True,
+            )
+        return v
 
-    # Implemetation detail for proper argument checking from configs
-    __nested_fields__ = {
-        "global_stopping_strategy": lambda **kwargs: ConfigOrchestratorOptions.create_global_stopping_strategy(**kwargs),
-        "early_stopping_strategy": lambda **kwargs: create_from_map(dict(kwargs), EARLY_STOPPER_MAP),
-    }
+    @field_validator("early_stopping_strategy", mode="before")
+    @classmethod
+    def parse_early_stopping(cls, v):
+        if isinstance(v, dict | DictConfig):
+            return create_from_map(dict(v), EARLY_STOPPER_MAP)
+        return v
+
+    @model_validator(mode="after")
+    def resolve_composite_stoppers(self):
+        es = self.early_stopping_strategy
+        if es is not None:
+            if hasattr(es, 'left') and isinstance(es.left, dict | DictConfig):
+                es.left = create_from_map(dict(es.left), EARLY_STOPPER_MAP)
+            if hasattr(es, 'right') and isinstance(es.right, dict | DictConfig):
+                es.right = create_from_map(dict(es.right), EARLY_STOPPER_MAP)
+        return self
 
     def to_scheduler_options(self) -> OrchestratorOptions:
         return OrchestratorOptions(
@@ -113,22 +114,26 @@ class ConfigOrchestratorOptions():
         )
 
 
-@dataclass
-class ExperimentOptions:
+class ExperimentOptions(FoamBOBaseModel):
     """
     Configuration hub for optimization experiment
     """
     name: str
     description: str
     parameter_constraints: List[str]
-    parameters: List[ChoiceParameterConfig | RangeParameterConfig]
+    parameters: List[Any]  # List[ChoiceParameterConfig | RangeParameterConfig]
 
-    __nested_fields__ = {
-        "parameters": [ChoiceParameterConfig, RangeParameterConfig],
-    }
+    @field_validator("parameters", mode="before")
+    @classmethod
+    def parse_parameters(cls, v):
+        if v and len(v) > 0 and isinstance(v[0], dict | DictConfig):
+            return cls.generate_parameter_space(v)
+        return v
 
-    def __post_init__(self):
+    @model_validator(mode="after")
+    def set_name(self):
         set_experiment_name(self.name)
+        return self
 
     def to_dict(self):
         return {
@@ -149,34 +154,23 @@ class ExperimentOptions:
             items = [(p["name"], p) for p in params_cfg]
         else:
             raise TypeError(f"Invalid parameter format: {type(params_cfg)}")
-            
+
         l = []
         for key, item in items:
             e = {
                 "name": key,
                 **item
             }
-            if "values" in e.keys() and validate_args(ChoiceParameterConfig.__init__, e):
-                extra = has_unexpected_args(ChoiceParameterConfig, e)
-                if extra:
-                    err_str = f"""Unexpected keys {extra} for {ChoiceParameterConfig.__name__} ({e['name']} parameter)
-                    List of expected keys:\n{func_params(ChoiceParameterConfig.__init__)}"""
-                    raise ValueError(err_str)
+            if "values" in e.keys():
                 l.append(ChoiceParameterConfig(**e))
-            elif "bounds" in e.keys() and validate_args(RangeParameterConfig.__init__, e):
-                extra = has_unexpected_args(RangeParameterConfig, e)
-                if extra:
-                    err_str = f"""Unexpected keys {extra} for {RangeParameterConfig.__name__} ({e['name']} parameter), List of expected keys:
-                    \n{func_params(RangeParameterConfig.__init__)}"""
-                    raise ValueError(err_str)
+            elif "bounds" in e.keys():
                 l.append(RangeParameterConfig(**e))
             else:
                 raise ValueError(f"Invalid parameter configuration for {e['name']}; expecting either 'values' or 'bounds' in {e}")
         return l
 
 
-@dataclass
-class ModelSpecConfig:
+class ModelSpecConfig(FoamBOBaseModel):
     """Configuration for GeneratorSpec"""
     generator_enum: Literal[
         "SOBOL",
@@ -194,12 +188,12 @@ class ModelSpecConfig:
         "CONTEXT_SACBO",
     ]
     model_kwargs: Dict | None = None
-    
+
     def to_generator_spec(self) -> GeneratorSpec:
         if not hasattr(Generators, self.generator_enum):
             from pprint import pformat
             raise ValueError(f"{self.generator_enum} is not a supported generator; supported specs:\n"
-                             f"{pformat([name for name, value in vars(Generators).items() if not name.startswith("_")])}")
+                             f"{pformat([name for name, value in vars(Generators).items() if not name.startswith('_')])}")
         model = Generators[self.generator_enum]
         return GeneratorSpec(
             generator_enum=model,
@@ -217,46 +211,48 @@ TRANSITION_MAP = {
     "minimum_trials_in_status": MinimumTrialsInStatus,
 }
 
-@dataclass
-class GenerationNodeConfig:
+
+class GenerationNodeConfig(FoamBOBaseModel):
     """Configuration for a generation node"""
     node_name: str
     generator_specs: List[ModelSpecConfig]
-    transition_criteria: List[reduce(lambda a, b: a | b, TRANSITION_MAP.values())]
+    transition_criteria: List[Any] = []
 
-    
-    __nested_fields__ = {
-        "generator_specs": ModelSpecConfig,
-        "transition_criteria": lambda **kwargs: create_from_map(dict(kwargs), TRANSITION_MAP)
-    }
-    
+    @field_validator("generator_specs", mode="before")
+    @classmethod
+    def parse_specs(cls, v):
+        if v and isinstance(v[0], dict | DictConfig):
+            return [ModelSpecConfig.model_validate(dict(item)) for item in v]
+        return v
+
+    @field_validator("transition_criteria", mode="before")
+    @classmethod
+    def parse_transitions(cls, v):
+        if not v:
+            return v
+        return [create_from_map(dict(item), TRANSITION_MAP) if isinstance(item, dict | DictConfig) else item for item in v]
+
     def to_generation_node(self) -> GenerationNode:
-        spec_list = []
-        for spec in self.generator_specs:
-            if isinstance(spec, dict):
-                model_spec = ModelSpecConfig(**spec)
-                spec_list.append(model_spec.to_generator_spec())
-            else:
-                spec_list.append(spec.to_generator_spec())
-        
+        spec_list = [spec.to_generator_spec() for spec in self.generator_specs]
         return GenerationNode(
             node_name=self.node_name,
             generator_specs=spec_list,
             transition_criteria=self.transition_criteria if self.transition_criteria else None,
         )
 
-@dataclass
-class CenterGenerationNodeConfig:
+
+class CenterGenerationNodeConfig(FoamBOBaseModel):
     """Configuration for center generation node"""
     next_node: str
 
     def to_generation_node(self):
         return CenterGenerationNode(next_node_name=self.next_node)
 
+
 class ManualGenerationNode(GenerationNode):
     parameters: TParameterization
     def __init__(self, node_name: str, parameters: TParameterization):
-        super().__init__(node_name=node_name, generator_specs=[]) 
+        super().__init__(node_name=node_name, generator_specs=[])
         self.parameters = parameters
 
     def gen(
@@ -275,13 +271,13 @@ class ManualGenerationNode(GenerationNode):
 
         )
 
-@dataclass
-class TrialGenerationOptions:
+
+class TrialGenerationOptions(FoamBOBaseModel):
     """
     Configuration hub for generation strategy
     """
     method:  Literal["fast", "random_search", "custom"]
-    generation_nodes: List[GenerationNode | CenterGenerationNode] | None = None
+    generation_nodes: List[Any] | None = None
     initialization_budget: int | None = 5
     initialization_random_seed: int | None = None
     initialize_with_center: bool = True
@@ -289,18 +285,33 @@ class TrialGenerationOptions:
     min_observed_initialization_trials: int | None = None
     allow_exceeding_initialization_budget: bool = False
 
-    __nested_fields__ = {
-        "generation_nodes": [
-            lambda **kwargs: instantiate_with_nested_fields(GenerationNodeConfig, dict(**kwargs)).to_generation_node() if
-                    "next_node_name" not in dict(**kwargs) else instantiate_with_nested_fields(CenterGenerationNode, kwargs),
-        ],
-    }
+    @field_validator("generation_nodes", mode="before")
+    @classmethod
+    def parse_generation_nodes(cls, v):
+        if not v:
+            return v
+        nodes = []
+        for item in v:
+            if isinstance(item, dict | DictConfig):
+                item = dict(item)
+                if "next_node_name" in item:
+                    nodes.append(CenterGenerationNode(**item))
+                elif "next_node" in item:
+                    nodes.append(CenterGenerationNodeConfig.model_validate(item).to_generation_node())
+                else:
+                    node_cfg = GenerationNodeConfig.model_validate(item)
+                    nodes.append(node_cfg.to_generation_node())
+            else:
+                nodes.append(item)
+        return nodes
 
-    def __post_init__(self):
+    @model_validator(mode="after")
+    def validate_method_nodes(self):
         if self.method == "custom" and not self.generation_nodes:
-                raise ValueError("generation_nodes must be provided when method is 'custom'")
+            raise ValueError("generation_nodes must be provided when method is 'custom'")
         if self.method != "custom" and self.generation_nodes:
             log.warning(f"generation_nodes is provided but method is {self.method}, not custom. The nodes will be ignored.")
+        return self
 
     def to_dict(self):
         return {
@@ -322,18 +333,18 @@ class TrialGenerationOptions:
         gs = GenerationStrategy(name=f"+".join([node.node_name for node in self.generation_nodes]), nodes=self.generation_nodes)
         client.set_generation_strategy(gs)
 
-@dataclass
-class VariableSubstOptions:
+
+class VariableSubstOptions(FoamBOBaseModel):
     file: str
     parameter_scopes: Dict[str, str]
 
-@dataclass
-class FileSubstOptions:
+
+class FileSubstOptions(FoamBOBaseModel):
     parameter: str
     file_path: str
 
-@dataclass 
-class FoamJobRunnerOptions():
+
+class FoamJobRunnerOptions(FoamBOBaseModel):
     mode: Literal["local", "remote"]
     template_case: str
     trial_destination: str
@@ -345,18 +356,27 @@ class FoamJobRunnerOptions():
     remote_status_query: str | None = ""
     remote_early_stop: str | None = ""
 
-    __nested_fields__ = {
-        "variable_substitution": VariableSubstOptions,
-        "file_substitution": FileSubstOptions,
-    }
+    @field_validator("variable_substitution", mode="before")
+    @classmethod
+    def parse_variable_subst(cls, v):
+        if v and isinstance(v[0], dict | DictConfig):
+            return [VariableSubstOptions.model_validate(dict(item)) for item in v]
+        return v
 
-    def __post_init__(self):
+    @field_validator("file_substitution", mode="before")
+    @classmethod
+    def parse_file_subst(cls, v):
+        if v and isinstance(v[0], dict | DictConfig):
+            return [FileSubstOptions.model_validate(dict(item)) for item in v]
+        return v
+
+    @model_validator(mode="after")
+    def validate_paths(self):
         if not os.path.isdir(self.template_case):
             raise ValueError(f"template_case directory does not exist: {self.template_case}")
-        if not os.path.isdir(self.trial_destination):
-            raise ValueError(f"trial_destination directory does not exist: {self.trial_destination}")
-        if not os.path.isdir(self.artifacts_folder):
-            raise ValueError(f"artifacts directory does not exist: {self.artifacts_folder}")
+        os.makedirs(self.trial_destination, exist_ok=True)
+        os.makedirs(self.artifacts_folder, exist_ok=True)
+        return self
 
     def to_runner(self):
         cfg = DictConfig({
@@ -365,24 +385,24 @@ class FoamJobRunnerOptions():
                 "path": self.template_case,
                 "trial_destination": self.trial_destination,
                 "runner": self.runner,
-                "log_runner": self.runner or False,
+                "log_runner": self.log_runner or False,
                 "remote_status_query": self.remote_status_query,
                 "remote_early_stop": self.remote_early_stop,
             },
             "templating": {
-                "variables": [ asdict(subst) for subst in self.variable_substitution] if self.variable_substitution else [],
-                "files": [asdict(subst) for subst in self.file_substitution] if self.file_substitution  else []
+                "variables": [subst.model_dump() for subst in self.variable_substitution] if self.variable_substitution else [],
+                "files": [subst.model_dump() for subst in self.file_substitution] if self.file_substitution else []
             }
         })
         runner = FoamJobRunner(cfg=cfg)
         return runner
 
-@dataclass
-class BaselineOptions:
+
+class BaselineOptions(FoamBOBaseModel):
     parameters: TParameterization | None
 
-@dataclass
-class OptimizationOptions:
+
+class OptimizationOptions(FoamBOBaseModel):
     """
     Configuration hub for optimization
     """
@@ -391,10 +411,19 @@ class OptimizationOptions:
     metrics: List[LocalJobMetric]
     case_runner: FoamJobRunnerOptions
 
-    __nested_fields__ = {
-        "metrics": [LocalJobMetric],
-        "case_runner": lambda **kwargs: instantiate_with_nested_fields(FoamJobRunnerOptions, dict(kwargs)),
-    }
+    @field_validator("metrics", mode="before")
+    @classmethod
+    def parse_metrics(cls, v):
+        if v and isinstance(v[0], dict | DictConfig):
+            return [LocalJobMetric.model_validate(dict(item)) for item in v]
+        return v
+
+    @field_validator("case_runner", mode="before")
+    @classmethod
+    def parse_case_runner(cls, v):
+        if isinstance(v, dict | DictConfig):
+            return FoamJobRunnerOptions.model_validate(dict(v))
+        return v
 
     def to_optimization_dict(self):
         return {
@@ -417,19 +446,29 @@ class OptimizationOptions:
             "runner": self.case_runner.to_runner()
         }
 
-@dataclass
-class JSONBackendOptions:
+
+class JSONBackendOptions(FoamBOBaseModel):
     pass
 
-@dataclass
-class SQLBackendOptions:
+
+class SQLBackendOptions(FoamBOBaseModel):
     url: str
 
-@dataclass
-class StoreOptions:
-    read_from : Literal["json", "sql", "nowhere"]
-    save_to : Literal["json", "sql"]
+
+class StoreOptions(FoamBOBaseModel):
+    read_from: Literal["json", "sql", "nowhere"]
+    save_to: Literal["json", "sql"]
     backend_options: JSONBackendOptions | SQLBackendOptions
+
+    @field_validator("backend_options", mode="before")
+    @classmethod
+    def parse_backend(cls, v):
+        if isinstance(v, dict | DictConfig):
+            v = dict(v)
+            if v.get("url"):
+                return SQLBackendOptions.model_validate(v)
+            return JSONBackendOptions.model_validate({k: val for k, val in v.items() if k != "url"})
+        return v
 
     def load(self) -> Client:
         if self.read_from == "nowhere":
@@ -451,13 +490,8 @@ class StoreOptions:
             for card in cards:
                 client._save_analysis_card_to_db_if_possible(experiment=client._experiment, analysis_card=card)
 
-    __nested_fields__ = {
-        "backend_options" : [JSONBackendOptions, SQLBackendOptions]
-    }
 
-
-@dataclass
-class ExistingTrialsOptions:
+class ExistingTrialsOptions(FoamBOBaseModel):
     file_path: str
     def load_data(self, client: Client):
         """
@@ -479,7 +513,7 @@ class ExistingTrialsOptions:
 
         if missing_params or missing_metrics:
             raise ValueError(
-                f"Missing columns while loaded existing trial data from {self.filename}"
+                f"Missing columns while loaded existing trial data from {self.file_path}"
                 f" — Parameters: {missing_params}, Metrics: {missing_metrics}\n"
             )
 

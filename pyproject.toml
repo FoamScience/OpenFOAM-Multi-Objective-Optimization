@@ -24,6 +24,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
+    "pydantic>=2.0",
     "ax-platform==1.1.2",
     "omegaconf>=2.3.0",
     "regex>=2023.6.3",

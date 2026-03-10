@@ -1,6 +1,5 @@
 from .common import VERSION
 from typing import Dict, Any, get_args
-from dataclasses import fields
 import yaml
 
 CURRENT_AX_VERSION="1.1.2"
@@ -222,8 +221,8 @@ def get_config_docs() -> Dict[str, Any]:
             Each node is either a:
             - {get_ax_path("GenerationNone", "ax/generation_strategy/generation_node.py", [85, 119])}
               with support for some GeneratorSpecs arguments:
-              - `{fields(ModelSpecConfig)[0].name}`: `{fields(ModelSpecConfig)[0].type}` 
-              - `{fields(ModelSpecConfig)[1].name}`: arguments of the respective generator from
+              - `{list(ModelSpecConfig.model_fields.keys())[0]}`: `{ModelSpecConfig.model_fields['generator_enum'].annotation}`
+              - `{list(ModelSpecConfig.model_fields.keys())[1]}`: arguments of the respective generator from
                 {get_ax_path("generators", "ax/generators")}
             - {get_ax_path("CenterGenerationNode", "ax/generation_strategy/center_generation_node.py", [26, 27])}
 
@@ -489,8 +488,8 @@ def get_config_docs() -> Dict[str, Any]:
             Note the `type` entry required to identify which strategy to pick.
             """,
         "store": "[Section] Controls where to store experiment state, and where to read it from",
-        "store.save_to": f"Choose the storage backend: {fields(StoreOptions)[0].type}",
-        "store.read_from": f"Choose the storage backend to read/load experiment state from: {fields(StoreOptions)[1].type}",
+        "store.save_to": f"Choose the storage backend: {StoreOptions.model_fields['read_from'].annotation}",
+        "store.read_from": f"Choose the storage backend to read/load experiment state from: {StoreOptions.model_fields['save_to'].annotation}",
         "store.backend_options": f"""
             A dictionary used to supply backend-specific (SQL databases, or JSON files) settings:
             ```yaml
@@ -592,7 +591,7 @@ def get_config_docs() -> Dict[str, Any]:
             from foambo.common import *
             from foambo.orchestrate import StoreOptions
             set_experiment_name("MyExperiment") # experiment.name from your YAML config
-            store = StoreOptions(save_to="nowhere", read_from="json", backend_options={{}})
+            store = StoreOptions.model_validate({{"save_to": "json", "read_from": "json", "backend_options": {{}}}})
             client = store.load()
             ```
             """,

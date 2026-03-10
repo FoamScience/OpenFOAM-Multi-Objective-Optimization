@@ -39,12 +39,12 @@ def optimize(cfg : DictConfig) -> None:
     log.info("=================================================")
     
     # 0 Pick up and validate the whole configuration
-    exp_cfg = instantiate_with_nested_fields(ExperimentOptions, cfg['experiment'])
-    gs_cfg = instantiate_with_nested_fields(TrialGenerationOptions, cfg['trial_generation'])
-    opt_cfg = instantiate_with_nested_fields(OptimizationOptions, cfg['optimization'])
-    orch_cfg = instantiate_with_nested_fields(ConfigOrchestratorOptions, cfg['orchestration_settings'])
-    store_cfg = instantiate_with_nested_fields(StoreOptions, cfg['store'])
-    baseline_cfg = instantiate_with_nested_fields(BaselineOptions, cfg['baseline'])
+    exp_cfg = ExperimentOptions.model_validate(dict(cfg['experiment']))
+    gs_cfg = TrialGenerationOptions.model_validate(dict(cfg['trial_generation']))
+    opt_cfg = OptimizationOptions.model_validate(dict(cfg['optimization']))
+    orch_cfg = ConfigOrchestratorOptions.model_validate(dict(cfg['orchestration_settings']))
+    store_cfg = StoreOptions.model_validate(dict(cfg['store']))
+    baseline_cfg = BaselineOptions.model_validate(dict(cfg['baseline']))
     client = store_cfg.load()
 
     # 1.0 Experiment setup
@@ -91,7 +91,7 @@ def optimize(cfg : DictConfig) -> None:
     client.configure_runner(**opt_cfg.to_runner_dict())
     client.set_early_stopping_strategy(orch_cfg.early_stopping_strategy)
 
-    data_attacher = instantiate_with_nested_fields(ExistingTrialsOptions, cfg["existing_trials"])
+    data_attacher = ExistingTrialsOptions.model_validate(dict(cfg["existing_trials"]))
     data_attacher.load_data(client)
 
     def callback(sched: Orchestrator):
@@ -177,7 +177,49 @@ def optimize(cfg : DictConfig) -> None:
     store_cfg.save(client, cards)
     log.info("==================== End ========================")
 
+def setup_colored_logging():
+    import logging
+    import colorlog
+    from rich.traceback import install as install_rich_traceback
+    fmt = colorlog.ColoredFormatter(
+        "%(log_color)s[%(levelname)-5s %(asctime)s]%(reset)s %(blue)s%(name)s%(reset)s: %(message)s",
+        datefmt="%m-%d %H:%M:%S",
+        log_colors={
+            "DEBUG":    "cyan",
+            "INFO":     "green",
+            "WARNING":  "yellow",
+            "ERROR":    "red",
+            "CRITICAL": "bold_red",
+        },
+    )
+    handler = colorlog.StreamHandler()
+    handler.setFormatter(fmt)
+    # Clear all existing handlers to avoid duplicates, set colored handler on root only
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    # Strip handlers from child loggers so they propagate to root
+    for name in list(logging.Logger.manager.loggerDict):
+        lgr = logging.getLogger(name)
+        lgr.handlers.clear()
+        lgr.propagate = True
+    # Rich tracebacks: syntax-highlighted, with locals, dimmed frames for libraries
+    install_rich_traceback(
+        show_locals=True,
+        width=120,
+        suppress=[
+            "ax",
+            "botorch",
+            "torch",
+            "gpytorch",
+            "pydantic",
+        ],
+    )
+
+
 def main():
+    setup_colored_logging()
     parser = argparse.ArgumentParser(
         description="Multi-objective optimization with Bayesian Algorithms for OpenFOAM cases.",
         epilog="""Examples:
@@ -223,7 +265,7 @@ def main():
                       f"Please set store.read_from option to either `json` or `sql`")
             exit(1)
         compute_analysis_cards(cfg, None, export_json=args.json)
-        _ = plot_pareto_frontier(cfg, client=StoreOptions(**cfg['store']).load(), open_html=False, export_json=args.json)
+        _ = plot_pareto_frontier(cfg, client=StoreOptions.model_validate(dict(cfg['store'])).load(), open_html=False, export_json=args.json)
         return
 
     if args.visualize:

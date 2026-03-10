@@ -4,10 +4,9 @@ from ax.api.protocols.runner import IRunner, TrialStatus
 from ax.api.types import TParameterization
 from typing import Mapping, Any, Dict, Union, List
 from omegaconf import DictConfig, DictKeyType, OmegaConf
-from .common import preprocess_case, process_input_command, parse_outcome_for_metric, instantiate_with_nested_fields
+from .common import preprocess_case, process_input_command, parse_outcome_for_metric, FoamBOBaseModel
 from .common import SLURM_STATUS_MAP
 from foamlib import FoamCase
-from dataclasses import dataclass, asdict
 import subprocess as sb
 import numpy as np
 import os, time, signal
@@ -29,8 +28,7 @@ def init_trial_progression(trial_index: int, metrics):
     if trial_progression_step[trial_index] == {}: 
         trial_progression_step[trial_index] = {metric: 0 for metric in metrics}
 
-@dataclass
-class FoamJob:
+class FoamJob(FoamBOBaseModel):
     """
         An async OpenFOAM job scheduled on an HPC system.
     """
@@ -44,8 +42,8 @@ class FoamJob:
     def __repr__(self):
         return self.case_path
 
-    def to_dict(self): 
-        return asdict(self)
+    def to_dict(self):
+        return self.model_dump()
 
     @classmethod
     def local_case_run(
@@ -207,11 +205,10 @@ def encode_foam_metric(metric: FoamJobMetric) -> dict:
         "name": metric.name,  # or however you construct it
     }
 
-@dataclass
-class LocalJobMetric:
+class LocalJobMetric(FoamBOBaseModel):
     name: str
     command: str
-    progress: str
+    progress: str | None = None
     lower_is_better: bool | None = None
 
     def to_metric(self):
@@ -274,7 +271,7 @@ def streaming_metric(client: Client, opt_cfg: Dict):
             }
         }
         metrics_cfg = trial_metrics_cfg(idx, opt_cfg["metrics"])
-        gms = {metric["name"]: instantiate_with_nested_fields(LocalJobMetric, metric) for metric in metrics_cfg}
+        gms = {metric["name"]: LocalJobMetric.model_validate(metric) for metric in metrics_cfg}
         for k,v in gms.items():
             try:
                 if v.progress and v.progress != "" and v.progress != "none":
@@ -338,7 +335,7 @@ class FoamJobRunner(IRunner):
             str(case_data['case'].path),
             self.cfg['template_case'])
         log.info(f"Dispatched trial {trial_index}: {case_data['case'].path}")
-        return {"job_id": job_id, "job": asdict(job), "case_path": str(case_data['case'].path)}
+        return {"job_id": job_id, "job": job.model_dump(), "case_path": str(case_data['case'].path)}
     def poll_trial(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> TrialStatus:
         if not trial_metadata or 'job_id' not in trial_metadata:
             return TrialStatus.COMPLETED
@@ -355,10 +352,10 @@ def config_from_json(config: Dict[str, Any]) -> DictConfig:
     return DictConfig(content=config)
 
 def foam_job_to_dict(job: FoamJob) -> Union[Dict[DictKeyType, Any], List[Any], None, str, Any]:
-    return asdict(job)
+    return job.model_dump()
 
 def foam_job_from_json(config: Dict[str, Any]) -> FoamJob:
-    return FoamJob(**config)
+    return FoamJob.model_validate(config)
 
 CORE_CLASS_DECODER_REGISTRY["FoamJob"] = foam_job_from_json
 CORE_ENCODER_REGISTRY[FoamJob] = foam_job_to_dict
