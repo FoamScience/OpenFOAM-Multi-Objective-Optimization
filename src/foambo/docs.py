@@ -1,13 +1,13 @@
 import difflib, textwrap
 from typing import Dict, Any
-from rich.console import Console
-from rich.markdown import Markdown
-from rich.panel import Panel
-from prompt_toolkit import prompt
 
-console = Console()
+from textual.app import App, ComposeResult
+from textual.widgets import Header, Footer, Input, Collapsible, Static, Markdown
+from textual.containers import VerticalScroll
+from textual.binding import Binding
 
-def get_content_and_category(entry) -> tuple[str, str|None]:
+
+def get_content_and_category(entry) -> tuple[str, str | None]:
     if isinstance(entry, dict):
         content = entry.get("content", "")
         category = entry.get("category")
@@ -16,59 +16,130 @@ def get_content_and_category(entry) -> tuple[str, str|None]:
         category = None
     return content, category
 
-def fuzzy_search(query: str, docs: Dict[str, Any], n: int = 5):
+
+def fuzzy_search(query: str, docs: Dict[str, Any], n: int = 20):
     """
     Fuzzy search over keys and values. Returns up to `n` best matching keys.
     Special query 'all' returns all keys.
     """
-    query_lower = query.lower()
-    if query_lower in ("all", "*"):
+    def _norm(s: str) -> str:
+        """Normalize for matching: lowercase, underscores as spaces."""
+        return s.lower().replace("_", " ")
+
+    query_norm = _norm(query)
+    if query_norm in ("all", "*"):
         return list(docs.keys())
 
     matches = []
     for k, v in docs.items():
         content, _ = get_content_and_category(v)
-        k_lower = k.lower()
-        v_lower = content.lower()
-        if query_lower in k_lower or query_lower in v_lower:
+        k_norm = _norm(k)
+        v_norm = _norm(content)
+        if query_norm in k_norm or query_norm in v_norm:
             matches.append(k)
     if not matches:
-        candidates = list(docs.keys()) + [get_content_and_category(v)[0] for v in docs.values()]
-        raw_matches = difflib.get_close_matches(query, candidates, n=n, cutoff=0.1)
-        matches = [k if k in docs else v for k, v in zip(raw_matches, raw_matches)]
+        candidates = [_norm(k) for k in docs.keys()] + [_norm(get_content_and_category(v)[0]) for v in docs.values()]
+        raw_matches = difflib.get_close_matches(query_norm, candidates, n=n, cutoff=0.1)
+        # Map normalized matches back to original keys
+        norm_to_key = {_norm(k): k for k in docs.keys()}
+        matches = [norm_to_key[m] for m in raw_matches if m in norm_to_key]
     return matches[:n]
 
-def run_docs_tui(docs: Dict[str, Any]):
-    console.print("[bold green]FoamBO Configuration Docs Explorer[/bold green]")
-    console.print("Type your query (e.g. 'param'), or ('exit', 'quit', or 'q' ) to quit.")
-    console.print("For all configuration keys, user '*' or 'all' as your query\n")
 
-    while True:
-        try:
-            query = prompt("🔍> ").strip()
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[bold red]Exiting...[/bold red]")
-            break
-        if query.strip().lower() in ("exit", "quit", "q"):
-            break
+class DocsApp(App):
+    """FoamBO Configuration Docs Explorer."""
 
-        matches = fuzzy_search(query, docs, n=5)
+    CSS = """
+    #search-input {
+        dock: top;
+        margin: 0 1;
+    }
+    #results {
+        margin: 0 1;
+    }
+    Collapsible {
+        margin: 0 0 1 0;
+    }
+    CollapsibleTitle {
+        color: $accent;
+    }
+    .category-label {
+        color: $text-muted;
+        text-style: italic;
+    }
+    .no-results {
+        color: $error;
+        margin: 1 2;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "quit", "Quit"),
+        Binding("ctrl+a", "expand_all", "Expand all"),
+        Binding("ctrl+d", "collapse_all", "Collapse all"),
+    ]
+
+    def __init__(self, docs: Dict[str, Any]):
+        super().__init__()
+        self.docs = docs
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=False)
+        yield Input(
+            placeholder="Search docs (e.g. 'metric', 'early_stopping', '*' for all)",
+            id="search-input",
+        )
+        yield VerticalScroll(id="results")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = "FoamBO Docs"
+        self.sub_title = "Type to search, Enter to filter, Ctrl+A/D expand/collapse, Esc to quit"
+        self.query_one("#search-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        query = event.value.strip()
+        if not query:
+            return
+        self._show_results(query)
+
+    def _show_results(self, query: str) -> None:
+        container = self.query_one("#results", VerticalScroll)
+        container.remove_children()
+
+        matches = fuzzy_search(query, self.docs)
         if not matches:
-            console.print(f"[red]No matches found for '{query}'[/red]\n")
-            continue
+            container.mount(Static(f"No matches for '{query}'", classes="no-results"))
+            return
 
-        for m in matches:
-            entry = docs[m]
+        # If results fit in ~1 screen (<=3), expand them; otherwise collapse
+        auto_expand = len(matches) <= 3
+
+        for key in matches:
+            entry = self.docs[key]
             content, category = get_content_and_category(entry)
-            content = textwrap.dedent(content)
-            panel = Panel(
-                    Markdown(content),
-                    title=f"[cyan]{m}[/cyan]",
-                    subtitle=f"[magenta]{category}[/magenta]" if category else None,
-                    expand=True,
-                    border_style="green",
-                    padding=(1,1),
-                    title_align="left",
-                    subtitle_align="right")
-            console.print(panel)
-            console.print()
+            content = textwrap.dedent(content).strip()
+
+            title = key
+            if category:
+                title = f"{key}  [{category}]"
+
+            collapsible = Collapsible(
+                Markdown(content),
+                title=title,
+                collapsed=not auto_expand,
+            )
+            container.mount(collapsible)
+
+    def action_expand_all(self) -> None:
+        for c in self.query(Collapsible):
+            c.collapsed = False
+
+    def action_collapse_all(self) -> None:
+        for c in self.query(Collapsible):
+            c.collapsed = True
+
+
+def run_docs_tui(docs: Dict[str, Any]):
+    app = DocsApp(docs)
+    app.run()

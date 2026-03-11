@@ -23,10 +23,7 @@ class FoamBOBaseModel(BaseModel):
         extra="forbid",
     )
 
-VERSION = "1.1.3"
-
-# Default config filename
-DEFAULT_CONFIG = "foamBO.yaml"
+from ._version import VERSION, DEFAULT_CONFIG
 
 # Default hash length
 DEFAULT_HASH_LENGTH = 8

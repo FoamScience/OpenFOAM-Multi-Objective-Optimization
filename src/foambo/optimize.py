@@ -10,30 +10,25 @@ Artifacts: CSV data for experiment trials
 """
 
 import sys, argparse, pprint, json
-from omegaconf import DictConfig, OmegaConf
-from .config import load_config, save_default_config, override_config
-from .common import *
-from .metrics import streaming_metric
-from .analysis import compute_analysis_cards, plot_pareto_frontier
-from .visualize import visualizer_ui
-from .orchestrate import (
-    ExistingTrialsOptions, ExperimentOptions, OptimizationOptions,
-    ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
-)
-from ax.api.client import MultiObjective, Orchestrator, db_settings_from_storage_config
-import pandas as pd
 
-from .default_config import get_config_docs
-from .docs import run_docs_tui
-
-from logging import Logger
-from ax.utils.common.logger import get_logger
-log : Logger = get_logger(__name__)
-
-def optimize(cfg : DictConfig) -> None:
+def optimize(cfg) -> None:
     """
     Main optimization loop
     """
+    from omegaconf import OmegaConf
+    from .common import VERSION, set_experiment_name, get_experiment_name
+    from .metrics import streaming_metric
+    from .analysis import compute_analysis_cards, plot_pareto_frontier
+    from .orchestrate import (
+        ExistingTrialsOptions, ExperimentOptions, OptimizationOptions,
+        ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
+    )
+    from ax.api.client import MultiObjective, Orchestrator, db_settings_from_storage_config
+    import pandas as pd
+    from logging import Logger
+    from ax.utils.common.logger import get_logger
+    log = get_logger(__name__)
+
     log.info("============= Running Configuration =============")
     log.info(OmegaConf.to_yaml(cfg))
     log.info("=================================================")
@@ -249,6 +244,8 @@ def setup_colored_logging():
 
 def main():
     setup_colored_logging()
+    from ._version import VERSION, DEFAULT_CONFIG
+
     parser = argparse.ArgumentParser(
         description="Multi-objective optimization with Bayesian Algorithms for OpenFOAM cases.",
         epilog="""Examples:
@@ -276,14 +273,38 @@ def main():
         parser.error('--json can only be used with --analysis')
 
     if args.docs:
-        run_docs_tui(get_config_docs())
-        exit(1)
+        import pathlib
+        from .docs import run_docs_tui
+        cache_dir = pathlib.Path.home() / ".cache" / "foambo"
+        cache_file = cache_dir / f"docs_v{VERSION}.json"
+        docs = None
+        if cache_file.exists():
+            try:
+                docs = json.loads(cache_file.read_text())
+            except Exception:
+                pass
+        if docs is None:
+            from .default_config import get_config_docs
+            docs = get_config_docs()
+            try:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(json.dumps(docs))
+            except Exception:
+                pass
+        run_docs_tui(docs)
+        sys.exit(0)
 
     if args.generate_config:
+        from .config import save_default_config
         save_default_config(args.config)
         sys.exit(0)
 
     if args.analysis:
+        import logging
+        log = logging.getLogger(__name__)
+        from .config import load_config, override_config
+        from .analysis import compute_analysis_cards, plot_pareto_frontier
+        from .orchestrate import StoreOptions
         cfg = load_config(args.config)
         if args.overrides:
             overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
@@ -298,6 +319,10 @@ def main():
         return
 
     if args.visualize:
+        import logging
+        log = logging.getLogger(__name__)
+        from .config import load_config, override_config
+        from .visualize import visualizer_ui
         cfg = load_config(args.config)
         if args.overrides:
             overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
@@ -310,6 +335,7 @@ def main():
         visualizer_ui(cfg)
         return
 
+    from .config import load_config, override_config
     cfg = load_config(args.config)
     if args.overrides:
         overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]

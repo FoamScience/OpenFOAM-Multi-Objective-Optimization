@@ -1,0 +1,2 @@
+VERSION = "1.1.3"
+DEFAULT_CONFIG = "foamBO.yaml"

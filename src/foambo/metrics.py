@@ -6,6 +6,7 @@ from typing import Mapping, Any, Dict, Union, List
 from omegaconf import DictConfig, DictKeyType, OmegaConf
 from .common import preprocess_case, process_input_command, parse_outcome_for_metric, FoamBOBaseModel
 from .common import SLURM_STATUS_MAP
+from pydantic import Field
 from foamlib import FoamCase
 import subprocess as sb
 import numpy as np
@@ -32,15 +33,13 @@ def init_trial_progression(trial_index: int, metrics):
         trial_progression_step[trial_index] = {metric: 0 for metric in metrics}
 
 class FoamJob(FoamBOBaseModel):
-    """
-        An async OpenFOAM job scheduled on an HPC system.
-    """
+    """An async OpenFOAM job scheduled on an HPC system."""
 
-    id: int
-    parameters: Dict[str, Union[str, float, int, bool]]
-    mode: str
-    case_path: str
-    metadata: Dict[str, Any]
+    id: int = Field(description="Job identifier (PID for local, SLURM job ID for remote, -1 if no runner)")
+    parameters: Dict[str, Union[str, float, int, bool]] = Field(description="Trial parameterization values")
+    mode: str = Field(description="Execution mode: 'local' or 'remote'")
+    case_path: str = Field(description="Absolute path to the trial's OpenFOAM case directory")
+    metadata: Dict[str, Any] = Field(description="Runtime metadata: command, pid, cwd, start_time")
 
     def __repr__(self):
         return self.case_path
@@ -216,11 +215,31 @@ def encode_foam_metric(metric: FoamJobMetric) -> dict:
     }
 
 class LocalJobMetric(FoamBOBaseModel):
-    name: str
-    command: str
-    progress: str | None = None
-    lower_is_better: bool | None = None
-    progression_source: str | None = None
+    """Configuration for a metric evaluation command."""
+    name: str = Field(description="Metric name, must match what is referenced in `objective` or early stopping config",
+                       examples=["metric"])
+    command: str | List[str] = Field(description=(
+        "Shell command to evaluate the metric at trial completion. "
+        "Runs as a blocking op in the trial's CWD. Must print a `<scalar>` or `(<mean>, <sem>)` to stdout. "
+        "Supports `$CASE_NAME` and `$CASE_PATH` substitution. "
+        "Accepts a string (`'echo 0'`) or a list (`['echo', '0']`)."
+    ), examples=[["echo", "0"]])
+    progress: str | List[str] | None = Field(default=None, description=(
+        "Optional shell command to evaluate the metric while the trial is still running. "
+        "Runs each poll cycle. Supports `$STEP` substitution with the current progression step. "
+        "Accepts a string or a list."
+    ), examples=[["echo", "$STEP"]])
+    lower_is_better: bool | None = Field(default=None, description=(
+        "Required only if the metric is used in early stopping but is not an objective. "
+        "Defines the direction for 'worse' comparison in early stopping strategies."
+    ))
+    progression_source: str | None = Field(default=None, description=(
+        "How to index progression steps for early stopping. Default (null) uses a poll counter.\n"
+        "- `foam_time: log.<solver>` — parse latest `Time = ...` from the solver log\n"
+        "- `command: <script>` — run a command that prints a number to stdout\n\n"
+        "Use this when optimization parameters affect simulation speed (e.g. AMR/mesh refinement), "
+        "so trials are compared at the same physical time rather than the same poll count."
+    ))
 
     def to_metric(self):
         cfg = DictConfig({

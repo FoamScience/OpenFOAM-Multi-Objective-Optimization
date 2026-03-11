@@ -11,12 +11,11 @@ import yaml
 from omegaconf import OmegaConf, DictConfig
 from typing import Optional
 
-from .common import DEFAULT_CONFIG
+from ._version import DEFAULT_CONFIG
 from .default_config import get_default_config
 
-from logging import Logger
-from ax.utils.common.logger import get_logger
-log : Logger = get_logger(__name__)
+import logging
+log = logging.getLogger(__name__)
 
 
 def load_config(config_path: Optional[str] = None) -> DictConfig:

@@ -8,7 +8,7 @@ from ax.storage.json_store.registry import CenterGenerationNode
 from foambo.metrics import FoamJobRunner, LocalJobMetric
 from .common import *
 from .common import FoamBOBaseModel
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from typing import Any, Iterable, List, Literal, Dict
 from functools import reduce
 from ax.global_stopping.strategies import BaseGlobalStoppingStrategy, ImprovementGlobalStoppingStrategy
@@ -48,23 +48,55 @@ EARLY_STOPPER_MAP = {
 
 
 class ConfigOrchestratorOptions(FoamBOBaseModel):
-    """
-    Configuration hub for trial orchestration that handles stopping strategy
-    (early/global)
-    """
-    max_trials: int
-    parallelism: int
-    global_stopping_strategy: Any  # BaseGlobalStoppingStrategy
-    early_stopping_strategy: Any
-    tolerated_trial_failure_rate: float = 0.5
-    min_failed_trials_for_failure_rate_check: int = 5
-    initial_seconds_between_polls: int = 1
-    min_seconds_before_poll: float = 1.0
-    seconds_between_polls_backoff_factor: float = 1.5
-    timeout_hours: int | None = None
-    ttl_seconds_for_trials: int | None = None
-    fatal_error_on_metric_trouble: bool = False
-    immutable_search_space: bool = True
+    """Controls for timeouts, poll times, early-stopping and convergence criteria."""
+    max_trials: int = Field(description="Maximum number of trials to run, baseline included", examples=[20])
+    parallelism: int = Field(description="Maximum number of trials running at the same time", examples=[3])
+    global_stopping_strategy: Any = Field(description=(
+        "When to stop the optimization based on the best improvement so far. "
+        "Stops generating new trials once improvement over `window_size` consecutive trials "
+        "falls below `improvement_bar * IQR`."
+    ))
+    early_stopping_strategy: Any = Field(description=(
+        "Stops trials mid-way if they are not interesting enough. "
+        "Supported types: `percentile`, `threshold`, or composite `and`/`or`. "
+        "Requires streaming metrics with a `progress` command."
+    ))
+    tolerated_trial_failure_rate: float = Field(default=0.5, description=(
+        "Maximum fraction of failed trials before the experiment is terminated. "
+        "Set to 1.0 to never stop due to failures, or 0.0 to stop at the first failure."
+    ))
+    min_failed_trials_for_failure_rate_check: int = Field(default=5, description=(
+        "Minimum number of failed trials before checking the failure rate. "
+        "Prevents early termination due to a few initial failures."
+    ))
+    initial_seconds_between_polls: int = Field(default=1, description=(
+        "Initial wait time in seconds before polling trial status. "
+        "The actual wait time increases with the backoff factor."
+    ), examples=[60])
+    min_seconds_before_poll: float = Field(default=1.0, description=(
+        "Minimum wait time in seconds between polls. "
+        "Even with backoff, the orchestrator waits at least this long."
+    ))
+    seconds_between_polls_backoff_factor: float = Field(default=1.5, description=(
+        "Multiplier to increase wait time between polls (exponential backoff). "
+        "Example: with initial=60s and factor=1.5, polls happen at 60s, 90s, 135s, ..."
+    ))
+    timeout_hours: int | None = Field(default=None, description=(
+        "Maximum runtime in hours for the entire experiment, excluding baseline trial. "
+        "Set to None for no timeout."
+    ), examples=[48])
+    ttl_seconds_for_trials: int | None = Field(default=None, description=(
+        "Time-to-live in seconds for individual trials. "
+        "Trials exceeding this are marked as failed. Useful for preventing runaway simulations."
+    ), examples=[2400])
+    fatal_error_on_metric_trouble: bool = Field(default=False, description=(
+        "Whether to terminate the experiment if metric evaluation fails. "
+        "True: stop experiment on any metric failure. False: mark trial as failed and continue."
+    ))
+    immutable_search_space: bool = Field(default=True, description=(
+        "Whether the search space is fixed after experiment creation. "
+        "Most users should keep True for reproducibility."
+    ))
 
     @field_validator("global_stopping_strategy", mode="before")
     @classmethod
@@ -122,13 +154,18 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
 
 
 class ExperimentOptions(FoamBOBaseModel):
-    """
-    Configuration hub for optimization experiment
-    """
-    name: str
-    description: str
-    parameter_constraints: List[str]
-    parameters: List[Any]  # List[ChoiceParameterConfig | RangeParameterConfig]
+    """Settings for the experiment's search space."""
+    name: str = Field(description="Experiment name, used to identify artifacts like reports and state files",
+                       examples=["Sample"])
+    description: str = Field(description="A short experiment description",
+                              examples=["Sample experiment description"])
+    parameter_constraints: List[str] = Field(description=(
+        "Linear inequalities between optimization parameters, e.g. `'param1 <= param2 + 2*param3'`"
+    ), examples=[[]])
+    parameters: List[Any] = Field(description=(
+        "List of RangeParameterConfig or ChoiceParameterConfig. "
+        "Range parameters need `bounds`, choice parameters need `values`."
+    ))
 
     @field_validator("parameters", mode="before")
     @classmethod
@@ -178,7 +215,7 @@ class ExperimentOptions(FoamBOBaseModel):
 
 
 class ModelSpecConfig(FoamBOBaseModel):
-    """Configuration for GeneratorSpec"""
+    """Configuration for a trial generator algorithm."""
     generator_enum: Literal[
         "SOBOL",
         "FACTORIAL",
@@ -193,8 +230,8 @@ class ModelSpecConfig(FoamBOBaseModel):
         "ST_MTGP",
         "BO_MIXED",
         "CONTEXT_SACBO",
-    ]
-    model_kwargs: Dict | None = None
+    ] = Field(description="Generator algorithm name (e.g. SOBOL for random init, BOTORCH_MODULAR for BO)")
+    model_kwargs: Dict | None = Field(default=None, description="Extra keyword arguments passed to the generator (e.g. seed for SOBOL)")
 
     def to_generator_spec(self) -> GeneratorSpec:
         if not hasattr(Generators, self.generator_enum):
@@ -220,10 +257,10 @@ TRANSITION_MAP = {
 
 
 class GenerationNodeConfig(FoamBOBaseModel):
-    """Configuration for a generation node"""
-    node_name: str
-    generator_specs: List[ModelSpecConfig]
-    transition_criteria: List[Any] = []
+    """Configuration for a generation node in a custom generation strategy."""
+    node_name: str = Field(description="Unique name for this generation node")
+    generator_specs: List[ModelSpecConfig] = Field(description="List of generator algorithms to use in this node")
+    transition_criteria: List[Any] = Field(default=[], description="Conditions for transitioning to the next node (e.g. max_trials, min_trials)")
 
     @field_validator("generator_specs", mode="before")
     @classmethod
@@ -249,8 +286,8 @@ class GenerationNodeConfig(FoamBOBaseModel):
 
 
 class CenterGenerationNodeConfig(FoamBOBaseModel):
-    """Configuration for center generation node"""
-    next_node: str
+    """Generates a single trial at the center of the search space, then transitions."""
+    next_node: str = Field(description="Name of the generation node to transition to after the center trial")
 
     def to_generation_node(self):
         return CenterGenerationNode(next_node_name=self.next_node)
@@ -280,17 +317,22 @@ class ManualGenerationNode(GenerationNode):
 
 
 class TrialGenerationOptions(FoamBOBaseModel):
-    """
-    Configuration hub for generation strategy
-    """
-    method:  Literal["fast", "random_search", "custom"]
-    generation_nodes: List[Any] | None = None
-    initialization_budget: int | None = 5
-    initialization_random_seed: int | None = None
-    initialize_with_center: bool = True
-    use_existing_trials_for_initialization: bool = True
-    min_observed_initialization_trials: int | None = None
-    allow_exceeding_initialization_budget: bool = False
+    """Controls over trial generation methods."""
+    method: Literal["fast", "random_search", "custom"] = Field(description=(
+        "How to generate new parameterizations. "
+        "'fast' and 'random_search' use built-in Ax strategies. "
+        "'custom' requires `generation_nodes` to be defined."
+    ), examples=["custom"])
+    generation_nodes: List[Any] | None = Field(default=None, description=(
+        "List of generation nodes for 'custom' method. "
+        "Each node specifies generator algorithms and transition criteria."
+    ))
+    initialization_budget: int | None = Field(default=5, description="Number of initial quasi-random trials before switching to BO")
+    initialization_random_seed: int | None = Field(default=None, description="Random seed for reproducible initialization trials")
+    initialize_with_center: bool = Field(default=True, description="Whether the first trial uses the center of the search space")
+    use_existing_trials_for_initialization: bool = Field(default=True, description="Count pre-loaded trials toward the initialization budget")
+    min_observed_initialization_trials: int | None = Field(default=None, description="Minimum observed init trials before transitioning to BO")
+    allow_exceeding_initialization_budget: bool = Field(default=False, description="Allow more init trials than the budget if needed")
 
     @field_validator("generation_nodes", mode="before")
     @classmethod
@@ -342,26 +384,40 @@ class TrialGenerationOptions(FoamBOBaseModel):
 
 
 class VariableSubstOptions(FoamBOBaseModel):
-    file: str
-    parameter_scopes: Dict[str, str]
+    """Maps parameters to OpenFOAM file fields for value substitution via foamlib."""
+    file: str = Field(description="Relative path to the OpenFOAM file (e.g. `/0orig/field`)",
+                       examples=["/0orig/field"])
+    parameter_scopes: Dict[str, str] = Field(description="Mapping of parameter name to dotted path in the file (e.g. `x: someDict.x`)",
+                                              examples=[{"x": "someDict.x"}])
 
 
 class FileSubstOptions(FoamBOBaseModel):
-    parameter: str
-    file_path: str
+    """Replaces a case file with a variant based on a choice parameter value."""
+    parameter: str = Field(description="Name of the choice parameter whose value selects the file variant",
+                            examples=["y"])
+    file_path: str = Field(description="Relative path to the file (e.g. `/system/fvSolution`). Variants must exist as `<file_path>.<value>`",
+                            examples=["/constant/y"])
 
 
 class FoamJobRunnerOptions(FoamBOBaseModel):
-    mode: Literal["local", "remote"]
-    template_case: str
-    trial_destination: str
-    artifacts_folder: str
-    variable_substitution: List[VariableSubstOptions]
-    file_substitution: List[FileSubstOptions]
-    runner: str | None = ""
-    log_runner: bool | None = False
-    remote_status_query: str | None = ""
-    remote_early_stop: str | None = ""
+    """Configuration for trial case dispatch and monitoring."""
+    mode: Literal["local", "remote"] = Field(description="Execution mode: 'local' runs on this machine, 'remote' dispatches to a cluster",
+                                              examples=["remote"])
+    template_case: str = Field(description="Path to the OpenFOAM case used as a template for trials",
+                                examples=["./case"])
+    trial_destination: str = Field(description="Directory where trial case copies are created",
+                                    examples=["./trials"])
+    artifacts_folder: str = Field(description="Directory for reports, CSV exports, and experiment state files",
+                                   examples=["./artifacts"])
+    variable_substitution: List[VariableSubstOptions] = Field(description="Parameter-to-file-field mappings for value substitution via foamlib")
+    file_substitution: List[FileSubstOptions] = Field(description="File replacement rules for choice parameters")
+    runner: str | None = Field(default="", description="Shell command to run the trial (e.g. `./Allrun`). Supports `$CASE_NAME`/`$CASE_PATH`. Empty = no execution",
+                               examples=["./run_on_cluster.sh $CASE_NAME"])
+    log_runner: bool | None = Field(default=False, description="Write runner stdout to `log.runner` in the trial folder instead of discarding it")
+    remote_status_query: str | None = Field(default="", description="Command returning SLURM-like job status (required for mode=remote)",
+                                             examples=["./state_on_cluster.sh $CASE_NAME"])
+    remote_early_stop: str | None = Field(default="", description="Command to kill a remote job (e.g. `scancel --name $CASE_NAME`). Required if early stopping is on",
+                                           examples=["scancel --name $CASE_NAME"])
 
     @field_validator("variable_substitution", mode="before")
     @classmethod
@@ -406,17 +462,25 @@ class FoamJobRunnerOptions(FoamBOBaseModel):
 
 
 class BaselineOptions(FoamBOBaseModel):
-    parameters: TParameterization | None
+    """A set of parameter values to consider as a baseline for the optimization analysis."""
+    parameters: TParameterization | None = Field(description=(
+        "Parameter values for the baseline trial. Set to `null` to skip. "
+        "If defined, a single trial runs before the generation strategy and counts toward max_trials."
+    ), examples=[{"x": 0.8, "y": "zero"}])
 
 
 class OptimizationOptions(FoamBOBaseModel):
-    """
-    Configuration hub for optimization
-    """
-    objective: str
-    outcome_constraints: List[str]
-    metrics: List[LocalJobMetric]
-    case_runner: FoamJobRunnerOptions
+    """Controls for the optimization algorithm, including objectives, constraints, and case dispatch."""
+    objective: str = Field(description=(
+        "What to optimize. Prefix with `-` to minimize, no prefix to maximize. "
+        "Multi-objective: `-metric1, metric2`"
+    ), examples=["-metric"])
+    outcome_constraints: List[str] = Field(description=(
+        "Linear objective constraints, e.g. `metric1 >= 0.5*baseline`, `metric2 <= 10`. "
+        "Provide upper bounds for minimized metrics, lower bounds otherwise."
+    ), examples=[["metric >= 0.9*baseline"]])
+    metrics: List[LocalJobMetric] = Field(description="List of metric evaluation commands (objectives and tracking metrics)")
+    case_runner: FoamJobRunnerOptions = Field(description="Trial case dispatch and monitoring configuration")
 
     @field_validator("metrics", mode="before")
     @classmethod
@@ -455,17 +519,23 @@ class OptimizationOptions(FoamBOBaseModel):
 
 
 class JSONBackendOptions(FoamBOBaseModel):
+    """JSON file storage backend (default). No extra configuration needed."""
     pass
 
 
 class SQLBackendOptions(FoamBOBaseModel):
-    url: str
+    """SQL database storage backend."""
+    url: str = Field(description="SQL database connection URL")
 
 
 class StoreOptions(FoamBOBaseModel):
-    read_from: Literal["json", "sql", "nowhere"]
-    save_to: Literal["json", "sql"]
-    backend_options: JSONBackendOptions | SQLBackendOptions
+    """Controls where to store experiment state and where to read it from."""
+    read_from: Literal["json", "sql", "nowhere"] = Field(description="Storage backend to load experiment state from. Use 'nowhere' for a fresh start",
+                                                         examples=["json"])
+    save_to: Literal["json", "sql"] = Field(description="Storage backend to save experiment state to",
+                                             examples=["json"])
+    backend_options: JSONBackendOptions | SQLBackendOptions = Field(description="Backend-specific settings (e.g. SQL database URL)",
+                                                                     examples=[{"url": None}])
 
     @field_validator("backend_options", mode="before")
     @classmethod
@@ -499,7 +569,12 @@ class StoreOptions(FoamBOBaseModel):
 
 
 class ExistingTrialsOptions(FoamBOBaseModel):
-    file_path: str
+    """Load pre-existing trial data from a CSV file."""
+    file_path: str = Field(description=(
+        "Path to a CSV with columns for parameters and metrics. "
+        "Metrics can be scalars or `(mean, sem)` pairs. "
+        "Rows with the same parameter set are treated as progressions of the same trial."
+    ), examples=[""])
     def load_data(self, client: Client):
         """
         Expected format of CSV filename (column order is flexible):
