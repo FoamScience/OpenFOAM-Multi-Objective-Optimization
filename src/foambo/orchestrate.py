@@ -97,6 +97,23 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
         "Whether the search space is fixed after experiment creation. "
         "Most users should keep True for reproducibility."
     ))
+    metric_eval_timeout: int = Field(default=600, description=(
+        "Timeout in seconds for metric evaluation commands. "
+        "If a metric command takes longer, the subprocess is killed."
+    ))
+    remote_query_timeout: int = Field(default=60, description=(
+        "Timeout in seconds for remote status queries and remote kill commands."
+    ))
+    progression_cmd_timeout: int = Field(default=30, description=(
+        "Timeout in seconds for progression source commands. "
+        "These run each poll cycle so should be fast."
+    ))
+    dependency_action_timeout: int = Field(default=120, description=(
+        "Timeout in seconds for trial dependency actions (e.g. file copy, mapFields)."
+    ))
+    process_reap_timeout: int = Field(default=5, description=(
+        "Timeout in seconds to wait for a killed process to exit before giving up."
+    ))
 
     @field_validator("global_stopping_strategy", mode="before")
     @classmethod

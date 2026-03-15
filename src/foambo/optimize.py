@@ -38,6 +38,13 @@ def optimize(cfg) -> None:
     gs_cfg = TrialGenerationOptions.model_validate(dict(cfg['trial_generation']))
     opt_cfg = OptimizationOptions.model_validate(dict(cfg['optimization']))
     orch_cfg = ConfigOrchestratorOptions.model_validate(dict(cfg['orchestration_settings']))
+    # Apply user-configurable subprocess timeouts
+    from . import metrics as _m
+    _m.METRIC_EVAL_TIMEOUT = orch_cfg.metric_eval_timeout
+    _m.REMOTE_QUERY_TIMEOUT = orch_cfg.remote_query_timeout
+    _m.PROGRESSION_CMD_TIMEOUT = orch_cfg.progression_cmd_timeout
+    _m.DEPENDENCY_ACTION_TIMEOUT = orch_cfg.dependency_action_timeout
+    _m.PROCESS_REAP_TIMEOUT = orch_cfg.process_reap_timeout
     store_cfg = StoreOptions.model_validate(dict(cfg['store']))
     baseline_cfg = BaselineOptions.model_validate(dict(cfg['baseline']))
     client = store_cfg.load()
@@ -201,8 +208,28 @@ def optimize(cfg) -> None:
         if client._storage_config is not None
         else None,
     )
+    def _stop_running_trials(sched: Orchestrator):
+        """Stop all running trials and save state on interrupt."""
+        from ax.core.base_trial import TrialStatus as AxTrialStatus
+        running = [t for t in client._experiment.trials.values()
+                   if t.status == AxTrialStatus.RUNNING]
+        if running:
+            log.warning(f"Stopping {len(running)} running trial(s)...")
+            for trial in running:
+                try:
+                    sched.stop_trial_runs(trials=[trial])
+                except Exception as e:
+                    log.error(f"Failed to stop trial {trial.index}: {e}")
+        store_cfg.save(client)
+
     log.info("============ Running optimization ===============")
-    scheduler.run_all_trials(timeout_hours=orch_cfg.timeout_hours, idle_callback=callback)
+    try:
+        scheduler.run_all_trials(timeout_hours=orch_cfg.timeout_hours, idle_callback=callback)
+    except KeyboardInterrupt:
+        log.warning("Interrupted — cleaning up running trials...")
+        _stop_running_trials(scheduler)
+        log.info("State saved. Exiting.")
+        return
     store_cfg.save(client)
 
     log.info("=========== Best set of parameters ==============")

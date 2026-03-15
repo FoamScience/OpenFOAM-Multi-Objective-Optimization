@@ -24,6 +24,13 @@ from logging import Logger
 from ax.utils.common.logger import get_logger
 log : Logger = get_logger(__name__)
 
+# Subprocess timeout constants (seconds)
+METRIC_EVAL_TIMEOUT = 600       # metric command evaluation (blocking, may be heavy)
+REMOTE_QUERY_TIMEOUT = 60       # remote status query / remote kill
+PROGRESSION_CMD_TIMEOUT = 30    # progression source command (runs each poll cycle)
+DEPENDENCY_ACTION_TIMEOUT = 120 # trial dependency action (e.g. file copy, mapFields)
+PROCESS_REAP_TIMEOUT = 5        # wait for killed process to exit
+
 jobs : Dict[int, sb.Popen] = {}
 trial_progression_step : Dict[int, Dict[str, int]] = {}
 def init_trial_progression(trial_index: int, metrics):
@@ -72,6 +79,8 @@ class FoamJob(FoamBOBaseModel):
                 log_path = os.path.join(case_path, "log.runner")
                 log_file = open(log_path, "w")
                 proc = sb.Popen(cmd, cwd=case_path, stdout=log_file, stderr=sb.STDOUT, text=True, start_new_session=True)
+                # Track the file handle on the proc for cleanup when process completes
+                proc._log_file = log_file
             else:
                 proc = sb.Popen(cmd, cwd=case_path, stdout=sb.DEVNULL, stderr=sb.PIPE, text=True, start_new_session=True)
                 def stream_stderr(pipe):
@@ -110,7 +119,7 @@ class FoamJob(FoamBOBaseModel):
             <scalar>                        -> (0, <scalar>)
             (<mean>, <sem>)                 -> (0, (<mean>, <sem>))
         """
-        out = sb.check_output(list(process_input_command(cfg['command'], case)), cwd=case.path)
+        out = sb.check_output(list(process_input_command(cfg['command'], case)), cwd=case.path, timeout=METRIC_EVAL_TIMEOUT)
         return parse_outcome_for_metric(out, metric)
 
     @classmethod
@@ -133,12 +142,15 @@ class FoamJob(FoamBOBaseModel):
             return TrialStatus.COMPLETED
         job = jobs[job_id]
         job.poll()
-        if  job.returncode is None:
+        if job.returncode is None:
             return TrialStatus.RUNNING
-        elif job.returncode == 0:
+        # Process finished — clean up
+        jobs.pop(job_id, None)
+        if hasattr(job, '_log_file'):
+            job._log_file.close()
+        if job.returncode == 0:
             return TrialStatus.COMPLETED
-        else:
-            return TrialStatus.FAILED
+        return TrialStatus.FAILED
     
     @classmethod
     def remote_status_query(cls, job_id, cfg, metadata):
@@ -152,7 +164,7 @@ class FoamJob(FoamBOBaseModel):
         """
         out = sb.check_output(
             process_input_command(cfg['template_case']['remote_status_query'], FoamCase(metadata['case_path'])),
-            cwd=metadata['case_path']
+            cwd=metadata['case_path'], timeout=REMOTE_QUERY_TIMEOUT
         )
         if out.decode("utf-8") == "":
             return TrialStatus.FAILED
@@ -167,6 +179,15 @@ class FoamJob(FoamBOBaseModel):
             log.debug(f"Process {job_id} already exited, nothing to kill")
         except OSError as e:
             log.error(f"Failed to kill process group for PID {job_id}: {e}")
+        # Reap the process to prevent zombies and close any tracked file handles
+        proc = jobs.pop(job_id, None)
+        if proc is not None:
+            try:
+                proc.wait(timeout=PROCESS_REAP_TIMEOUT)
+            except Exception:
+                pass
+            if hasattr(proc, '_log_file'):
+                proc._log_file.close()
 
     @classmethod
     def remote_kill(cls, job_id, cfg, metadata):
@@ -176,7 +197,7 @@ class FoamJob(FoamBOBaseModel):
         try:
             out = sb.check_output(
                 process_input_command(cfg['template_case']['remote_early_stop'], case=FoamCase(metadata['case_path'])),
-                cwd=metadata['case_path']
+                cwd=metadata['case_path'], timeout=REMOTE_QUERY_TIMEOUT
             )
         except Exception as e:
             log.error(f"Early stop command failed: {cfg['template_case']['remote_early_stop']}\n"
@@ -309,7 +330,7 @@ def resolve_progression(
         cmd_str = source.split(":", 1)[1].strip()
         try:
             cmd = process_input_command(cmd_str, FoamCase(case_path))
-            out = sb.check_output(cmd, cwd=case_path)
+            out = sb.check_output(cmd, cwd=case_path, timeout=PROGRESSION_CMD_TIMEOUT)
             return float(out.decode('utf-8').strip())
         except Exception as e:
             log.debug(f"Progression command failed for {metric_cfg.name} trial {trial_idx}: {e}, "
@@ -475,7 +496,7 @@ class FoamJobRunner(IRunner):
             if isinstance(cmd, str):
                 cmd = cmd.split()
             try:
-                out = sb.check_output(cmd, timeout=30)
+                out = sb.check_output(cmd, timeout=PROGRESSION_CMD_TIMEOUT)
                 idx = int(out.decode("utf-8").strip())
                 entry = completed.get(idx)
                 return entry["case_path"] if entry else None
@@ -497,7 +518,7 @@ class FoamJobRunner(IRunner):
                     cmd = [c.replace("$SOURCE_TRIAL", source_path).replace("$TARGET_TRIAL", target_path)
                            for c in cmd]
                 try:
-                    sb.check_call(cmd, cwd=target_path, timeout=120)
+                    sb.check_call(cmd, cwd=target_path, timeout=DEPENDENCY_ACTION_TIMEOUT)
                     applied.append("run_command")
                 except Exception as e:
                     log.warning(f"Dependency '{dep.name}' action failed: {e}")
