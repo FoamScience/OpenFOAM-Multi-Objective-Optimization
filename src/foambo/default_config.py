@@ -104,6 +104,37 @@ def _get_root_models():
         (StoreOptions,               "store"),
     ]
 
+def _get_doc_models():
+    """All models for docs harvesting, including nested ones not in root config."""
+    from .orchestrate import (
+        ConfigOrchestratorOptions, ExperimentOptions, TrialGenerationOptions,
+        ModelSpecConfig, GenerationNodeConfig, CenterGenerationNodeConfig,
+        OptimizationOptions, FoamJobRunnerOptions, VariableSubstOptions,
+        FileSubstOptions, BaselineOptions, StoreOptions, ExistingTrialsOptions,
+        TrialSelector, TrialAction, TrialDependency,
+    )
+    from .metrics import FoamJob, LocalJobMetric
+    return [
+        (ExperimentOptions,          "experiment"),
+        (TrialGenerationOptions,     "trial_generation"),
+        (ModelSpecConfig,            "trial_generation.generation_nodes[].generator_specs[]"),
+        (GenerationNodeConfig,       "trial_generation.generation_nodes[]"),
+        (CenterGenerationNodeConfig, "trial_generation.generation_nodes[] (center)"),
+        (ExistingTrialsOptions,      "existing_trials"),
+        (BaselineOptions,            "baseline"),
+        (OptimizationOptions,        "optimization"),
+        (LocalJobMetric,             "optimization.metrics[]"),
+        (FoamJobRunnerOptions,       "optimization.case_runner"),
+        (VariableSubstOptions,       "optimization.case_runner.variable_substitution[]"),
+        (FileSubstOptions,           "optimization.case_runner.file_substitution[]"),
+        (ConfigOrchestratorOptions,  "orchestration_settings"),
+        (StoreOptions,               "store"),
+        (TrialDependency,            "trial_dependencies[]"),
+        (TrialSelector,              "trial_dependencies[].source"),
+        (TrialAction,                "trial_dependencies[].actions[]"),
+        (FoamJob,                    "internal.FoamJob"),
+    ]
+
 
 def get_default_config() -> Dict[str, Any]:
     """
@@ -164,6 +195,24 @@ def get_default_config() -> Dict[str, Any]:
         "min_progression": 5,
         "trial_indices_to_ignore": RangeTag(0, 10, 1),
     }
+
+    # Trial dependencies: illustrative warm-start example
+    default["trial_dependencies"] = [
+        {
+            "name": "warm_start",
+            "enabled": False,
+            "source": {
+                "strategy": "best",
+                "fallback": "skip",
+            },
+            "actions": [
+                {
+                    "type": "run_command",
+                    "command": "cp -r $SOURCE_TRIAL/0.5/. $TARGET_TRIAL/0/",
+                },
+            ],
+        },
+    ]
 
     # Visualizer section (no model)
     default["visualizer"] = {"sensitivity_callback": None}
@@ -232,33 +281,8 @@ def load_tutorial_docs() -> Dict[str, Any]:
 
 
 def get_config_docs() -> Dict[str, Any]:
-    from .orchestrate import (
-        ConfigOrchestratorOptions, ExperimentOptions, TrialGenerationOptions,
-        ModelSpecConfig, GenerationNodeConfig, CenterGenerationNodeConfig,
-        OptimizationOptions, FoamJobRunnerOptions, VariableSubstOptions,
-        FileSubstOptions, BaselineOptions, StoreOptions, ExistingTrialsOptions,
-    )
-    from .metrics import FoamJob, LocalJobMetric
-
     # Phase 1: Harvest field descriptions from all Pydantic models
-    # Each tuple maps (ModelClass, "yaml.config.path") so docs show the YAML location
-    harvested = harvest_docs([
-        (ExperimentOptions,          "experiment"),
-        (TrialGenerationOptions,     "trial_generation"),
-        (ModelSpecConfig,            "trial_generation.generation_nodes[].generator_specs[]"),
-        (GenerationNodeConfig,       "trial_generation.generation_nodes[]"),
-        (CenterGenerationNodeConfig, "trial_generation.generation_nodes[] (center)"),
-        (ExistingTrialsOptions,      "existing_trials"),
-        (BaselineOptions,            "baseline"),
-        (OptimizationOptions,        "optimization"),
-        (LocalJobMetric,             "optimization.metrics[]"),
-        (FoamJobRunnerOptions,       "optimization.case_runner"),
-        (VariableSubstOptions,       "optimization.case_runner.variable_substitution[]"),
-        (FileSubstOptions,           "optimization.case_runner.file_substitution[]"),
-        (ConfigOrchestratorOptions,  "orchestration_settings"),
-        (StoreOptions,               "store"),
-        (FoamJob,                    "internal.FoamJob"),
-    ])
+    harvested = harvest_docs(_get_doc_models())
 
     # Phase 2: Merge cross-cutting examples into harvested entries
     # Appends YAML examples and extra context to the field descriptions
@@ -404,6 +428,50 @@ def get_config_docs() -> Dict[str, Any]:
                 url: <SQL_database_URL>
             ```
             Note: SQL store is currently not well tested.
+            """,
+        "trial_dependencies[]": """
+            Define trial-to-trial relationships. Each dependency selects a source trial
+            and runs actions before the new trial's solver starts.
+
+            Warm-start from the best trial's converged fields:
+            ```yaml
+            trial_dependencies:
+              - name: warm_start
+                source:
+                  strategy: best
+                  fallback: skip
+                actions:
+                  - type: run_command
+                    command: "cp -r $SOURCE_TRIAL/0.5/. $TARGET_TRIAL/0/"
+            ```
+
+            Copy mesh from the nearest completed trial:
+            ```yaml
+            trial_dependencies:
+              - name: mesh_inherit
+                source:
+                  strategy: nearest
+                  fallback: skip
+                actions:
+                  - type: run_command
+                    command: "cp -r $SOURCE_TRIAL/constant/polyMesh $TARGET_TRIAL/constant/"
+            ```
+
+            Use OpenFOAM's mapFields to interpolate between different meshes:
+            ```yaml
+            trial_dependencies:
+              - name: map_fields
+                source:
+                  strategy: best
+                  fallback: skip
+                actions:
+                  - type: run_command
+                    command: "mapFields $SOURCE_TRIAL -sourceTime latestTime -targetRegion $TARGET_TRIAL"
+            ```
+
+            Actions run in order after the template case is cloned and parameters are
+            substituted, but before the runner command executes. The dependency resolution
+            result is recorded in `run_metadata["dependencies"]` for traceability.
             """,
     }
     for key, extra in _examples.items():

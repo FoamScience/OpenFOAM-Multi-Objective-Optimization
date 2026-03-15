@@ -621,3 +621,64 @@ class ExistingTrialsOptions(FoamBOBaseModel):
                                       progression=idx_in_grp)
         if not client._experiment.fetch_data().df.empty:
             log.info(f"Loaded existing trial data:\n{client._experiment.fetch_data().df.to_string(index=False)}")
+
+
+class TrialSelector(FoamBOBaseModel):
+    """How to pick the source trial for a dependency."""
+    strategy: Literal["best", "nearest", "latest", "baseline", "by_index", "custom"] = Field(
+        description=(
+            "Selection strategy for the source trial.\n"
+            "- `best`: completed trial with the best primary objective value\n"
+            "- `nearest`: completed trial closest in parameter space (L2, normalized)\n"
+            "- `latest`: most recently completed trial\n"
+            "- `baseline`: the baseline trial (index 0)\n"
+            "- `by_index`: a specific trial by index\n"
+            "- `custom`: run a command that prints a trial index to stdout"
+        ), examples=["best"])
+    index: int | None = Field(default=None,
+        description="Trial index to use (only for `by_index` strategy)")
+    command: str | List[str] | None = Field(default=None,
+        description="Command that prints a trial index to stdout (only for `custom` strategy)")
+    fallback: Literal["skip", "error"] = Field(default="skip",
+        description="What to do when no suitable source trial exists. 'skip' proceeds without the dependency, 'error' fails the trial")
+
+
+class TrialAction(FoamBOBaseModel):
+    """An action to execute using the resolved source trial."""
+    type: Literal["run_command"] = Field(
+        description="Action type. `run_command` executes a shell command with `$SOURCE_TRIAL` and `$TARGET_TRIAL` substitution",
+        examples=["run_command"])
+    command: str | List[str] = Field(
+        description=(
+            "Shell command to execute. Supports substitution variables:\n"
+            "- `$SOURCE_TRIAL`: absolute path to the source trial's case directory\n"
+            "- `$TARGET_TRIAL`: absolute path to the new trial's case directory\n\n"
+            "Example: `cp -r $SOURCE_TRIAL/0.5/* $TARGET_TRIAL/0/`"
+        ), examples=["cp -r $SOURCE_TRIAL/constant/polyMesh $TARGET_TRIAL/constant/polyMesh"])
+
+
+class TrialDependency(FoamBOBaseModel):
+    """A dependency relationship between a source trial and the trial being created."""
+    name: str = Field(
+        description="A label for this dependency (e.g. 'warm_start', 'mesh_inherit'). Recorded in trial metadata for traceability",
+        examples=["warm_start"])
+    source: TrialSelector = Field(
+        description="How to select the source trial")
+    actions: List[TrialAction] = Field(
+        description="Actions to execute after source trial is resolved. Run in order before the trial's runner command")
+    enabled: bool = Field(default=True,
+        description="Toggle this dependency on/off without removing the configuration")
+
+    @field_validator("actions", mode="before")
+    @classmethod
+    def parse_actions(cls, v):
+        if v and isinstance(v[0], dict | DictConfig):
+            return [TrialAction.model_validate(dict(item)) for item in v]
+        return v
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def parse_source(cls, v):
+        if isinstance(v, dict | DictConfig):
+            return TrialSelector.model_validate(dict(v))
+        return v

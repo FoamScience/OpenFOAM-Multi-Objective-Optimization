@@ -409,6 +409,11 @@ def streaming_metric(client: Client, opt_cfg: Dict):
 class FoamJobRunner(IRunner):
     jobs: Dict[int, FoamJob] = {}
     cfg:  DictConfig
+    # Runtime-only registry of completed trials, populated by the orchestrator callback.
+    # Maps trial_index -> {"case_path": str, "status": str, "parameters": dict}
+    trial_registry: Dict[int, Dict[str, Any]] = {}
+    # Trial dependency configs, set by optimize() after construction.
+    trial_dependencies: List[Any] = []
 
     @property
     def run_metadata_report_keys(self) -> list[str]:
@@ -431,15 +436,108 @@ class FoamJobRunner(IRunner):
         self.cfg = cfg
         self.mode = cfg['template_case']['mode']
 
+    def _resolve_source_trial(self, selector, target_params: dict) -> str | None:
+        """Resolve a source trial case path from the registry using a TrialSelector."""
+        completed = {k: v for k, v in self.trial_registry.items()
+                     if v.get("status") == "COMPLETED" and v.get("case_path")}
+        if not completed:
+            return None
+
+        strategy = selector.strategy
+        if strategy == "baseline":
+            entry = completed.get(0)
+            return entry["case_path"] if entry else None
+        if strategy == "by_index":
+            entry = completed.get(selector.index)
+            return entry["case_path"] if entry else None
+        if strategy == "latest":
+            latest_idx = max(completed.keys())
+            return completed[latest_idx]["case_path"]
+        if strategy == "best":
+            # Pick the trial with the best objective value (lowest by convention)
+            best_idx = min(completed, key=lambda k: completed[k].get("objective_value", float("inf")))
+            return completed[best_idx]["case_path"]
+        if strategy == "nearest":
+            # L2 distance in parameter space (unnormalized — good enough for most cases)
+            import math
+            def _dist(params_a, params_b):
+                total = 0.0
+                for key in params_a:
+                    va, vb = params_a.get(key), params_b.get(key)
+                    if isinstance(va, (int, float)) and isinstance(vb, (int, float)):
+                        total += (va - vb) ** 2
+                return math.sqrt(total)
+            nearest_idx = min(completed, key=lambda k: _dist(
+                target_params, completed[k].get("parameters", {})))
+            return completed[nearest_idx]["case_path"]
+        if strategy == "custom":
+            cmd = selector.command
+            if isinstance(cmd, str):
+                cmd = cmd.split()
+            try:
+                out = sb.check_output(cmd, timeout=30)
+                idx = int(out.decode("utf-8").strip())
+                entry = completed.get(idx)
+                return entry["case_path"] if entry else None
+            except Exception as e:
+                log.warning(f"Custom trial selector failed: {e}")
+                return None
+        return None
+
+    def _execute_dependency_actions(self, dep, source_path: str, target_path: str) -> List[str]:
+        """Execute a dependency's actions, return list of action types applied."""
+        applied = []
+        for action in dep.actions:
+            if action.type == "run_command":
+                cmd = action.command
+                if isinstance(cmd, str):
+                    cmd = cmd.replace("$SOURCE_TRIAL", source_path).replace("$TARGET_TRIAL", target_path)
+                    cmd = cmd.split()
+                else:
+                    cmd = [c.replace("$SOURCE_TRIAL", source_path).replace("$TARGET_TRIAL", target_path)
+                           for c in cmd]
+                try:
+                    sb.check_call(cmd, cwd=target_path, timeout=120)
+                    applied.append("run_command")
+                except Exception as e:
+                    log.warning(f"Dependency '{dep.name}' action failed: {e}")
+        return applied
+
+    def _resolve_dependencies(self, trial_index: int, target_path: str,
+                              parameterization: dict) -> Dict[str, Any]:
+        """Resolve and execute all enabled trial dependencies. Returns metadata dict."""
+        dep_meta = {}
+        for dep in self.trial_dependencies:
+            if not dep.enabled:
+                continue
+            source_path = self._resolve_source_trial(dep.source, parameterization)
+            if source_path is None:
+                if dep.source.fallback == "error":
+                    raise RuntimeError(
+                        f"Dependency '{dep.name}': no source trial found and fallback is 'error'")
+                log.debug(f"Dependency '{dep.name}': no source trial found, skipping")
+                continue
+            log.info(f"Trial {trial_index}: resolving dependency '{dep.name}' from {source_path}")
+            applied = self._execute_dependency_actions(dep, source_path, target_path)
+            dep_meta[dep.name] = {
+                "source_case_path": source_path,
+                "actions_applied": applied,
+            }
+        return dep_meta
+
     def run_trial(self, trial_index: int, parameterization: TParameterization) -> dict[str, Any]:
         trial_progression_step[trial_index] = {}
         case_data = preprocess_case(parameterization, self.cfg)
+        case_path = str(case_data['case'].path)
+        # Resolve trial dependencies before dispatching
+        dep_meta = self._resolve_dependencies(trial_index, case_path, dict(parameterization))
         (job_id, job) = self.dispatcher[self.mode](
-            parameterization,
-            str(case_data['case'].path),
-            self.cfg['template_case'])
-        log.info(f"Dispatched trial {trial_index}: {case_data['case'].path}")
-        return {"job_id": job_id, "job": job.model_dump(), "case_path": str(case_data['case'].path)}
+            parameterization, case_path, self.cfg['template_case'])
+        log.info(f"Dispatched trial {trial_index}: {case_path}")
+        meta = {"job_id": job_id, "job": job.model_dump(), "case_path": case_path}
+        if dep_meta:
+            meta["dependencies"] = dep_meta
+        return meta
     def poll_trial(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> TrialStatus:
         if not trial_metadata or 'job_id' not in trial_metadata:
             return TrialStatus.COMPLETED

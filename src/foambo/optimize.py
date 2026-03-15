@@ -84,6 +84,19 @@ def optimize(cfg) -> None:
         log.info(f"Tracking metrics:\n%s", pprint.pformat(client._experiment._tracking_metrics))
         log.info("=================================================")
     client.configure_runner(**opt_cfg.to_runner_dict())
+    # Wire trial dependencies onto the runner
+    runner = client._experiment.runner
+    if 'trial_dependencies' in cfg:
+        from .orchestrate import TrialDependency
+        deps_cfg = cfg['trial_dependencies']
+        if isinstance(deps_cfg, list):
+            runner.trial_dependencies = [
+                TrialDependency.model_validate(dict(d)) for d in deps_cfg
+            ]
+        elif hasattr(deps_cfg, 'get') and 'dependencies' in deps_cfg:
+            runner.trial_dependencies = [
+                TrialDependency.model_validate(dict(d)) for d in deps_cfg['dependencies']
+            ]
     client.set_early_stopping_strategy(orch_cfg.early_stopping_strategy)
 
     # Risk 7: Warn if early stopping references objective metrics (they don't stream)
@@ -121,6 +134,15 @@ def optimize(cfg) -> None:
     def callback(sched: Orchestrator):
         store_cfg.save(client)
         streaming_metric(client, cfg["optimization"])
+        # Update runner's trial registry for dependency resolution
+        runner = client._experiment.runner
+        for tidx, trial in client._experiment.trials.items():
+            runner.trial_registry[tidx] = {
+                "case_path": trial.run_metadata.get("case_path")
+                             or trial.run_metadata.get("job", {}).get("case_path"),
+                "status": trial.status.name,
+                "parameters": trial.arm.parameters if trial.arm else {},
+            }
         if not client._experiment.data_by_trial:
             return
         dfs = []
