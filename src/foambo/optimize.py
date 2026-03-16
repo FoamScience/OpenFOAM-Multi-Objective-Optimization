@@ -259,6 +259,7 @@ def optimize(cfg):
     log.info("=================================================")
     cards = compute_analysis_cards(raw_cfg, client, open_html=False)
     store_cfg.save(client, cards)
+
     log.info("==================== End ========================")
     return client
 
@@ -324,14 +325,29 @@ def main():
     group.add_argument('--generate-config', action='store_true', help='Generate a default config file and exit')
     group.add_argument('--docs', action='store_true', help='Open Configuration Docs explorer')
     group.add_argument('--visualize', action='store_true', help='Run visualization UI for current experiment state')
+    group.add_argument('--preflight-checks', action='store_true', help='Validate configuration before running')
     group.add_argument('-V', '--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('--config', type=str, default=DEFAULT_CONFIG, help=f'Path to config YAML file (optional, default={DEFAULT_CONFIG})')
     parser.add_argument('--json', action='store_true', help='Export Plotly figures as JSON (only valid with --analysis)')
+    parser.add_argument('--dry-run', action='store_true', help='Include dry-run checks (only valid with --preflight-checks)')
     parser.add_argument('overrides', nargs=argparse.REMAINDER, help='Config overrides in ++key=value format')
     args = parser.parse_args()
 
     if args.json and not args.analysis:
         parser.error('--json can only be used with --analysis')
+    if args.dry_run and not args.preflight_checks:
+        parser.error('--dry-run can only be used with --preflight-checks')
+
+    if args.preflight_checks:
+        from .config import load_config, override_config
+        from .preflight import run_preflight
+        cfg = load_config(args.config)
+        if args.overrides:
+            overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
+            if overrides:
+                cfg = override_config(cfg, overrides)
+        ok = run_preflight(cfg, dry_run=args.dry_run)
+        sys.exit(0 if ok else 1)
 
     if args.docs:
         import pathlib

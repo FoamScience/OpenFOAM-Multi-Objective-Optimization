@@ -36,20 +36,41 @@ def compute_analysis_cards(cfg: DictConfig, client: Client | None, open_html=Fal
         figures_folder = f"{artifacts_folder}/figures"
         os.makedirs(figures_folder, exist_ok=True)
 
-    analyses_to_run = [OverviewAnalysis(),
-                       ConstraintsFeasibilityAnalysis(),
-                       TestOfNoEffectAnalysis(),
-                       RegressionAnalysis(),
+    from ax.api.client import MultiObjective
+    is_multi_objective = isinstance(exp.optimization_config._objective, MultiObjective)
+    has_status_quo = exp.status_quo is not None
+    n_params = len(exp.parameters)
+    # Check if a BO model has been fitted (adapter exists on the generation strategy)
+    has_model = False
+    try:
+        gs = client._generation_strategy
+        has_model = gs is not None and gs.adapter is not None
+    except Exception:
+        pass
+
+    analyses_to_run = [ConstraintsFeasibilityAnalysis(),
                        SearchSpaceAnalysis(trial_index=len(exp.trials)-1)]
+
+    # OverviewAnalysis internally runs ResultsAnalysis/CrossValidation which need a fitted model
+    if has_model:
+        analyses_to_run.insert(0, OverviewAnalysis())
+
+    if has_status_quo:
+        analyses_to_run.append(RegressionAnalysis())
+    if n_params > 1:
+        analyses_to_run.append(TestOfNoEffectAnalysis())
 
     experiment_has_choice_params = any([isinstance(exp.parameters[param], ChoiceParameter) for param in exp.parameters])
     for metric in exp.metrics:
         analyses_to_run.append(ParallelCoordinatesPlot(metric_name=metric))
         analyses_to_run.append(ProgressionPlot(metric_name=metric))
-        analyses_to_run.append(TopSurfacesAnalysis(metric_name=metric))
-        if experiment_has_choice_params and metric in [m.metric_names[0] for m in exp.optimization_config.objective.objectives]:
+        if n_params > 1 and has_model:
+            analyses_to_run.append(TopSurfacesAnalysis(metric_name=metric))
+        if experiment_has_choice_params and is_multi_objective and has_model and \
+                metric in [m.metric_names[0] for m in exp.optimization_config.objective.objectives]:
             analyses_to_run.append(MarginalEffectsPlot(metric_name=metric))
-    analyses_to_run.append(SensitivityAnalysisPlot(metric_names=exp.metrics, top_k=10))
+    if n_params > 1 and has_model:
+        analyses_to_run.append(SensitivityAnalysisPlot(metric_names=exp.metrics, top_k=10))
 
     if len(exp.metrics) > 1:
         analyses_to_run.append(ObjectivePFeasibleFrontierPlot(show_pareto_frontier=True))

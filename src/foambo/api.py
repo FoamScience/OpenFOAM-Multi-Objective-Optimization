@@ -248,12 +248,27 @@ class FoamBO:
         self._trial_gen = {"method": method, **kwargs}
         return self
 
-    # --- Build & Run ---
+    # --- Build, Check & Run ---
 
     def build(self) -> "FoamBOConfig":
         """Build the FoamBOConfig without running the optimization."""
         from .orchestrate import FoamBOConfig
         return FoamBOConfig.model_validate(self._to_dict())
+
+    def preflight(self, dry_run: bool = False) -> bool:
+        """Run preflight checks and print a report.
+
+        Args:
+            dry_run: If True, also clone the template case, substitute
+                center-of-domain parameters, and run each metric command once.
+
+        Returns:
+            True if all checks passed.
+        """
+        from omegaconf import DictConfig
+        from .preflight import run_preflight
+        cfg = DictConfig(self._to_dict())
+        return run_preflight(cfg, dry_run=dry_run)
 
     def run(self, parallelism: int = 3, poll_interval: int = 10,
             poll_backoff: float = 1.5, timeout_hours: int = 24,
