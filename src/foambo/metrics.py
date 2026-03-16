@@ -5,7 +5,7 @@ from ax.api.types import TParameterization
 from typing import Mapping, Any, Dict, Union, List
 from omegaconf import DictConfig, DictKeyType, OmegaConf
 from .common import preprocess_case, process_input_command, parse_outcome_for_metric, FoamBOBaseModel
-from .common import SLURM_STATUS_MAP
+from .common import SLURM_STATUS_MAP, case_preprocessor, CasePreprocessor
 from pydantic import Field
 from foamlib import FoamCase
 import subprocess as sb
@@ -452,10 +452,16 @@ class FoamJobRunner(IRunner):
         "local": FoamJob.local_kill,
         "remote": FoamJob.remote_kill,
     }
-    def __init__(self, cfg: DictConfig):
+    def __init__(self, cfg: DictConfig, preprocessor: CasePreprocessor | None = None):
         super().__init__()
         self.cfg = cfg
         self.mode = cfg['template_case']['mode']
+        self.preprocessor = preprocessor or case_preprocessor
+
+    @classmethod
+    def serialize_init_args(cls, obj):
+        """Only serialize cfg — runtime attributes are rebuilt on load."""
+        return {"cfg": obj.cfg}
 
     def _resolve_source_trial(self, selector, target_params: dict) -> str | None:
         """Resolve a source trial case path from the registry using a TrialSelector."""
@@ -548,7 +554,7 @@ class FoamJobRunner(IRunner):
 
     def run_trial(self, trial_index: int, parameterization: TParameterization) -> dict[str, Any]:
         trial_progression_step[trial_index] = {}
-        case_data = preprocess_case(parameterization, self.cfg)
+        case_data = self.preprocessor.setup(parameterization, self.cfg)
         case_path = str(case_data['case'].path)
         # Resolve trial dependencies before dispatching
         dep_meta = self._resolve_dependencies(trial_index, case_path, dict(parameterization))

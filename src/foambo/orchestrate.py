@@ -699,3 +699,61 @@ class TrialDependency(FoamBOBaseModel):
         if isinstance(v, dict | DictConfig):
             return TrialSelector.model_validate(dict(v))
         return v
+
+
+class FoamBOConfig(FoamBOBaseModel):
+    """Top-level configuration for a foamBO optimization run.
+
+    Can be constructed programmatically from Python or loaded from a YAML file
+    via ``FoamBOConfig.from_yaml(path)``.
+    """
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        validate_assignment=True,
+        extra="allow",  # allow extra keys like 'version', 'visualizer'
+    )
+
+    experiment: ExperimentOptions = Field(description="Experiment name, parameters, and search space")
+    trial_generation: TrialGenerationOptions = Field(description="How to generate new parameterizations")
+    existing_trials: ExistingTrialsOptions = Field(description="Pre-existing trial data to load from CSV")
+    baseline: BaselineOptions = Field(description="Baseline parameter set for comparison")
+    optimization: OptimizationOptions = Field(description="Objectives, metrics, constraints, and case runner")
+    orchestration_settings: ConfigOrchestratorOptions = Field(description="Timeouts, polling, stopping strategies")
+    store: StoreOptions = Field(description="Where to save/load experiment state")
+    trial_dependencies: List[TrialDependency] = Field(default=[], description="Trial-to-trial dependency definitions")
+
+    @field_validator("trial_dependencies", mode="before")
+    @classmethod
+    def parse_trial_deps(cls, v):
+        if v and isinstance(v[0], dict | DictConfig):
+            return [TrialDependency.model_validate(dict(d)) for d in v]
+        return v
+
+    # Store raw input before validators transform it (for OmegaConf roundtrip)
+    _raw_input: dict | None = None
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _capture_raw_input(cls, values, handler):
+        raw = dict(values) if isinstance(values, dict) else values
+        obj = handler(values)
+        object.__setattr__(obj, '_raw_input', raw if isinstance(raw, dict) else None)
+        return obj
+
+    @classmethod
+    def from_yaml(cls, path: str) -> "FoamBOConfig":
+        """Load a FoamBOConfig from a YAML file."""
+        import yaml
+        with open(path, 'r') as f:
+            data = yaml.safe_load(f)
+        return cls.model_validate(data)
+
+    def to_dictconfig(self):
+        """Convert to OmegaConf DictConfig for backward compatibility.
+
+        Uses the raw input dict (before validators transform Ax objects)
+        so OmegaConf can handle all values as primitives.
+        """
+        if self._raw_input is not None:
+            return DictConfig(self._raw_input)
+        return DictConfig(self.model_dump(mode="python"))

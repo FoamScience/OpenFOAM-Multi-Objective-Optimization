@@ -137,6 +137,31 @@ def assign_foam_path(foamfile, dotted_path, new_value):
     return foamfile[last]
 
 
+class CasePreprocessor:
+    """Protocol for case setup before trial execution.
+
+    Subclass this to support non-OpenFOAM cases. The default implementation
+    (FoamCasePreprocessor) clones an OpenFOAM template case and substitutes
+    parameter values using foamlib.
+
+    A preprocessor receives the trial parameterization and runner config,
+    and must return a dict with at least:
+        {"case": <case_object_with_.path>, "casename": "<trial_path>"}
+    """
+    def setup(self, parameters: dict, cfg) -> dict:
+        raise NotImplementedError("Subclass must implement setup()")
+
+
+class FoamCasePreprocessor(CasePreprocessor):
+    """Default OpenFOAM case preprocessor using foamlib."""
+    def setup(self, parameters: dict, cfg) -> dict:
+        return preprocess_case(parameters, cfg)
+
+
+# Module-level default preprocessor; can be swapped by users
+case_preprocessor: CasePreprocessor = FoamCasePreprocessor()
+
+
 def preprocess_case(parameters, cfg):
     """
         Copy template, and substitute parameter values

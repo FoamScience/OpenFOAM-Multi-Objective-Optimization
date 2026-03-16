@@ -11,33 +11,70 @@ Artifacts: CSV data for experiment trials
 
 import sys, argparse, pprint, json
 
-def optimize(cfg) -> None:
+def optimize(cfg):
+    """Main optimization loop.
+
+    Colored logging is set up automatically on the first call.
+
+    Args:
+        cfg: Either a ``FoamBOConfig`` instance (recommended for programmatic use)
+             or an OmegaConf ``DictConfig`` (backward-compatible with YAML loading).
+
+    Returns:
+        The Ax ``Client`` with the completed experiment, or ``None`` on interrupt.
     """
-    Main optimization loop
-    """
-    from omegaconf import OmegaConf
+    from omegaconf import OmegaConf, DictConfig
     from .common import VERSION, set_experiment_name, get_experiment_name
     from .metrics import streaming_metric
     from .analysis import compute_analysis_cards, plot_pareto_frontier
     from .orchestrate import (
         ExistingTrialsOptions, ExperimentOptions, OptimizationOptions,
         ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
+        FoamBOConfig, TrialDependency,
     )
     from ax.api.client import MultiObjective, Orchestrator, db_settings_from_storage_config
     import pandas as pd
     from logging import Logger
     from ax.utils.common.logger import get_logger
+    # Must run after Ax imports — Ax adds its own handlers that override ours
+    setup_colored_logging()
     log = get_logger(__name__)
 
+    # Accept FoamBOConfig or DictConfig
+    if isinstance(cfg, FoamBOConfig):
+        foambo_cfg = cfg
+        # Keep a DictConfig for backward-compatible dict access in callbacks
+        raw_cfg = cfg.to_dictconfig()
+        exp_cfg = cfg.experiment
+        gs_cfg = cfg.trial_generation
+        opt_cfg = cfg.optimization
+        orch_cfg = cfg.orchestration_settings
+        store_cfg = cfg.store
+        baseline_cfg = cfg.baseline
+        trial_deps = cfg.trial_dependencies
+    elif isinstance(cfg, DictConfig):
+        raw_cfg = cfg
+        foambo_cfg = None
+        exp_cfg = ExperimentOptions.model_validate(dict(cfg['experiment']))
+        gs_cfg = TrialGenerationOptions.model_validate(dict(cfg['trial_generation']))
+        opt_cfg = OptimizationOptions.model_validate(dict(cfg['optimization']))
+        orch_cfg = ConfigOrchestratorOptions.model_validate(dict(cfg['orchestration_settings']))
+        store_cfg = StoreOptions.model_validate(dict(cfg['store']))
+        baseline_cfg = BaselineOptions.model_validate(dict(cfg['baseline']))
+        trial_deps = []
+        if 'trial_dependencies' in cfg:
+            deps_raw = cfg['trial_dependencies']
+            if isinstance(deps_raw, list):
+                trial_deps = [TrialDependency.model_validate(dict(d)) for d in deps_raw]
+            elif hasattr(deps_raw, 'get') and 'dependencies' in deps_raw:
+                trial_deps = [TrialDependency.model_validate(dict(d)) for d in deps_raw['dependencies']]
+    else:
+        raise TypeError(f"cfg must be a FoamBOConfig or DictConfig, got {type(cfg).__name__}")
+
     log.info("============= Running Configuration =============")
-    log.info(OmegaConf.to_yaml(cfg))
+    log.info(OmegaConf.to_yaml(raw_cfg))
     log.info("=================================================")
-    
-    # 0 Pick up and validate the whole configuration
-    exp_cfg = ExperimentOptions.model_validate(dict(cfg['experiment']))
-    gs_cfg = TrialGenerationOptions.model_validate(dict(cfg['trial_generation']))
-    opt_cfg = OptimizationOptions.model_validate(dict(cfg['optimization']))
-    orch_cfg = ConfigOrchestratorOptions.model_validate(dict(cfg['orchestration_settings']))
+
     # Apply user-configurable subprocess timeouts
     from . import metrics as _m
     _m.METRIC_EVAL_TIMEOUT = orch_cfg.metric_eval_timeout
@@ -45,8 +82,6 @@ def optimize(cfg) -> None:
     _m.PROGRESSION_CMD_TIMEOUT = orch_cfg.progression_cmd_timeout
     _m.DEPENDENCY_ACTION_TIMEOUT = orch_cfg.dependency_action_timeout
     _m.PROCESS_REAP_TIMEOUT = orch_cfg.process_reap_timeout
-    store_cfg = StoreOptions.model_validate(dict(cfg['store']))
-    baseline_cfg = BaselineOptions.model_validate(dict(cfg['baseline']))
     client = store_cfg.load()
 
     # 1.0 Experiment setup
@@ -70,21 +105,6 @@ def optimize(cfg) -> None:
         client.configure_optimization(**opt_cfg.to_optimization_dict())
         client.configure_metrics(**opt_cfg.to_objective_metrics_dict())
         client.configure_metrics(**opt_cfg.to_tracking_metrics_dict())
-    paramsdict = {
-        "machineRampFactor": 10.0,
-        "injectionToggleTimeGate1": 1.0,
-        "injectionToggleTimeGate2": 1.0,
-        "injectionToggleTimeGate3": 1.0,
-        "injectionToggleTimeGate4": 1.0,
-        "injectionRateGate1": 1.9,
-        "injectionRateGate2": 1.9,
-        "injectionRateGate3": 1.9,
-        "injectionRateGate4": 1.9,
-        "injectionInitialStateGate1": "on",
-        "injectionInitialStateGate2": "off",
-        "injectionInitialStateGate3": "on",
-        "injectionInitialStateGate4": "off",
-    }
     log.info("=================================================")
     log.info(f"Objectives:\n%s", pprint.pformat(client._experiment.optimization_config._objective))
     if client._experiment._tracking_metrics:
@@ -93,17 +113,8 @@ def optimize(cfg) -> None:
     client.configure_runner(**opt_cfg.to_runner_dict())
     # Wire trial dependencies onto the runner
     runner = client._experiment.runner
-    if 'trial_dependencies' in cfg:
-        from .orchestrate import TrialDependency
-        deps_cfg = cfg['trial_dependencies']
-        if isinstance(deps_cfg, list):
-            runner.trial_dependencies = [
-                TrialDependency.model_validate(dict(d)) for d in deps_cfg
-            ]
-        elif hasattr(deps_cfg, 'get') and 'dependencies' in deps_cfg:
-            runner.trial_dependencies = [
-                TrialDependency.model_validate(dict(d)) for d in deps_cfg['dependencies']
-            ]
+    if trial_deps:
+        runner.trial_dependencies = trial_deps
     client.set_early_stopping_strategy(orch_cfg.early_stopping_strategy)
 
     # Risk 7: Warn if early stopping references objective metrics (they don't stream)
@@ -135,12 +146,12 @@ def optimize(cfg) -> None:
             log.warning(f"Early stopping strategy references metric(s) {no_stream} that have no "
                         f"'progress' command configured. Early stopping will not trigger for these.")
 
-    data_attacher = ExistingTrialsOptions.model_validate(dict(cfg["existing_trials"]))
+    data_attacher = ExistingTrialsOptions.model_validate(dict(raw_cfg["existing_trials"]))
     data_attacher.load_data(client)
 
     def callback(sched: Orchestrator):
         store_cfg.save(client)
-        streaming_metric(client, cfg["optimization"])
+        streaming_metric(client, raw_cfg["optimization"])
         # Update runner's trial registry for dependency resolution
         runner = client._experiment.runner
         for tidx, trial in client._experiment.trials.items():
@@ -174,7 +185,7 @@ def optimize(cfg) -> None:
             for key in metadf[0].keys():
                 df[key] = df["trial_index"].map(lambda x: metadf.get(x, {}).get(key))
         df.to_csv(
-            f"{cfg["optimization"]["case_runner"]["artifacts_folder"]}/{cfg["experiment"]["name"]}_report.csv",
+            f"{raw_cfg["optimization"]["case_runner"]["artifacts_folder"]}/{raw_cfg["experiment"]["name"]}_report.csv",
             index=False
         )
 
@@ -217,7 +228,7 @@ def optimize(cfg) -> None:
             log.warning(f"Stopping {len(running)} running trial(s)...")
             for trial in running:
                 try:
-                    sched.stop_trial_runs(trials=[trial])
+                    trial.stop(new_status=AxTrialStatus.ABANDONED, reason="KeyboardInterrupt")
                 except Exception as e:
                     log.error(f"Failed to stop trial {trial.index}: {e}")
         store_cfg.save(client)
@@ -239,16 +250,17 @@ def optimize(cfg) -> None:
         for best_parameters, prediction, _, _ in front:
             log.info("Pareto-frontier configuration:\n%s", json.dumps(best_parameters, indent=2))
             log.info("Predictions for Pareto-frontier configuration (mean, variance):\n%s", json.dumps(prediction, indent=2))
-        _ = plot_pareto_frontier(cfg, client, front, open_html=False)
+        _ = plot_pareto_frontier(raw_cfg, client, front, open_html=False)
     else:
         best_parameters, prediction, _, _ = client.get_best_parameterization(use_model_predictions=True)
         log.info("Best parameter set:\n%s", json.dumps(best_parameters, indent=2))
         log.info("Predictions for best parameter set (mean, variance):\n%s", json.dumps(prediction, indent=2))
 
     log.info("=================================================")
-    cards = compute_analysis_cards(cfg, client, open_html=False)
+    cards = compute_analysis_cards(raw_cfg, client, open_html=False)
     store_cfg.save(client, cards)
     log.info("==================== End ========================")
+    return client
 
 def setup_colored_logging():
     import logging
