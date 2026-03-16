@@ -670,8 +670,8 @@ class TrialAction(FoamBOBaseModel):
             "Shell command to execute. Supports substitution variables:\n"
             "- `$SOURCE_TRIAL`: absolute path to the source trial's case directory\n"
             "- `$TARGET_TRIAL`: absolute path to the new trial's case directory\n\n"
-            "Example: `cp -r $SOURCE_TRIAL/0.5/* $TARGET_TRIAL/0/`"
-        ), examples=["cp -r $SOURCE_TRIAL/constant/polyMesh $TARGET_TRIAL/constant/polyMesh"])
+            "Example: `cp -rT $SOURCE_TRIAL/0.5 $TARGET_TRIAL/0`"
+        ), examples=["cp -rT $SOURCE_TRIAL/constant/polyMesh $TARGET_TRIAL/constant/polyMesh"])
 
 
 class TrialDependency(FoamBOBaseModel):

@@ -208,7 +208,7 @@ def get_default_config() -> Dict[str, Any]:
             "actions": [
                 {
                     "type": "run_command",
-                    "command": "cp -r $SOURCE_TRIAL/0.5/. $TARGET_TRIAL/0/",
+                    "command": "cp -rT $SOURCE_TRIAL/0.5 $TARGET_TRIAL/0",
                 },
             ],
         },
@@ -442,7 +442,7 @@ def get_config_docs() -> Dict[str, Any]:
                   fallback: skip
                 actions:
                   - type: run_command
-                    command: "cp -r $SOURCE_TRIAL/0.5/. $TARGET_TRIAL/0/"
+                    command: "cp -rT $SOURCE_TRIAL/0.5 $TARGET_TRIAL/0"
             ```
 
             Copy mesh from the nearest completed trial:
@@ -454,7 +454,7 @@ def get_config_docs() -> Dict[str, Any]:
                   fallback: skip
                 actions:
                   - type: run_command
-                    command: "cp -r $SOURCE_TRIAL/constant/polyMesh $TARGET_TRIAL/constant/"
+                    command: "cp -rT $SOURCE_TRIAL/constant/polyMesh $TARGET_TRIAL/constant/polyMesh"
             ```
 
             Use OpenFOAM's mapFields to interpolate between different meshes:
@@ -496,16 +496,85 @@ def get_config_docs() -> Dict[str, Any]:
         See the tutorial docs for a full example. Set to `null` to disable.
     """).strip()
 
-    harvested["loading_client_state"] = {
+    harvested["python.library_usage"] = {
+        "category": "Python snippet",
+        "content": """
+            foamBO can be used as a Python library with a fluent API:
+
+            ```python
+            from foambo import FoamBO
+
+            client = (
+                FoamBO("MyExperiment", case="./case", trials="./trials", artifacts="./artifacts")
+                .parameter("x", bounds=[-100.0, 200.0])
+                .parameter("y", values=["A", "B", "C"])
+                .minimize("cost", command="python3 evaluate.py")
+                .maximize("quality", command="./compute_quality.sh")
+                .track("residuals", command="./get_residuals.sh", lower_is_better=True)
+                .substitute("/0orig/U", x="internalField")
+                .file_substitute("y", "/system/fvSolution")
+                .constraint("x <= 100")
+                .outcome_constraint("cost <= 50")
+                .baseline(x=0.5, y="A")
+                .stop(max_trials=50, improvement_bar=0.1)
+                .early_stop(type="percentile", metric_names=["residuals"],
+                            percentile_threshold=25, min_progression=5)
+                .depend("warm_start", source="best",
+                        command="cp -rT $SOURCE_TRIAL/0.5 $TARGET_TRIAL/0")
+                .run(parallelism=3, poll_interval=10, ttl=600)
+            )
+
+            # Use the returned Ax Client for predictions
+            predictions = client.predict([{"x": 10, "y": "A"}])
+            ```
+
+            **Key methods:**
+            - `.parameter(name, bounds=... | values=...)` — add a search parameter
+            - `.minimize(name, command=...)` / `.maximize(...)` — add an objective metric
+            - `.track(name, command=...)` — add a non-objective metric (for early stopping)
+            - `.substitute(file, param=path)` — map params to OpenFOAM fields
+            - `.stop(max_trials, improvement_bar)` — global stopping
+            - `.early_stop(type, ...)` — trial-level early stopping
+            - `.depend(name, source, command)` — trial-to-trial dependencies
+            - `.run(parallelism, ...)` — execute and return the Ax Client
+            - `.build()` — return a `FoamBOConfig` without running
+
+            `optimize()` returns the Ax `Client` so you can inspect results,
+            make predictions, or continue the experiment programmatically.
+            """,
+    }
+
+    harvested["python.loading_client_state"] = {
         "category": "Python snippet",
         "content": f"""
             You can load an [Ax](https://ax.dev) client for your experiment with:
             ```python
-            from foambo.common import *
+            from foambo.common import set_experiment_name
             from foambo.orchestrate import StoreOptions
             set_experiment_name("MyExperiment")
             store = StoreOptions.model_validate({{"save_to": "json", "read_from": "json", "backend_options": {{}}}})
             client = store.load()
+            ```
+            """,
+    }
+
+    harvested["python.resume_from_library"] = {
+        "category": "Python snippet",
+        "content": """
+            Resume a previously saved experiment from Python:
+
+            ```python
+            from foambo import FoamBO
+
+            client = (
+                FoamBO("MyExperiment", case="./case")
+                .parameter("x", bounds=[0.0, 1.0])
+                .minimize("metric", command="./evaluate.sh")
+                .substitute("/FxDict", x="x")
+                .stop(max_trials=100)
+                .resume()              # load from saved JSON state
+                .run(parallelism=4)
+            )
             ```
             """,
     }
