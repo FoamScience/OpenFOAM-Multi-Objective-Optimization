@@ -158,6 +158,29 @@ class FoamCasePreprocessor(CasePreprocessor):
         return preprocess_case(parameters, cfg)
 
 
+class _FakeCasePath:
+    """Minimal stand-in for FoamCase.path when no case directory exists."""
+    def __init__(self, path: str):
+        self.path = path
+        self.name = os.path.basename(path)
+    def __str__(self):
+        return self.path
+
+
+class NoCasePreprocessor(CasePreprocessor):
+    """No-op preprocessor for caseless (pure-Python) optimization.
+
+    Creates a temporary directory as the trial "case path" so that
+    metadata and file paths remain consistent, but no template is cloned
+    and no parameter substitution occurs.
+    """
+    def setup(self, parameters: dict, cfg) -> dict:
+        import tempfile
+        trial_dir = tempfile.mkdtemp(prefix="foambo_trial_")
+        fake = _FakeCasePath(trial_dir)
+        return {"case": fake, "casename": trial_dir}
+
+
 # Module-level default preprocessor; can be swapped by users
 case_preprocessor: CasePreprocessor = FoamCasePreprocessor()
 

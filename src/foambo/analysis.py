@@ -51,8 +51,9 @@ def compute_analysis_cards(cfg: DictConfig, client: Client | None, open_html=Fal
     analyses_to_run = [ConstraintsFeasibilityAnalysis(),
                        SearchSpaceAnalysis(trial_index=len(exp.trials)-1)]
 
-    # OverviewAnalysis internally runs ResultsAnalysis/CrossValidation which need a fitted model
-    if has_model:
+    # OverviewAnalysis internally runs ResultsAnalysis/CrossValidation/TopSurfaces
+    # which need a fitted model and 2+ params (for Sobol second-order indices)
+    if has_model and n_params > 1:
         analyses_to_run.insert(0, OverviewAnalysis())
 
     if has_status_quo:

@@ -35,7 +35,7 @@ class FoamBO:
     def __init__(
         self,
         name: str,
-        case: str = "./case",
+        case: str | None = None,
         trials: str = "./trials",
         artifacts: str = "./artifacts",
         description: str = "",
@@ -52,6 +52,8 @@ class FoamBO:
         self._param_constraints: list[str] = []
         self._metrics: list[dict] = []
         self._objectives: list[str] = []
+        self._fn_map: dict[str, Any] = {}           # metric_name -> callable
+        self._progress_fn_map: dict[str, Any] = {}   # metric_name -> callable
         self._outcome_constraints: list[str] = []
         self._variable_subst: list[dict] = []
         self._file_subst: list[dict] = []
@@ -121,29 +123,55 @@ class FoamBO:
 
     # --- Metrics & Objectives ---
 
-    def _add_metric(self, name: str, minimize: bool | None, **kwargs) -> FoamBO:
+    def _add_metric(self, name: str, minimize: bool | None,
+                    fn=None, progress_fn=None, **kwargs) -> FoamBO:
         m: dict[str, Any] = {"name": name, **kwargs}
         if minimize is not None:
             m["lower_is_better"] = minimize
+        # For fn-based metrics, set a placeholder command so Ax config validation passes
+        if fn is not None:
+            self._fn_map[name] = fn
+            m.setdefault("command", f"__fn__{name}")
+        if progress_fn is not None:
+            self._progress_fn_map[name] = progress_fn
+            m.setdefault("progress", f"__progress_fn__{name}")
         self._metrics.append(m)
         return self
 
-    def minimize(self, name: str, command: str | list[str], progress: str | list[str] | None = None,
-                 **kwargs) -> FoamBO:
-        """Add a metric and minimize it as an objective."""
+    def minimize(self, name: str, command: str | list[str] | None = None,
+                 progress: str | list[str] | None = None,
+                 fn=None, progress_fn=None, **kwargs) -> FoamBO:
+        """Add a metric and minimize it as an objective.
+
+        Either ``command`` (shell) or ``fn`` (Python callable) must be provided.
+        ``fn`` signature: ``fn(parameters: dict) -> float`` or
+        ``fn(parameters: dict, case_path: str) -> float``.
+        """
         self._objectives.append(f"-{name}")
-        return self._add_metric(name, minimize=True, command=command, progress=progress, **kwargs)
+        return self._add_metric(name, minimize=True, command=command, progress=progress,
+                                fn=fn, progress_fn=progress_fn, **kwargs)
 
-    def maximize(self, name: str, command: str | list[str], progress: str | list[str] | None = None,
-                 **kwargs) -> FoamBO:
-        """Add a metric and maximize it as an objective."""
+    def maximize(self, name: str, command: str | list[str] | None = None,
+                 progress: str | list[str] | None = None,
+                 fn=None, progress_fn=None, **kwargs) -> FoamBO:
+        """Add a metric and maximize it as an objective.
+
+        Either ``command`` (shell) or ``fn`` (Python callable) must be provided.
+        """
         self._objectives.append(name)
-        return self._add_metric(name, minimize=False, command=command, progress=progress, **kwargs)
+        return self._add_metric(name, minimize=False, command=command, progress=progress,
+                                fn=fn, progress_fn=progress_fn, **kwargs)
 
-    def track(self, name: str, command: str | list[str], progress: str | list[str] | None = None,
-              lower_is_better: bool | None = None, **kwargs) -> FoamBO:
-        """Add a tracking metric (not an objective, but available for early stopping)."""
-        return self._add_metric(name, minimize=lower_is_better, command=command, progress=progress, **kwargs)
+    def track(self, name: str, command: str | list[str] | None = None,
+              progress: str | list[str] | None = None,
+              lower_is_better: bool | None = None,
+              fn=None, progress_fn=None, **kwargs) -> FoamBO:
+        """Add a tracking metric (not an objective, but available for early stopping).
+
+        Either ``command`` (shell) or ``fn`` (Python callable) must be provided.
+        """
+        return self._add_metric(name, minimize=lower_is_better, command=command, progress=progress,
+                                fn=fn, progress_fn=progress_fn, **kwargs)
 
     def outcome_constraint(self, expr: str) -> FoamBO:
         """Add an outcome constraint (e.g. ``"metric1 >= 0.5*baseline"``)."""
@@ -291,11 +319,38 @@ class FoamBO:
         self._timeout_hours = timeout_hours
         self._ttl = ttl
 
+        # Register Python callables in the metrics module before optimize() runs
+        if self._fn_map or self._progress_fn_map:
+            from .metrics import _fn_registry, _progress_fn_registry
+            _fn_registry.update(self._fn_map)
+            _progress_fn_registry.update(self._progress_fn_map)
+
+        # Use NoCasePreprocessor when no case directory is needed
+        if self._caseless:
+            from .common import NoCasePreprocessor
+            from . import metrics as _m
+            _m.case_preprocessor = NoCasePreprocessor()
+
         from .optimize import optimize
         return optimize(self.build())
 
+    @property
+    def _caseless(self) -> bool:
+        """True when all metrics use Python callables and no case dir is needed."""
+        return (self._case is None
+                and all(m["name"] in self._fn_map for m in self._metrics)
+                and not self._variable_subst
+                and not self._file_subst)
+
     def _to_dict(self) -> dict:
+        import os, tempfile
         objective_str = ", ".join(self._objectives) if self._objectives else ""
+
+        # For caseless mode, create a minimal temp dir as the "template case"
+        # so FoamJobRunnerOptions.validate_paths() doesn't fail
+        case_path = self._case
+        if self._caseless:
+            case_path = tempfile.mkdtemp(prefix="foambo_caseless_")
 
         orch: dict[str, Any] = {
             "max_trials": self._max_trials,
@@ -326,7 +381,7 @@ class FoamBO:
                 "objective": objective_str,
                 "outcome_constraints": self._outcome_constraints,
                 "case_runner": {
-                    "template_case": self._case,
+                    "template_case": case_path,
                     "mode": self._mode,
                     "runner": self._runner,
                     "log_runner": self._log_runner,

@@ -72,7 +72,10 @@ def optimize(cfg):
         raise TypeError(f"cfg must be a FoamBOConfig or DictConfig, got {type(cfg).__name__}")
 
     log.info("============= Running Configuration =============")
-    log.info(OmegaConf.to_yaml(raw_cfg))
+    from pygments import highlight
+    from pygments.lexers import YamlLexer
+    from pygments.formatters import Terminal256Formatter
+    log.info("\n" + highlight(OmegaConf.to_yaml(raw_cfg), YamlLexer(), Terminal256Formatter(style="native")).rstrip())
     log.info("=================================================")
 
     # Apply user-configurable subprocess timeouts
@@ -111,10 +114,11 @@ def optimize(cfg):
         log.info(f"Tracking metrics:\n%s", pprint.pformat(client._experiment._tracking_metrics))
         log.info("=================================================")
     client.configure_runner(**opt_cfg.to_runner_dict())
-    # Wire trial dependencies onto the runner
+    # Wire trial dependencies and metric names onto the runner
     runner = client._experiment.runner
     if trial_deps:
         runner.trial_dependencies = trial_deps
+    runner._metric_names = [m.name for m in opt_cfg.metrics]
     client.set_early_stopping_strategy(orch_cfg.early_stopping_strategy)
 
     # Risk 7: Warn if early stopping references objective metrics (they don't stream)

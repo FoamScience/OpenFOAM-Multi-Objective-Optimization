@@ -6,6 +6,7 @@ from typing import Mapping, Any, Dict, Union, List
 from omegaconf import DictConfig, DictKeyType, OmegaConf
 from .common import preprocess_case, process_input_command, parse_outcome_for_metric, FoamBOBaseModel
 from .common import SLURM_STATUS_MAP, case_preprocessor, CasePreprocessor
+import inspect
 from pydantic import Field
 from foamlib import FoamCase
 import subprocess as sb
@@ -33,6 +34,11 @@ PROCESS_REAP_TIMEOUT = 5        # wait for killed process to exit
 
 jobs : Dict[int, sb.Popen] = {}
 trial_progression_step : Dict[int, Dict[str, int]] = {}
+
+# Python callable registry for metrics: metric_name -> callable
+# Populated by the fluent API; bypasses subprocess dispatch when set.
+_fn_registry: Dict[str, Any] = {}       # metric_name -> fn(parameters, [case_path]) -> float | (float, float)
+_progress_fn_registry: Dict[str, Any] = {}  # metric_name -> fn(parameters, [case_path, step]) -> float | (float, float)
 def init_trial_progression(trial_index: int, metrics):
     if trial_index not in trial_progression_step:
         trial_progression_step[trial_index] = {}
@@ -205,6 +211,25 @@ class FoamJob(FoamBOBaseModel):
                       f"Error: {e}\n"
                       f"The trial may still be running on the remote system — manual cleanup may be needed.")
 
+def _call_metric_fn(fn, parameters: dict, case_path: str | None = None, step: int | None = None):
+    """Call a user-provided metric function, adapting to its signature.
+
+    Supports: fn(parameters), fn(parameters, case_path), fn(parameters, case_path, step)
+    Returns: float or (float, float)
+    """
+    sig = inspect.signature(fn)
+    params = list(sig.parameters.keys())
+    args = [parameters]
+    if len(params) >= 2:
+        args.append(case_path)
+    if len(params) >= 3 and step is not None:
+        args.append(step)
+    result = fn(*args)
+    if isinstance(result, tuple):
+        return result
+    return float(result)
+
+
 class FoamJobMetric(IMetric):
     """
     Fetch metric values from HPC jobs
@@ -219,14 +244,23 @@ class FoamJobMetric(IMetric):
         self.cfg = cfg
         self.lower_is_better = cfg['evaluate']['lower_is_better'] if 'lower_is_better' in cfg['evaluate'].keys() else None
     def fetch(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> tuple[int, float | tuple[float, float]]:
-        out = self.dispatcher[self.cfg['evaluate']['mode']](metric=self.name,
-                    case=FoamCase(trial_metadata['job']['case_path']) if 'job' in trial_metadata and trial_metadata['job'] else None,
-                    cfg=self.cfg['evaluate'])
-        mean_sem = out[1]
-        if not np.isnan(mean_sem) and trial_index in trial_progression_step.keys() and self.name in trial_progression_step[trial_index].keys():
+        # Check for Python callable first (registered by fluent API)
+        fn = _fn_registry.get(self.name)
+        if fn is not None:
+            params = trial_metadata.get("parameters", {})
+            case_path = None
+            if "job" in trial_metadata and trial_metadata["job"]:
+                case_path = trial_metadata["job"].get("case_path")
+            mean_sem = _call_metric_fn(fn, params, case_path)
+        else:
+            out = self.dispatcher[self.cfg['evaluate']['mode']](metric=self.name,
+                        case=FoamCase(trial_metadata['job']['case_path']) if 'job' in trial_metadata and trial_metadata['job'] else None,
+                        cfg=self.cfg['evaluate'])
+            mean_sem = out[1]
+        if not isinstance(mean_sem, tuple) and not np.isnan(mean_sem) and trial_index in trial_progression_step.keys() and self.name in trial_progression_step[trial_index].keys():
             trial_progression_step[trial_index][self.name] = trial_progression_step[trial_index][self.name]+1
-            out = (trial_progression_step[trial_index][self.name], mean_sem)
-        return out
+            return (trial_progression_step[trial_index][self.name], mean_sem)
+        return (0, mean_sem)
 
 
 def encode_foam_metric(metric: FoamJobMetric) -> dict:
@@ -239,11 +273,12 @@ class LocalJobMetric(FoamBOBaseModel):
     """Configuration for a metric evaluation command."""
     name: str = Field(description="Metric name, must match what is referenced in `objective` or early stopping config",
                        examples=["metric"])
-    command: str | List[str] = Field(description=(
+    command: str | List[str] | None = Field(default=None, description=(
         "Shell command to evaluate the metric at trial completion. "
         "Runs as a blocking op in the trial's CWD. Must print a `<scalar>` or `(<mean>, <sem>)` to stdout. "
         "Supports `$CASE_NAME` and `$CASE_PATH` substitution. "
-        "Accepts a string (`'echo 0'`) or a list (`['echo', '0']`)."
+        "Accepts a string (`'echo 0'`) or a list (`['echo', '0']`). "
+        "Optional when using Python callables via the library API."
     ), examples=[["echo", "0"]])
     progress: str | List[str] | None = Field(default=None, description=(
         "Optional shell command to evaluate the metric while the trial is still running. "
@@ -374,27 +409,43 @@ def streaming_metric(client: Client, opt_cfg: Dict):
         for metric in metrics_cfg
         if metric["name"] not in objective_names
     ]
-    # If we have no eligible progress items, skip this
-    should_stream_metric = any(cfg.get("progress") and cfg["progress"] != "" and cfg["progress"] != "none"
+    # If we have no eligible progress items (command or callable), skip this
+    has_progress_cmd = any(cfg.get("progress") and cfg["progress"] != "" and cfg["progress"] != "none"
         for cfg in opt_cfg["metrics"] if cfg["name"] not in objective_names)
+    has_progress_fn = any(name in _progress_fn_registry
+        for name in [cfg["name"] for cfg in opt_cfg["metrics"]] if name not in objective_names)
     running_trials = client._experiment.trials_by_status[TrialStatus.RUNNING]
-    if (not should_stream_metric) or (len(running_trials) == 0):
+    if (not has_progress_cmd and not has_progress_fn) or (len(running_trials) == 0):
         return
-    # For running trials, stream metric value using the progress "command"
+    # For running trials, stream metric value using the progress "command" or callable
     for trial in running_trials:
         init_metrics_tracking(trial.index)
         idx = trial.index
         trial_metrics = {}
+        case_path = trial.run_metadata.get("case_path") or \
+                    trial.run_metadata.get("job", {}).get("case_path", "")
         metadata = {
-            "job" : {
-                "case_path": trial.run_metadata["case_path"]
-            }
+            "job" : {"case_path": case_path},
+            "parameters": trial.arm.parameters if trial.arm else {},
         }
         metrics_cfg = trial_metrics_cfg(idx, opt_cfg["metrics"])
         gms = {metric["name"]: LocalJobMetric.model_validate(metric) for metric in metrics_cfg}
         for k,v in gms.items():
             try:
-                if v.progress and v.progress != "" and v.progress != "none":
+                progress_fn = _progress_fn_registry.get(k)
+                if progress_fn is not None:
+                    # Python callable progress
+                    step = trial_progression_step.get(idx, {}).get(k, 0)
+                    result = _call_metric_fn(progress_fn, metadata["parameters"], case_path, step)
+                    if isinstance(result, tuple):
+                        is_nan = bool(np.isnan(result[0]))
+                    else:
+                        is_nan = bool(np.isnan(result))
+                    if is_nan:
+                        log.debug(f"Attaching {k} data for streaming trial {trial.index} was skipped (NAN outcome)")
+                    else:
+                        trial_metrics[k] = result
+                elif v.progress and v.progress != "" and v.progress != "none":
                     v.command = v.progress
                     metric_val = v.to_metric().fetch(idx, trial_metadata=metadata)
                     is_nan_outcome = False
@@ -412,7 +463,7 @@ def streaming_metric(client: Client, opt_cfg: Dict):
                     log.debug(f"Streaming data for {k} not yet available at step 0 for trial {idx}: {e}")
                 else:
                     log.warning(f"Failed to fetch streaming data for {k}\n"
-                                f"Trial: {idx}, case: {metadata['job']['case_path']}\n"
+                                f"Trial: {idx}, case: {case_path}\n"
                                 f"Command: {v.progress}, step: {step}\n"
                                 f"Error: {e}\n"
                                 f"This step won't be recorded; early-stopping may be affected")
@@ -435,6 +486,8 @@ class FoamJobRunner(IRunner):
     trial_registry: Dict[int, Dict[str, Any]] = {}
     # Trial dependency configs, set by optimize() after construction.
     trial_dependencies: List[Any] = []
+    # Metric names for this experiment, set by optimize(). Used for caseless mode detection.
+    _metric_names: List[str] = []
 
     @property
     def run_metadata_report_keys(self) -> list[str]:
@@ -558,10 +611,19 @@ class FoamJobRunner(IRunner):
         case_path = str(case_data['case'].path)
         # Resolve trial dependencies before dispatching
         dep_meta = self._resolve_dependencies(trial_index, case_path, dict(parameterization))
-        (job_id, job) = self.dispatcher[self.mode](
-            parameterization, case_path, self.cfg['template_case'])
-        log.info(f"Dispatched trial {trial_index}: {case_path}")
-        meta = {"job_id": job_id, "job": job.model_dump(), "case_path": case_path}
+        # If all metrics are Python callables and no runner is set, skip subprocess dispatch
+        all_metrics_are_fns = all(m in _fn_registry for m in self._metric_names) if self._metric_names else False
+        has_runner = self.cfg['template_case'].get('runner') not in (None, "", "null", "None")
+        if all_metrics_are_fns and not has_runner:
+            log.info(f"Trial {trial_index}: caseless mode (Python callables)")
+            meta = {"job_id": -1, "job": {"case_path": case_path}, "case_path": case_path,
+                    "parameters": dict(parameterization)}
+        else:
+            (job_id, job) = self.dispatcher[self.mode](
+                parameterization, case_path, self.cfg['template_case'])
+            log.info(f"Dispatched trial {trial_index}: {case_path}")
+            meta = {"job_id": job_id, "job": job.model_dump(), "case_path": case_path,
+                    "parameters": dict(parameterization)}
         if dep_meta:
             meta["dependencies"] = dep_meta
         return meta
