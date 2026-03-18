@@ -83,6 +83,10 @@ class FoamBO:
         self._read_from: str = "nowhere"
         self._backend_url: str | None = None
 
+        # Visualizer
+        self._sensitivity_callback: str | None = None
+        self._sensitivity_fn = None
+
     # --- Parameters ---
 
     def parameter(
@@ -91,6 +95,7 @@ class FoamBO:
         bounds: list[float] | None = None,
         values: list | None = None,
         parameter_type: str | None = None,
+        depends: dict[str, list[str]] | None = None,
         **kwargs,
     ) -> FoamBO:
         """Add an optimization parameter.
@@ -100,8 +105,13 @@ class FoamBO:
             bounds: ``[lower, upper]`` for range parameters.
             values: List of allowed values for choice parameters.
             parameter_type: ``"float"``, ``"int"``, or ``"str"``. Auto-detected if omitted.
+            depends: For choice parameters — maps each value to a list of
+                parameter names that are only active when that value is selected.
+                Example: ``depends={"PCG": ["pcg_tol"], "GAMG": ["gamg_tol"]}``
             **kwargs: Extra fields (``step_size``, ``scaling``, ``is_ordered``, etc.).
         """
+        if depends is not None:
+            kwargs["dependent_parameters"] = depends
         p: dict[str, Any] = {"name": name, **kwargs}
         if bounds is not None:
             p["bounds"] = bounds
@@ -276,6 +286,36 @@ class FoamBO:
         self._trial_gen = {"method": method, **kwargs}
         return self
 
+    # --- Visualizer ---
+
+    def visualizer(self, sensitivity_callback: str | None = None,
+                   sensitivity_fn=None) -> FoamBO:
+        """Configure the web-based visualizer.
+
+        Args:
+            sensitivity_callback: Dotted import path to a Python function
+                (e.g. ``"mymodule.plot_function"``). Used in both CLI and library mode.
+            sensitivity_fn: A Python callable ``fn(parameters: dict) -> str``
+                that returns a base64-encoded PNG. Library mode only.
+                Takes priority over ``sensitivity_callback`` if both are set.
+        """
+        self._sensitivity_callback = sensitivity_callback
+        self._sensitivity_fn = sensitivity_fn
+        return self
+
+    def show(self, host: str = "127.0.0.1", port: int = 8099, open_browser: bool = True):
+        """Launch the visualization UI for the current experiment.
+
+        Requires a completed or in-progress experiment with saved state.
+        """
+        from .visualize import visualizer_ui
+        # Register callable so the visualizer can use it directly
+        if hasattr(self, '_sensitivity_fn') and self._sensitivity_fn is not None:
+            from . import visualize as _viz
+            _viz._sensitivity_fn_override = self._sensitivity_fn
+        cfg = self.build().to_dictconfig()
+        visualizer_ui(cfg, host=host, port=port, open_browser=open_browser)
+
     # --- Build, Check & Run ---
 
     def build(self) -> "FoamBOConfig":
@@ -400,4 +440,7 @@ class FoamBO:
                 "backend_options": {"url": self._backend_url},
             },
             "trial_dependencies": self._dependencies,
+            "visualizer": {
+                "sensitivity_callback": self._sensitivity_callback,
+            },
         }

@@ -485,15 +485,31 @@ def get_config_docs() -> Dict[str, Any]:
     harvested["version"] = f"The foamBO version to run this configuration with (v{str(VERSION)})"
     harvested["visualizer"] = "[Section] Settings for the web-based visualizer UI"
     harvested["visualizer.sensitivity_callback"] = textwrap.dedent("""
-        Optional Python callback for custom parameter visualization in sensitivity analysis.
+        Optional callback for custom parameter visualization in sensitivity analysis.
+        The callback receives a `dict` of parameters and must return a base64-encoded PNG string.
 
+        **YAML config (dotted import path):**
         ```yaml
         visualizer:
           sensitivity_callback: "mymodule.plot_function"
         ```
 
-        The callback receives a `dict` of parameters and must return a base64-encoded PNG string.
-        See the tutorial docs for a full example. Set to `null` to disable.
+        **Library API (Python callable):**
+        ```python
+        def my_plot(parameters: dict) -> str:
+            import matplotlib.pyplot as plt, io, base64
+            fig, ax = plt.subplots()
+            # ... render parameters ...
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png")
+            return base64.b64encode(buf.getvalue()).decode()
+
+        FoamBO("Exp")
+            .visualizer(sensitivity_fn=my_plot)
+            .show()
+        ```
+
+        Set to `null` to disable.
     """).strip()
 
     harvested["python.library_usage"] = {
@@ -501,6 +517,7 @@ def get_config_docs() -> Dict[str, Any]:
         "content": """
             foamBO can be used as a Python library with a fluent API:
 
+            **With OpenFOAM case (shell commands):**
             ```python
             from foambo import FoamBO
 
@@ -523,24 +540,52 @@ def get_config_docs() -> Dict[str, Any]:
                         command="cp -rT $SOURCE_TRIAL/0.5 $TARGET_TRIAL/0")
                 .run(parallelism=3, poll_interval=10, ttl=600)
             )
-
-            # Use the returned Ax Client for predictions
             predictions = client.predict([{"x": 10, "y": "A"}])
             ```
 
+            **Pure Python (no case files, no OpenFOAM):**
+            ```python
+            from foambo import FoamBO
+
+            def my_objective(parameters):
+                return parameters["x"] ** 2 + parameters["y"] ** 2
+
+            client = (
+                FoamBO("PythonOpt")
+                .parameter("x", bounds=[-10.0, 10.0])
+                .parameter("y", bounds=[-10.0, 10.0])
+                .minimize("loss", fn=my_objective)
+                .stop(max_trials=50)
+                .run(parallelism=3)
+            )
+            ```
+            When all metrics use `fn=` and no `case=` is set, foamBO runs in
+            caseless mode — no template cloning, no file substitution, no foamlib.
+
+            **Conditional parameters:**
+            ```python
+            FoamBO("Exp")
+                .parameter("solver", values=["PCG", "GAMG"],
+                           depends={"PCG": ["pcg_tol"], "GAMG": ["gamg_tol"]})
+                .parameter("pcg_tol", bounds=[1e-6, 1e-4], scaling="log")
+                .parameter("gamg_tol", bounds=[1e-6, 1e-4], scaling="log")
+            ```
+            `depends=` maps each choice value to the parameters that are only
+            active when that value is selected. Ax learns this structure natively.
+
             **Key methods:**
-            - `.parameter(name, bounds=... | values=...)` — add a search parameter
-            - `.minimize(name, command=...)` / `.maximize(...)` — add an objective metric
-            - `.track(name, command=...)` — add a non-objective metric (for early stopping)
+            - `.parameter(name, bounds=... | values=..., depends=...)` — add a parameter
+            - `.minimize(name, command=... | fn=...)` / `.maximize(...)` — add an objective
+            - `.track(name, command=... | fn=...)` — tracking metric (for early stopping)
             - `.substitute(file, param=path)` — map params to OpenFOAM fields
             - `.stop(max_trials, improvement_bar)` — global stopping
             - `.early_stop(type, ...)` — trial-level early stopping
             - `.depend(name, source, command)` — trial-to-trial dependencies
+            - `.visualizer(sensitivity_fn=...)` — configure visualization callback
+            - `.show()` — launch the web UI
+            - `.preflight(dry_run=True)` — validate config before running
             - `.run(parallelism, ...)` — execute and return the Ax Client
             - `.build()` — return a `FoamBOConfig` without running
-
-            `optimize()` returns the Ax `Client` so you can inspect results,
-            make predictions, or continue the experiment programmatically.
             """,
     }
 

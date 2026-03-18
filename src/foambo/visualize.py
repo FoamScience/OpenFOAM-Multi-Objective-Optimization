@@ -12,6 +12,9 @@ Capabilities:
 
 from __future__ import annotations
 
+# Module-level callable override for sensitivity visualization (set by fluent API)
+_sensitivity_fn_override = None
+
 import webbrowser
 from typing import Any, Dict, Optional
 
@@ -344,26 +347,29 @@ def api_sensitivity(req: SensitivityRequest):
         response = {"predicted_means": means_dict, "predicted_sems": sems_dict}
 
         # Check if custom visualization callback is configured
-        if state.cfg.get('visualizer', {}).get('sensitivity_callback'):
-            callback_path = state.cfg['visualizer']['sensitivity_callback']
+        # Check for a Python callable registered via the fluent API first
+        if _sensitivity_fn_override is not None or state.cfg.get('visualizer', {}).get('sensitivity_callback'):
+            callback_func = _sensitivity_fn_override
+            callback_path = state.cfg.get('visualizer', {}).get('sensitivity_callback', '<fn>')
             try:
-                import importlib
-                import importlib.util
-                import sys
-                import os
+                if callback_func is None:
+                    import importlib
+                    import importlib.util
+                    import sys
+                    import os
 
-                # Add current working directory to sys.path to allow imports from experiment directory
-                cwd = os.getcwd()
-                if cwd not in sys.path:
-                    sys.path.insert(0, cwd)
+                    # Add current working directory to sys.path to allow imports from experiment directory
+                    cwd = os.getcwd()
+                    if cwd not in sys.path:
+                        sys.path.insert(0, cwd)
 
-                # Split module path and function name
-                module_path, func_name = callback_path.rsplit('.', 1)
+                    # Split module path and function name
+                    module_path, func_name = callback_path.rsplit('.', 1)
 
-                try:
-                    module = importlib.import_module(module_path)
-                except ModuleNotFoundError:
-                    file_path = os.path.join(cwd, *module_path.split('.')) + '.py'
+                    try:
+                        module = importlib.import_module(module_path)
+                    except ModuleNotFoundError:
+                        file_path = os.path.join(cwd, *module_path.split('.')) + '.py'
                     if not os.path.exists(file_path):
                         raise ModuleNotFoundError(f"Cannot find module '{module_path}' or file '{file_path}'")
                     spec = importlib.util.spec_from_file_location(module_path, file_path)
@@ -371,7 +377,7 @@ def api_sensitivity(req: SensitivityRequest):
                     sys.modules[module_path] = module
                     spec.loader.exec_module(module)
 
-                callback_func = getattr(module, func_name)
+                    callback_func = getattr(module, func_name)
 
                 # Call the callback with the parameters
                 image_base64 = callback_func(req.base_parameters)
