@@ -69,8 +69,9 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
         "Minimum number of failed trials before checking the failure rate. "
         "Prevents early termination due to a few initial failures."
     ))
-    initial_seconds_between_polls: int = Field(default=1, description=(
+    initial_seconds_between_polls: float = Field(default=1, description=(
         "Initial wait time in seconds before polling trial status. "
+        "Fractional values (e.g. 0.1) are supported for fast Python callables. "
         "The actual wait time increases with the backoff factor."
     ), examples=[60])
     min_seconds_before_poll: float = Field(default=1.0, description=(

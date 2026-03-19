@@ -589,6 +589,101 @@ def get_config_docs() -> Dict[str, Any]:
             """,
     }
 
+    harvested["python.exploration_vs_exploitation"] = {
+        "category": "Python snippet",
+        "content": """
+            **Controlling surrogate accuracy vs. optimum-seeking**
+
+            Standard BO (Expected Improvement) aggressively hunts for the optimum,
+            leaving large parameter regions unsampled. Two techniques to build
+            a more globally accurate surrogate model:
+
+            **1. Exploratory acquisition function (Upper Confidence Bound)**
+
+            High `beta` in UCB means "sample where uncertainty is high" rather
+            than "sample where improvement is likely":
+            ```yaml
+            trial_generation:
+                method: custom
+                generation_nodes:
+                    - next_node_name: sobol
+                    -   node_name: sobol
+                        generator_specs:
+                            - generator_enum: SOBOL
+                        transition_criteria:
+                            - type: max_trials
+                              threshold: 10
+                              transition_to: explore
+                    -   node_name: explore
+                        generator_specs:
+                            - generator_enum: BOTORCH_MODULAR
+                              model_kwargs:
+                                  botorch_acqf_class: qUpperConfidenceBound
+                                  acquisition_options:
+                                      beta: 10.0
+                        transition_criteria: []
+            ```
+            `beta=10` is very exploratory; `beta=0.1` is nearly pure exploitation.
+
+            **1. Two-phase: explore then exploit**
+
+            Build a globally accurate surrogate first, then switch to optimization:
+            ```yaml
+            trial_generation:
+                method: custom
+                generation_nodes:
+                    - next_node_name: sobol
+                    -   node_name: sobol
+                        generator_specs:
+                            - generator_enum: SOBOL
+                        transition_criteria:
+                            - type: max_trials
+                              threshold: 10
+                              transition_to: explore
+                    -   node_name: explore
+                        generator_specs:
+                            - generator_enum: BOTORCH_MODULAR
+                              model_kwargs:
+                                  botorch_acqf_class: qUpperConfidenceBound
+                                  acquisition_options:
+                                      beta: 10.0
+                        transition_criteria:
+                            - type: max_trials
+                              threshold: 30
+                              transition_to: exploit
+                    -   node_name: exploit
+                        generator_specs:
+                            - generator_enum: BOTORCH_MODULAR
+                        transition_criteria: []
+            ```
+            Phase 1 (SOBOL) seeds the model. Phase 2 (high-beta UCB) fills gaps.
+            Phase 3 (default EI) exploits the now-accurate surrogate.
+
+            To validate surrogate accuracy, use ``FoamBO.cross_validate()``:
+            ```python
+            client = FoamBO("Exp").minimize("F1", fn=my_fn).stop(max_trials=50).run()
+
+            cv = FoamBO.cross_validate(client)
+            for row in cv:
+                err = abs(row["observed_mean"] - row["predicted_mean"])
+                print(f"Trial {row['trial_index']} {row['metric_name']}: "
+                      f"observed={row['observed_mean']:.3f} "
+                      f"predicted={row['predicted_mean']:.3f} error={err:.3f}")
+            ```
+            Large errors in specific regions indicate where the surrogate
+            needs more samples. To improve coverage, add space-filling trials:
+            ```python
+            client = (
+                FoamBO("Exp").minimize("F1", fn=my_fn)
+                .generation(method="random_search")  # pure SOBOL
+                .stop(max_trials=20).resume().run()
+            )
+            ```
+            The analysis HTML reports also include cross-validation plots
+            when a BO model has been fitted.
+            """,
+    }
+
     harvested["python.loading_client_state"] = {
         "category": "Python snippet",
         "content": f"""

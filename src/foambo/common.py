@@ -170,15 +170,16 @@ class _FakeCasePath:
 class NoCasePreprocessor(CasePreprocessor):
     """No-op preprocessor for caseless (pure-Python) optimization.
 
-    Creates a temporary directory as the trial "case path" so that
-    metadata and file paths remain consistent, but no template is cloned
-    and no parameter substitution occurs.
+    Uses a virtual path as the trial "case path" — no directories are
+    created on disk since there are no files to store.
     """
+    _counter: int = 0
+
     def setup(self, parameters: dict, cfg) -> dict:
-        import tempfile
-        trial_dir = tempfile.mkdtemp(prefix="foambo_trial_")
-        fake = _FakeCasePath(trial_dir)
-        return {"case": fake, "casename": trial_dir}
+        NoCasePreprocessor._counter += 1
+        virtual_path = f"<caseless_trial_{NoCasePreprocessor._counter}>"
+        fake = _FakeCasePath(virtual_path)
+        return {"case": fake, "casename": virtual_path}
 
 
 # Module-level default preprocessor; can be swapped by users

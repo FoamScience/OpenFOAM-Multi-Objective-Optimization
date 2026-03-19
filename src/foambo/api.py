@@ -303,6 +303,57 @@ class FoamBO:
         self._sensitivity_fn = sensitivity_fn
         return self
 
+    @staticmethod
+    def cross_validate(client) -> list[dict]:
+        """Run leave-one-out cross-validation on the fitted surrogate model.
+
+        Args:
+            client: The Ax ``Client`` returned by ``.run()``.
+
+        Returns:
+            A list of dicts, one per observation:
+            ``{"trial_index", "arm_name", "metric_name", "observed_mean",
+              "predicted_mean", "predicted_sem"}``.
+
+        Raises:
+            RuntimeError: If no BO model has been fitted yet.
+
+        Example::
+
+            client = FoamBO("Exp").minimize("F1", fn=f).run()
+            cv = FoamBO.cross_validate(client)
+            for row in cv:
+                print(f"Trial {row['trial_index']} {row['metric_name']}: "
+                      f"observed={row['observed_mean']:.3f} "
+                      f"predicted={row['predicted_mean']:.3f}")
+        """
+        from ax.adapter.cross_validation import cross_validate as ax_cv
+
+        gs = client._generation_strategy
+        if gs is None or gs.adapter is None:
+            raise RuntimeError(
+                "No fitted model available for cross-validation. "
+                "Ensure enough trials completed to reach the BO phase.")
+
+        import math
+        cv_results = ax_cv(model=gs.adapter)
+        rows = []
+        for r in cv_results:
+            obs_means = r.observed.data.means_dict
+            pred_means = r.predicted.means_dict
+            pred_cov = r.predicted.covariance_matrix
+            for metric_name, obs_mean in obs_means.items():
+                rows.append({
+                    "trial_index": r.observed.features.trial_index,
+                    "arm_name": r.observed.arm_name,
+                    "metric_name": metric_name,
+                    "observed_mean": obs_mean,
+                    "predicted_mean": pred_means.get(metric_name, float("nan")),
+                    "predicted_sem": math.sqrt(abs(
+                        pred_cov.get(metric_name, {}).get(metric_name, 0.0))),
+                })
+        return rows
+
     def show(self, host: str = "127.0.0.1", port: int = 8099, open_browser: bool = True):
         """Launch the visualization UI for the current experiment.
 
@@ -338,14 +389,17 @@ class FoamBO:
         cfg = DictConfig(self._to_dict())
         return run_preflight(cfg, dry_run=dry_run)
 
-    def run(self, parallelism: int = 3, poll_interval: int = 10,
+    def run(self, parallelism: int = 3, poll_interval: float | None = None,
             poll_backoff: float = 1.5, timeout_hours: int = 24,
             ttl: int | None = None):
         """Run the optimization and return the Ax Client.
 
         Args:
             parallelism: Max concurrent trials.
-            poll_interval: Initial seconds between status polls.
+            poll_interval: Initial seconds between status polls. If ``None``
+                (default), auto-detected: for Python callable metrics, the
+                first metric is profiled and the interval is set to
+                ``max(2 * eval_time, 0.1)``; for shell commands, defaults to 10s.
             poll_backoff: Backoff factor for poll interval.
             timeout_hours: Max experiment runtime in hours.
             ttl: Time-to-live in seconds per trial (None = no limit).
@@ -354,7 +408,6 @@ class FoamBO:
             The Ax ``Client`` with the completed experiment, or ``None`` on interrupt.
         """
         self._parallelism = parallelism
-        self._poll_interval = poll_interval
         self._poll_backoff = poll_backoff
         self._timeout_hours = timeout_hours
         self._ttl = ttl
@@ -364,6 +417,14 @@ class FoamBO:
             from .metrics import _fn_registry, _progress_fn_registry
             _fn_registry.update(self._fn_map)
             _progress_fn_registry.update(self._progress_fn_map)
+
+        # Auto-detect poll interval from metric evaluation time
+        if poll_interval is not None:
+            self._poll_interval = poll_interval
+        elif self._fn_map:
+            self._poll_interval = self._profile_poll_interval()
+        else:
+            self._poll_interval = 10
 
         # Use NoCasePreprocessor when no case directory is needed
         if self._caseless:
@@ -381,6 +442,36 @@ class FoamBO:
                 and all(m["name"] in self._fn_map for m in self._metrics)
                 and not self._variable_subst
                 and not self._file_subst)
+
+    def _profile_poll_interval(self) -> float:
+        """Profile the first fn-based metric and return an appropriate poll interval."""
+        import time
+        # Build a center-of-domain test point
+        test_params = {}
+        for p in self._parameters:
+            if "bounds" in p:
+                lo, hi = p["bounds"]
+                test_params[p["name"]] = (lo + hi) / 2.0
+            elif "values" in p:
+                test_params[p["name"]] = p["values"][0]
+
+        fn = next(iter(self._fn_map.values()))
+        # Warm up + measure
+        try:
+            fn(test_params)
+            t0 = time.perf_counter()
+            for _ in range(3):
+                fn(test_params)
+            elapsed = (time.perf_counter() - t0) / 3
+        except Exception:
+            return 1.0  # fallback if profiling fails
+
+        # Poll interval = 2x eval time, clamped to [0.1, 10]
+        interval = round(max(0.1, min(10.0, 2 * elapsed)), 2)
+        import logging
+        logging.getLogger(__name__).info(
+            f"Metric eval profiled at {elapsed:.4f}s — poll interval set to {interval}s")
+        return interval
 
     def _to_dict(self) -> dict:
         import os, tempfile

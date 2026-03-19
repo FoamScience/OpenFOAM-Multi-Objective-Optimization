@@ -330,6 +330,33 @@ def api_fit_model():
             status_code=500, detail=f"Failed to fit model: {e}")
 
 
+@app.get("/api/experiment_info")
+def api_experiment_info():
+    """Return experiment type info and best parameters for single-objective."""
+    ensure_loaded()
+    from ax.api.client import MultiObjective
+    exp = state.client._experiment
+    is_multi = isinstance(exp.optimization_config._objective, MultiObjective)
+    has_callback = (_sensitivity_fn_override is not None
+                    or state.cfg.get('visualizer', {}).get('sensitivity_callback'))
+    result = {"is_multi_objective": is_multi, "has_callback": has_callback}
+    if not is_multi:
+        try:
+            best_params, _, _, _ = state.client.get_best_parameterization(
+                use_model_predictions=False)
+            result["best_parameters"] = best_params
+        except Exception:
+            # Fall back to center of domain
+            center = {}
+            for pname, param in exp.parameters.items():
+                if hasattr(param, 'lower') and hasattr(param, 'upper'):
+                    center[pname] = (param.lower + param.upper) / 2.0
+                elif hasattr(param, 'values'):
+                    center[pname] = param.values[0]
+            result["best_parameters"] = center
+    return result
+
+
 @app.post("/api/sensitivity")
 def api_sensitivity(req: SensitivityRequest):
     ensure_loaded()

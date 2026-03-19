@@ -56,10 +56,10 @@ class PreflightResult:
             line = f"  [{icon}] {name}"
             if detail:
                 line += f" — {detail}"
-            print(line)
+            log.info(line)
         total = len(self.checks)
-        print(f"\n  {total} checks: {total - self.n_fail - self.n_warn} passed, "
-              f"{self.n_warn} warnings, {self.n_fail} failed")
+        log.info(f"  {total} checks: {total - self.n_fail - self.n_warn} passed, "
+                 f"{self.n_warn} warnings, {self.n_fail} failed")
 
 
 def static_checks(cfg: DictConfig) -> PreflightResult:
@@ -355,13 +355,13 @@ def run_preflight(cfg: DictConfig, dry_run: bool = False) -> bool:
 
     Returns True if all checks passed (no FAIL).
     """
-    print("\n  Preflight checks\n  " + "=" * 40)
-    print("\n  Static checks:\n")
+    log.info("Preflight checks\n  " + "=" * 40)
+    log.info("Static checks:")
     result = static_checks(cfg)
     result.print_report()
 
     if dry_run:
-        print("\n  Dry-run checks:\n")
+        log.info("Dry-run checks:")
         dr = dry_run_checks(cfg)
         dr.print_report()
         # Merge results
@@ -369,7 +369,7 @@ def run_preflight(cfg: DictConfig, dry_run: bool = False) -> bool:
 
     ok = result.ok
     if ok:
-        print(f"\n  {GREEN}All preflight checks passed.{RESET}\n")
+        log.info(f"{GREEN}All preflight checks passed.{RESET}")
     else:
-        print(f"\n  {RED}{result.n_fail} check(s) failed. Fix issues before running.{RESET}\n")
+        log.error(f"{RED}{result.n_fail} check(s) failed. Fix issues before running.{RESET}")
     return ok
