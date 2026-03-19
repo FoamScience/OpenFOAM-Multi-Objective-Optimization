@@ -473,6 +473,94 @@ def get_config_docs() -> Dict[str, Any]:
             substituted, but before the runner command executes. The dependency resolution
             result is recorded in `run_metadata["dependencies"]` for traceability.
             """,
+        "trial_generation.generation_nodes[].generator_specs[].transforms": """
+            Ax applies a chain of data transforms before fitting the GP surrogate.
+            The default chain can hurt accuracy on functions with large dynamic range
+            or sharp features. You can override or filter it per generation node.
+
+            **Available transforms (applied in order):**
+
+            | Transform | What it does |
+            |---|---|
+            | `Cast` | Casts parameter types to match the search space |
+            | `MapKeyToFloat` | Maps dict keys to float indices |
+            | `RemoveFixed` | Removes fixed (non-optimizable) parameters |
+            | `OrderedChoiceToIntegerRange` | Maps ordered choice params to integers |
+            | `OneHot` | One-hot encodes unordered choice parameters |
+            | `LogIntToFloat` | Converts log-scaled int params to floats |
+            | `Log` | Applies log transform to log-scaled parameters |
+            | `Logit` | Applies logit transform to logit-scaled parameters |
+            | `Winsorize` | Clips outlier Y values to reduce their influence |
+            | `Derelativize` | Converts relative constraints to absolute |
+            | `BilogY` | Compresses Y via `sign(y)*log(1+|y|)` — reduces dynamic range |
+            | `StandardizeY` | Standardizes Y to zero mean, unit variance |
+
+            **Common issues and fixes:**
+
+            `BilogY` compresses large values (e.g. 0.1 and 100 become 0.1 and 4.6),
+            making it harder for the GP to distinguish them. `Winsorize` clips outliers,
+            which can discard valid extreme observations.
+
+            To disable both:
+            ```yaml
+            generator_specs:
+              - generator_enum: BOTORCH_MODULAR
+                exclude_transforms: [BilogY, Winsorize]
+            ```
+
+            For minimal transforms (best accuracy, less robustness):
+            ```yaml
+            generator_specs:
+              - generator_enum: BOTORCH_MODULAR
+                transforms: [StandardizeY]
+            ```
+
+            **Library API:**
+            ```python
+            FoamBO("Exp")
+                .transforms(exclude=["BilogY", "Winsorize"])
+                # or: .transforms(only=["StandardizeY"])
+            ```
+
+            **When to customize:**
+            - GP predictions don't pass through trial points → try removing `BilogY`
+            - Extreme values are being ignored → try removing `Winsorize`
+            - Model fit warnings ("unable to be reliably fit") → try minimal transforms
+            - Noisy real-world data with outliers → keep defaults (they add robustness)
+
+            **Custom GP kernels (library API only):**
+
+            The default Matérn-2.5 kernel uses a single lengthscale, which can't
+            capture functions with both smooth trends and sharp local features.
+            An additive kernel combining different lengthscales fixes this:
+
+            ```python
+            from gpytorch.kernels import ScaleKernel, MaternKernel, AdditiveKernel
+
+            class AdditiveMatern(AdditiveKernel):
+                def __init__(self, **kwargs):
+                    super().__init__(
+                        ScaleKernel(MaternKernel(nu=2.5)),  # smooth trend
+                        ScaleKernel(MaternKernel(nu=0.5)),  # rough detail
+                    )
+
+            client = (
+                FoamBO("Exp")
+                .kernel(AdditiveMatern)
+                .transforms(exclude=["BilogY", "Winsorize"])
+                .minimize("metric", fn=my_fn)
+                .run()
+            )
+            ```
+
+            This is not available via YAML config — custom kernels require the
+            Python library API since they involve gpytorch class definitions.
+
+            **When to use a custom kernel:**
+            - Single-objective with oscillatory or multi-modal objective functions
+            - "Model fit is poor" warnings despite sufficient trials
+            - GP predictions systematically miss trial points even with transform tuning
+            """,
     }
     for key, extra in _examples.items():
         extra = textwrap.dedent(extra).strip()
