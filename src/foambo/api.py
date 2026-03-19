@@ -61,6 +61,11 @@ class FoamBO:
         self._trial_gen: dict = {"method": "fast"}
         self._existing_trials: str = ""
         self._dependencies: list[dict] = []
+        self._transforms: list[str] | None = None
+        self._exclude_transforms: list[str] | None = None
+        self._kernel = None  # gpytorch kernel class
+        self._likelihood_class = None
+        self._likelihood_options = {}
 
         # Runner options
         self._runner: str | None = None
@@ -249,6 +254,72 @@ class FoamBO:
         self._early_stop = kwargs
         return self
 
+    def transforms(self, only: list[str] | None = None,
+                   exclude: list[str] | None = None) -> FoamBO:
+        """Control the Ax outcome transform pipeline for the BO model.
+
+        By default, Ax applies: Cast, MapKeyToFloat, RemoveFixed,
+        OrderedChoiceToIntegerRange, OneHot, LogIntToFloat, Log, Logit,
+        Winsorize, Derelativize, BilogY, StandardizeY.
+
+        ``BilogY`` compresses the output range via ``sign(y)*log(1+|y|)``
+        and ``Winsorize`` clips outliers. These can hurt GP accuracy on
+        functions with large dynamic range or sharp features.
+
+        Args:
+            only: Use exactly these transforms (in order).
+                Example: ``only=["StandardizeY"]`` for minimal transforms.
+            exclude: Remove specific transforms from the default chain.
+                Example: ``exclude=["BilogY", "Winsorize"]``.
+
+        Only one of ``only`` or ``exclude`` should be set.
+        Only affects BOTORCH_MODULAR generation nodes.
+        """
+        self._transforms = only
+        self._exclude_transforms = exclude
+        return self
+
+    def kernel(self, covar_module_class, likelihood_class=None,
+               likelihood_options: dict | None = None) -> "FoamBO":
+        """Set a custom GP kernel and likelihood for the BO surrogate.
+
+        The default Matérn-2.5 kernel works well for smooth functions but
+        struggles with multi-modal or oscillatory objectives. An additive
+        kernel combining different lengthscales can dramatically improve fit.
+
+        A custom likelihood with a noise floor prevents numerical issues
+        (Cholesky failures) when trials cluster in one region.
+
+        Args:
+            covar_module_class: A gpytorch kernel class (not an instance).
+            likelihood_class: A gpytorch likelihood class (e.g. ``GaussianLikelihood``).
+            likelihood_options: Dict of kwargs for the likelihood constructor
+                (e.g. ``{"noise_constraint": GreaterThan(1e-4)}``).
+
+        Example::
+
+            from gpytorch.kernels import ScaleKernel, MaternKernel, AdditiveKernel
+            from gpytorch.likelihoods import GaussianLikelihood
+            from gpytorch.constraints import GreaterThan
+
+            class AdditiveMatern(AdditiveKernel):
+                def __init__(self, **kwargs):
+                    super().__init__(
+                        ScaleKernel(MaternKernel(nu=2.5)),  # smooth trend
+                        ScaleKernel(MaternKernel(nu=0.5)),  # rough detail
+                    )
+
+            FoamBO("Exp")
+                .kernel(AdditiveMatern,
+                        likelihood_class=GaussianLikelihood,
+                        likelihood_options={"noise_constraint": GreaterThan(1e-4)})
+                .transforms(exclude=["BilogY", "Winsorize"])
+        """
+        self._kernel = covar_module_class
+        self._likelihood_class = likelihood_class
+        self._likelihood_options = likelihood_options or {}
+        return self
+
     # --- Trial Dependencies ---
 
     def depend(self, name: str, source: str = "best", command: str | list[str] = "",
@@ -432,8 +503,50 @@ class FoamBO:
             from . import metrics as _m
             _m.case_preprocessor = NoCasePreprocessor()
 
+        # If transforms or kernel are customized and method is "fast", switch to
+        # custom generation with explicit nodes that carry the config
+        needs_custom = (self._transforms is not None or self._exclude_transforms is not None
+                        or self._kernel is not None)
+        if needs_custom and self._trial_gen.get("method") == "fast":
+            init_budget = self._trial_gen.get("initialization_budget", 5)
+            bo_spec = {"generator_enum": "BOTORCH_MODULAR"}
+            if self._transforms is not None:
+                bo_spec["transforms"] = self._transforms
+            if self._exclude_transforms is not None:
+                bo_spec["exclude_transforms"] = self._exclude_transforms
+            self._trial_gen = {
+                "method": "custom",
+                "generation_nodes": [
+                    {"next_node_name": "sobol"},
+                    {"node_name": "sobol",
+                     "generator_specs": [{"generator_enum": "SOBOL"}],
+                     "transition_criteria": [{"type": "max_trials",
+                                              "threshold": init_budget,
+                                              "transition_to": "bo",
+                                              "use_all_trials_in_exp": True}]},
+                    {"node_name": "bo",
+                     "generator_specs": [bo_spec],
+                     "transition_criteria": []},
+                ],
+            }
+
+        cfg = self.build()
+
+        # Apply custom kernel — must be set after build() since it's a Python
+        # class that can't survive dict/OmegaConf serialization
+        if self._kernel is not None:
+            from ax.generators.torch.botorch_modular.surrogate import SurrogateSpec
+            from ax.generators.torch.botorch_modular.utils import ModelConfig
+            model_cfg_kwargs = {"covar_module_class": self._kernel}
+            if self._likelihood_class is not None:
+                model_cfg_kwargs["likelihood_class"] = self._likelihood_class
+                model_cfg_kwargs["likelihood_options"] = self._likelihood_options
+            cfg._kernel_surrogate_spec = SurrogateSpec(
+                model_configs=[ModelConfig(**model_cfg_kwargs)]
+            )
+
         from .optimize import optimize
-        return optimize(self.build())
+        return optimize(cfg)
 
     @property
     def _caseless(self) -> bool:

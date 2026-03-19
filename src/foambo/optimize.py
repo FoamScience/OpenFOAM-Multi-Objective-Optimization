@@ -119,6 +119,15 @@ def optimize(cfg):
     if trial_deps:
         runner.trial_dependencies = trial_deps
     runner._metric_names = [m.name for m in opt_cfg.metrics]
+    # Inject custom kernel surrogate spec if set via .kernel() API
+    if hasattr(cfg, '_kernel_surrogate_spec') and cfg._kernel_surrogate_spec is not None:
+        gs = client._generation_strategy
+        for node in gs._nodes:
+            for spec in node.generator_specs:
+                if hasattr(spec, '_model_kwargs'):
+                    spec._model_kwargs["surrogate_spec"] = cfg._kernel_surrogate_spec
+                    log.info(f"Custom kernel set on generation node '{node.node_name}'")
+
     client.set_early_stopping_strategy(orch_cfg.early_stopping_strategy)
 
     # Risk 7: Warn if early stopping references objective metrics (they don't stream)

@@ -232,6 +232,71 @@ class ExperimentOptions(FoamBOBaseModel):
         return l
 
 
+def _get_transform_registry() -> Dict[str, type]:
+    """Lazy registry mapping transform names to classes."""
+    from ax.adapter.transforms.cast import Cast
+    from ax.adapter.transforms.map_key_to_float import MapKeyToFloat
+    from ax.adapter.transforms.remove_fixed import RemoveFixed
+    from ax.adapter.transforms.choice_encode import OrderedChoiceToIntegerRange
+    from ax.adapter.transforms.one_hot import OneHot
+    from ax.adapter.transforms.int_to_float import LogIntToFloat
+    from ax.adapter.transforms.log import Log
+    from ax.adapter.transforms.logit import Logit
+    from ax.adapter.transforms.winsorize import Winsorize
+    from ax.adapter.transforms.derelativize import Derelativize
+    from ax.adapter.transforms.bilog_y import BilogY
+    from ax.adapter.transforms.standardize_y import StandardizeY
+    return {
+        "Cast": Cast,
+        "MapKeyToFloat": MapKeyToFloat,
+        "RemoveFixed": RemoveFixed,
+        "OrderedChoiceToIntegerRange": OrderedChoiceToIntegerRange,
+        "OneHot": OneHot,
+        "LogIntToFloat": LogIntToFloat,
+        "Log": Log,
+        "Logit": Logit,
+        "Winsorize": Winsorize,
+        "Derelativize": Derelativize,
+        "BilogY": BilogY,
+        "StandardizeY": StandardizeY,
+    }
+
+# The default Ax transform order (all transforms)
+DEFAULT_TRANSFORMS = [
+    "Cast", "MapKeyToFloat", "RemoveFixed", "OrderedChoiceToIntegerRange",
+    "OneHot", "LogIntToFloat", "Log", "Logit", "Winsorize", "Derelativize",
+    "BilogY", "StandardizeY",
+]
+
+
+def resolve_transforms(
+    only: List[str] | None = None,
+    exclude: List[str] | None = None,
+) -> list[type]:
+    """Resolve transform names to classes.
+
+    Args:
+        only: If set, use only these transforms (in order).
+        exclude: If set, remove these from the default list.
+
+    Returns:
+        Ordered list of transform classes.
+    """
+    registry = _get_transform_registry()
+    if only is not None:
+        names = only
+    elif exclude is not None:
+        names = [n for n in DEFAULT_TRANSFORMS if n not in exclude]
+    else:
+        names = DEFAULT_TRANSFORMS
+    result = []
+    for name in names:
+        if name not in registry:
+            raise ValueError(f"Unknown transform '{name}'. Available: {list(registry.keys())}")
+        result.append(registry[name])
+    return result
+
+
 class ModelSpecConfig(FoamBOBaseModel):
     """Configuration for a trial generator algorithm."""
     generator_enum: Literal[
@@ -250,6 +315,16 @@ class ModelSpecConfig(FoamBOBaseModel):
         "CONTEXT_SACBO",
     ] = Field(description="Generator algorithm name (e.g. SOBOL for random init, BOTORCH_MODULAR for BO)")
     model_kwargs: Dict | None = Field(default=None, description="Extra keyword arguments passed to the generator (e.g. seed for SOBOL)")
+    transforms: List[str] | None = Field(default=None, description=(
+        "Explicit list of transform names to use, in order. "
+        "Overrides the default Ax transform chain. "
+        "Available: Cast, MapKeyToFloat, RemoveFixed, OrderedChoiceToIntegerRange, "
+        "OneHot, LogIntToFloat, Log, Logit, Winsorize, Derelativize, BilogY, StandardizeY"
+    ))
+    exclude_transforms: List[str] | None = Field(default=None, description=(
+        "Transform names to remove from the default chain. "
+        "Example: ``[BilogY, Winsorize]`` to disable output compression and outlier clipping"
+    ))
 
     def to_generator_spec(self) -> GeneratorSpec:
         if not hasattr(Generators, self.generator_enum):
@@ -257,9 +332,13 @@ class ModelSpecConfig(FoamBOBaseModel):
             raise ValueError(f"{self.generator_enum} is not a supported generator; supported specs:\n"
                              f"{pformat([name for name, value in vars(Generators).items() if not name.startswith('_')])}")
         model = Generators[self.generator_enum]
+        kwargs = dict(self.model_kwargs) if self.model_kwargs else {}
+        if self.transforms is not None or self.exclude_transforms is not None:
+            kwargs["transforms"] = resolve_transforms(
+                only=self.transforms, exclude=self.exclude_transforms)
         return GeneratorSpec(
             generator_enum=model,
-            model_kwargs=self.model_kwargs if self.model_kwargs else {},
+            model_kwargs=kwargs,
         )
 
 TRANSITION_MAP = {

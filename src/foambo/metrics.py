@@ -660,3 +660,9 @@ register_runner(FoamJobRunner)
 CORE_ENCODER_REGISTRY[FoamJobMetric] = metric_to_dict
 CORE_DECODER_REGISTRY["FoamJobMetric"] = FoamJobMetric
 register_metrics({FoamJobMetric: len(CORE_METRIC_REGISTRY.items())})
+
+# Register Cast transform with Ax's JSON serialization (missing from Ax's default registry)
+from ax.storage.json_store.decoders import REVERSE_TRANSFORM_REGISTRY
+from ax.adapter.transforms.cast import Cast
+if "Cast" not in REVERSE_TRANSFORM_REGISTRY:
+    REVERSE_TRANSFORM_REGISTRY["Cast"] = Cast
