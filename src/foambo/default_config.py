@@ -487,7 +487,7 @@ def get_config_docs() -> Dict[str, Any]:
             | `RemoveFixed` | Removes fixed (non-optimizable) parameters |
             | `OrderedChoiceToIntegerRange` | Maps ordered choice params to integers |
             | `OneHot` | One-hot encodes unordered choice parameters |
-            | `LogIntToFloat` | Converts log-scaled int params to floats |
+            | `IntToFloat` | Converts log-scaled int params to floats |
             | `Log` | Applies log transform to log-scaled parameters |
             | `Logit` | Applies logit transform to logit-scaled parameters |
             | `Winsorize` | Clips outlier Y values to reduce their influence |

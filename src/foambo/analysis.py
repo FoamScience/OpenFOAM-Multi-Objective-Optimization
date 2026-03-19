@@ -71,10 +71,11 @@ def compute_analysis_cards(cfg: DictConfig, client: Client | None, open_html=Fal
                 metric in [m.metric_names[0] for m in exp.optimization_config.objective.objectives]:
             analyses_to_run.append(MarginalEffectsPlot(metric_name=metric))
     if n_params > 1 and has_model:
-        analyses_to_run.append(SensitivityAnalysisPlot(metric_names=exp.metrics, top_k=10))
+        for metric in exp.metrics:
+            analyses_to_run.append(SensitivityAnalysisPlot(metric_name=metric, top_k=10))
 
     if len(exp.metrics) > 1:
-        analyses_to_run.append(ObjectivePFeasibleFrontierPlot(show_pareto_frontier=True))
+        analyses_to_run.append(ObjectivePFeasibleFrontierPlot())
         metric_pairs = list(combinations(exp.metrics, 2))
         for metric_pair in metric_pairs:
             analyses_to_run.append(ScatterPlot(

@@ -122,11 +122,12 @@ def optimize(cfg):
     # Inject custom kernel surrogate spec if set via .kernel() API
     if hasattr(cfg, '_kernel_surrogate_spec') and cfg._kernel_surrogate_spec is not None:
         gs = client._generation_strategy
+        from ax.adapter.registry import Generators
         for node in gs._nodes:
             for spec in node.generator_specs:
-                if hasattr(spec, '_model_kwargs'):
-                    spec._model_kwargs["surrogate_spec"] = cfg._kernel_surrogate_spec
-                    log.info(f"Custom kernel set on generation node '{node.node_name}'")
+                if spec.generator_enum == Generators.BOTORCH_MODULAR:
+                    spec.generator_kwargs["surrogate_spec"] = cfg._kernel_surrogate_spec
+                    log.info(f"Custom kernel set on generation node '{node.name}'")
 
     client.set_early_stopping_strategy(orch_cfg.early_stopping_strategy)
 
@@ -174,20 +175,14 @@ def optimize(cfg):
                 "status": trial.status.name,
                 "parameters": trial.arm.parameters if trial.arm else {},
             }
-        if not client._experiment.data_by_trial:
+        data = client._experiment.fetch_data()
+        if data.df.empty:
             return
-        dfs = []
-        for trial_id, od in client._experiment.data_by_trial.items():
-            for _, mapdata in od.items():
-                df = mapdata.df.copy()
-                if "trial_index" not in df.columns:
-                    df["trial_index"] = trial_id
-                dfs.append(df)
-        df = pd.concat(dfs, ignore_index=True, sort=False)
+        df = data.df.copy()
         metadf = {
             trial_index: {
                 "job_id": trial.run_metadata.get("job_id"),
-                "generation_node": trial.generator_run._model_key,
+                "generation_node": trial.generator_run.generator_run_type or "",
                 "status": trial.status.__repr__().strip("<enum 'TrialStatus'>."),
                 **client._experiment.trials[trial_index].arm.parameters,
                 "case_path": trial.run_metadata.get("job", {}).get("case_path"),
@@ -259,11 +254,17 @@ def optimize(cfg):
     log.info("=========== Best set of parameters ==============")
     best_parameters, prediction = None, None
     if isinstance(client._experiment.optimization_config._objective, MultiObjective):
-        front = client.get_pareto_frontier(use_model_predictions=True)
+        try:
+            front = client.get_pareto_frontier(use_model_predictions=True)
+        except Exception:
+            front = client.get_pareto_frontier(use_model_predictions=False)
         for best_parameters, prediction, _, _ in front:
             log.info("Pareto-frontier configuration:\n%s", json.dumps(best_parameters, indent=2))
             log.info("Predictions for Pareto-frontier configuration (mean, variance):\n%s", json.dumps(prediction, indent=2))
-        _ = plot_pareto_frontier(raw_cfg, client, front, open_html=False)
+        try:
+            _ = plot_pareto_frontier(raw_cfg, client, front, open_html=False)
+        except Exception as e:
+            log.warning(f"Pareto frontier plot skipped: {e}")
     else:
         best_parameters, prediction, _, _ = client.get_best_parameterization(use_model_predictions=True)
         log.info("Best parameter set:\n%s", json.dumps(best_parameters, indent=2))

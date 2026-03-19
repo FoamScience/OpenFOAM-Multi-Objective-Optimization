@@ -259,7 +259,7 @@ class FoamBO:
         """Control the Ax outcome transform pipeline for the BO model.
 
         By default, Ax applies: Cast, MapKeyToFloat, RemoveFixed,
-        OrderedChoiceToIntegerRange, OneHot, LogIntToFloat, Log, Logit,
+        OrderedChoiceToIntegerRange, OneHot, IntToFloat, Log, Logit,
         Winsorize, Derelativize, BilogY, StandardizeY.
 
         ``BilogY`` compresses the output range via ``sign(y)*log(1+|y|)``
@@ -407,7 +407,7 @@ class FoamBO:
                 "Ensure enough trials completed to reach the BO phase.")
 
         import math
-        cv_results = ax_cv(model=gs.adapter)
+        cv_results = ax_cv(adapter=gs.adapter)
         rows = []
         for r in cv_results:
             obs_means = r.observed.data.means_dict
@@ -537,6 +537,13 @@ class FoamBO:
         if self._kernel is not None:
             from ax.generators.torch.botorch_modular.surrogate import SurrogateSpec
             from ax.generators.torch.botorch_modular.utils import ModelConfig
+            # Register the custom kernel class with Ax's serialization registry
+            # Register with Ax's serialization: CLASS_TO_REGISTRY[Kernel] is the
+            # authoritative registry checked during JSON save
+            from ax.storage.botorch_modular_registry import CLASS_TO_REGISTRY, CLASS_TO_REVERSE_REGISTRY
+            from gpytorch.kernels import Kernel
+            CLASS_TO_REGISTRY[Kernel][self._kernel] = self._kernel.__name__
+            CLASS_TO_REVERSE_REGISTRY[Kernel][self._kernel.__name__] = self._kernel
             model_cfg_kwargs = {"covar_module_class": self._kernel}
             if self._likelihood_class is not None:
                 model_cfg_kwargs["likelihood_class"] = self._likelihood_class

@@ -1,9 +1,8 @@
 from ax.api.client import AnalysisCardBase, PercentileEarlyStoppingStrategy, Client
-from ax.service.utils.orchestrator_options import OrchestratorOptions
+from ax.orchestration.orchestrator_options import OrchestratorOptions
 from ax.api.types import TParameterization
 from ax.early_stopping.strategies import AndEarlyStoppingStrategy, OrEarlyStoppingStrategy, ThresholdEarlyStoppingStrategy
 from ax.generation_strategy.generation_node import MaxGenerationParallelism
-from ax.storage.json_store.decoder import AuxiliaryExperimentCheck
 from ax.storage.json_store.registry import CenterGenerationNode
 from foambo.metrics import FoamJobRunner, LocalJobMetric
 from .common import *
@@ -20,8 +19,8 @@ from ax.generation_strategy.generation_node import GenerationNode
 from ax.generation_strategy.generator_spec import GeneratorSpec
 from ax.adapter.registry import Generators
 from ax.generation_strategy.transition_criterion import (
-    MaxTrials, MinTrials, AutoTransitionAfterGen,
-    IsSingleObjective, MinimumPreferenceOccurances, MinimumTrialsInStatus
+    MinTrials, AutoTransitionAfterGen,
+    IsSingleObjective, AuxiliaryExperimentCheck,
 )
 from omegaconf import DictConfig, ListConfig
 
@@ -239,7 +238,7 @@ def _get_transform_registry() -> Dict[str, type]:
     from ax.adapter.transforms.remove_fixed import RemoveFixed
     from ax.adapter.transforms.choice_encode import OrderedChoiceToIntegerRange
     from ax.adapter.transforms.one_hot import OneHot
-    from ax.adapter.transforms.int_to_float import LogIntToFloat
+    from ax.adapter.transforms.int_to_float import IntToFloat
     from ax.adapter.transforms.log import Log
     from ax.adapter.transforms.logit import Logit
     from ax.adapter.transforms.winsorize import Winsorize
@@ -252,7 +251,7 @@ def _get_transform_registry() -> Dict[str, type]:
         "RemoveFixed": RemoveFixed,
         "OrderedChoiceToIntegerRange": OrderedChoiceToIntegerRange,
         "OneHot": OneHot,
-        "LogIntToFloat": LogIntToFloat,
+        "IntToFloat": IntToFloat,
         "Log": Log,
         "Logit": Logit,
         "Winsorize": Winsorize,
@@ -264,7 +263,7 @@ def _get_transform_registry() -> Dict[str, type]:
 # The default Ax transform order (all transforms)
 DEFAULT_TRANSFORMS = [
     "Cast", "MapKeyToFloat", "RemoveFixed", "OrderedChoiceToIntegerRange",
-    "OneHot", "LogIntToFloat", "Log", "Logit", "Winsorize", "Derelativize",
+    "OneHot", "IntToFloat", "Log", "Logit", "Winsorize", "Derelativize",
     "BilogY", "StandardizeY",
 ]
 
@@ -319,7 +318,7 @@ class ModelSpecConfig(FoamBOBaseModel):
         "Explicit list of transform names to use, in order. "
         "Overrides the default Ax transform chain. "
         "Available: Cast, MapKeyToFloat, RemoveFixed, OrderedChoiceToIntegerRange, "
-        "OneHot, LogIntToFloat, Log, Logit, Winsorize, Derelativize, BilogY, StandardizeY"
+        "OneHot, IntToFloat, Log, Logit, Winsorize, Derelativize, BilogY, StandardizeY"
     ))
     exclude_transforms: List[str] | None = Field(default=None, description=(
         "Transform names to remove from the default chain. "
@@ -338,18 +337,16 @@ class ModelSpecConfig(FoamBOBaseModel):
                 only=self.transforms, exclude=self.exclude_transforms)
         return GeneratorSpec(
             generator_enum=model,
-            model_kwargs=kwargs,
+            generator_kwargs=kwargs,
         )
 
 TRANSITION_MAP = {
-    "max_trials": MaxTrials,
+    "max_trials": MinTrials,
     "min_trials": MinTrials,
     "auto_transition_after_gen": AutoTransitionAfterGen,
     "is_single_objective": IsSingleObjective,
     "max_generation_parallelism": MaxGenerationParallelism,
-    "minimum_preference_occurances": MinimumPreferenceOccurances,
     "auxiliary_experiment_check": AuxiliaryExperimentCheck,
-    "minimum_trials_in_status": MinimumTrialsInStatus,
 }
 
 
@@ -376,7 +373,7 @@ class GenerationNodeConfig(FoamBOBaseModel):
     def to_generation_node(self) -> GenerationNode:
         spec_list = [spec.to_generator_spec() for spec in self.generator_specs]
         return GenerationNode(
-            node_name=self.node_name,
+            name=self.node_name,
             generator_specs=spec_list,
             transition_criteria=self.transition_criteria if self.transition_criteria else None,
         )
@@ -393,7 +390,7 @@ class CenterGenerationNodeConfig(FoamBOBaseModel):
 class ManualGenerationNode(GenerationNode):
     parameters: TParameterization
     def __init__(self, node_name: str, parameters: TParameterization):
-        super().__init__(node_name=node_name, generator_specs=[])
+        super().__init__(name=node_name, generator_specs=[])
         self.parameters = parameters
 
     def gen(
@@ -406,7 +403,7 @@ class ManualGenerationNode(GenerationNode):
         **gs_gen_kwargs,
     ) :
         return GeneratorRun(
-            arms=[Arm(name=self.node_name, parameters=self.parameters)],
+            arms=[Arm(name=self.name, parameters=self.parameters)],
             optimization_config=experiment.optimization_config,
             search_space=experiment.search_space,
 
@@ -476,7 +473,7 @@ class TrialGenerationOptions(FoamBOBaseModel):
             return
         if not self.generation_nodes:
             raise ValueError("generation_nodes must be provided when method is 'custom'")
-        gs = GenerationStrategy(name=f"+".join([node.node_name for node in self.generation_nodes]), nodes=self.generation_nodes)
+        gs = GenerationStrategy(name=f"+".join([node.name for node in self.generation_nodes]), nodes=self.generation_nodes)
         client.set_generation_strategy(gs)
 
 
