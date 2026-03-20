@@ -17,7 +17,7 @@ optimization:
   metrics:
   - name: F1
     progress: null
-    command: "python3 ../../benchmark.py  --F F1 --k 1 --m 0 --lb 0.01"
+    command: "uv run --script ../../../benchmarks/benchmark.py  --F F1 --k 1 --m 0 --lb 0.01"
   objective: -F1
   outcome_constraints: []
   case_runner:

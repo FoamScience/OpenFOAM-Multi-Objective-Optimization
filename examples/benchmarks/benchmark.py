@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [ "numpy", "foamlib" ]
+# ///
 """
 Benchmark functions from:
 https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=9684455
@@ -27,16 +31,13 @@ def F4(x, k=1, m=0, lb=0.01):
 
 Fs = {"F1": F1, "F2": F2, "F3": F3, "F4": F4}
 
-
-# --- foamBO-compatible callable wrappers (parameters dict -> scalar) ---
-
+# --- foamBO-compatible callable wrappers (parameters dict -> scalar)
 def foambo_metric(func_name, k=1, m=0, lb=0.01):
     """Return a callable suitable for FoamBO.minimize(fn=...)."""
     fn = Fs[func_name]
     def metric(parameters):
         return float(fn(parameters["x"], k, m, lb))
     return metric
-
 
 if __name__ == '__main__':
     import sys, os, argparse

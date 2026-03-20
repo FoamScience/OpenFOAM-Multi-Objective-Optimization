@@ -1,0 +1,81 @@
+experiment:
+  name: MultiObjF1F3
+  description: MultiObjF1F3 optimization
+  parameters:
+  - name: x
+    bounds:
+    - -100.0
+    - 200.0
+    parameter_type: float
+  - name: y
+    bounds:
+    - -50.0
+    - 50.0
+    parameter_type: float
+  parameter_constraints: []
+trial_generation:
+  method: custom
+  generation_nodes:
+  - next_node_name: sobol
+  - node_name: sobol
+    generator_specs:
+    - generator_enum: SOBOL
+    transition_criteria:
+    - type: max_trials
+      threshold: 5
+      transition_to: bo
+      use_all_trials_in_exp: true
+  - node_name: bo
+    generator_specs:
+    - generator_enum: BOTORCH_MODULAR
+      exclude_transforms:
+      - BilogY
+      - Winsorize
+    transition_criteria: []
+existing_trials:
+  file_path: ''
+baseline:
+  parameters: null
+optimization:
+  metrics:
+  - name: F1
+    command: null
+    progress: null
+    lower_is_better: true
+  - name: F3
+    command: null
+    progress: null
+    lower_is_better: true
+  objective: -F1, -F3
+  outcome_constraints: []
+  case_runner:
+    template_case: /tmp/foambo_caseless_lwpinncg
+    mode: local
+    runner: null
+    log_runner: false
+    remote_status_query: null
+    remote_early_stop: null
+    trial_destination: ./trials
+    artifacts_folder: ./artifacts
+    file_substitution: []
+    variable_substitution: []
+orchestration_settings:
+  max_trials: 60
+  parallelism: 3
+  initial_seconds_between_polls: 0.1
+  seconds_between_polls_backoff_factor: 1.5
+  timeout_hours: 24
+  global_stopping_strategy:
+    min_trials: 30
+    window_size: 10
+    improvement_bar: 0.01
+  early_stopping_strategy: null
+  ttl_seconds_for_trials: 10
+store:
+  save_to: json
+  read_from: nowhere
+  backend_options:
+    url: null
+trial_dependencies: []
+visualizer:
+  sensitivity_callback: null
