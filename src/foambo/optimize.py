@@ -85,6 +85,8 @@ def optimize(cfg):
     _m.PROGRESSION_CMD_TIMEOUT = orch_cfg.progression_cmd_timeout
     _m.DEPENDENCY_ACTION_TIMEOUT = orch_cfg.dependency_action_timeout
     _m.PROCESS_REAP_TIMEOUT = orch_cfg.process_reap_timeout
+    # Embed the full config in the JSON state for FoamBO.load()
+    store_cfg._foambo_config = OmegaConf.to_container(raw_cfg, resolve=True)
     client = store_cfg.load()
 
     # 1.0 Experiment setup

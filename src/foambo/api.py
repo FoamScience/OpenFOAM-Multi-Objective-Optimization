@@ -32,6 +32,40 @@ class FoamBO:
         mode: Execution mode — ``"local"`` or ``"remote"`` (default: ``"local"``).
     """
 
+    @staticmethod
+    def load(name: str, artifacts: str = "./artifacts",
+             backend: str = "json") -> "FoamBOClient":
+        """Load a saved experiment and return a client wrapper.
+
+        Args:
+            name: Experiment name (must match the name used during optimization).
+            artifacts: Directory where state files are stored.
+            backend: ``"json"`` or ``"sql"``.
+
+        Returns:
+            A ``FoamBOClient`` with the loaded Ax Client, supporting
+            ``.predict()``, ``.cross_validate()``, ``.show()``, and
+            direct attribute access to the underlying Ax Client.
+
+        Example::
+
+            result = FoamBO.load("SingleObjF1")
+            predictions = result.client.predict([{"x": 10}])
+            cv = result.cross_validate()
+            result.show()
+        """
+        from .common import set_experiment_name
+        from .orchestrate import StoreOptions
+        set_experiment_name(name)
+        store = StoreOptions.model_validate({
+            "save_to": backend, "read_from": backend,
+            "backend_options": {},
+        })
+        client = store.load()
+        # Read the embedded foamBO config from the JSON state
+        saved_cfg = StoreOptions.load_foambo_config(name, artifacts)
+        return FoamBOClient(client=client, name=name, artifacts=artifacts, saved_cfg=saved_cfg)
+
     def __init__(
         self,
         name: str,
@@ -655,3 +689,66 @@ class FoamBO:
                 "sensitivity_callback": self._sensitivity_callback,
             },
         }
+
+
+class FoamBOClient:
+    """Wrapper around a loaded Ax Client for post-optimization analysis.
+
+    Returned by ``FoamBO.load()``. Provides convenience methods for
+    predictions, cross-validation, and visualization without needing
+    to re-specify the experiment configuration.
+    """
+
+    def __init__(self, client, name: str, artifacts: str = "./artifacts", saved_cfg: dict | None = None):
+        self.client = client
+        self.name = name
+        self.artifacts = artifacts
+        self.saved_cfg = saved_cfg
+
+    def cross_validate(self) -> list[dict]:
+        """Run leave-one-out cross-validation on the fitted surrogate.
+
+        Returns the same format as ``FoamBO.cross_validate(client)``.
+        """
+        return FoamBO.cross_validate(self.client)
+
+    def predict(self, parameterizations: list[dict]):
+        """Predict metric values for the given parameterizations.
+
+        Args:
+            parameterizations: List of parameter dicts, e.g. ``[{"x": 10}]``.
+
+        Returns:
+            List of prediction dicts with ``(mean, sem)`` per metric.
+        """
+        return self.client.predict(parameterizations)
+
+    def show(self, sensitivity_fn=None,
+             host: str = "127.0.0.1", port: int = 8099, open_browser: bool = True):
+        """Launch the visualization UI for this experiment.
+
+        Args:
+            sensitivity_fn: Optional Python callable for custom visualization.
+            host: Server host.
+            port: Server port.
+            open_browser: Open browser automatically.
+        """
+        from .visualize import visualizer_ui
+        if sensitivity_fn is not None:
+            from . import visualize as _viz
+            _viz._sensitivity_fn_override = sensitivity_fn
+        from .common import set_experiment_name
+        from omegaconf import DictConfig, OmegaConf
+
+        set_experiment_name(self.name)
+
+        if self.saved_cfg is None:
+            raise RuntimeError(
+                f"No saved config found at {self.artifacts}/{self.name}_config.yaml. "
+                f"Re-run the optimization to generate it.")
+
+        saved = dict(self.saved_cfg)
+        # Ensure store reads from saved state (original may have "nowhere")
+        saved["store"] = {"save_to": "json", "read_from": "json", "backend_options": {"url": None}}
+        cfg = DictConfig(saved)
+        visualizer_ui(cfg, host=host, port=port, open_browser=open_browser)

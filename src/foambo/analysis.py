@@ -58,19 +58,20 @@ def compute_analysis_cards(cfg: DictConfig, client: Client | None, open_html=Fal
 
     if has_status_quo:
         analyses_to_run.append(RegressionAnalysis())
-    if n_params > 1:
+    if n_params > 1 and not is_multi_objective:
         analyses_to_run.append(TestOfNoEffectAnalysis())
 
     experiment_has_choice_params = any([isinstance(exp.parameters[param], ChoiceParameter) for param in exp.parameters])
     for metric in exp.metrics:
         analyses_to_run.append(ParallelCoordinatesPlot(metric_name=metric))
         analyses_to_run.append(ProgressionPlot(metric_name=metric))
-        if n_params > 1 and has_model:
+        # TopSurfaces/Sensitivity use subset_output which fails on multi-output GPs
+        if n_params > 1 and has_model and not is_multi_objective:
             analyses_to_run.append(TopSurfacesAnalysis(metric_name=metric))
         if experiment_has_choice_params and is_multi_objective and has_model and \
                 metric in [m.metric_names[0] for m in exp.optimization_config.objective.objectives]:
             analyses_to_run.append(MarginalEffectsPlot(metric_name=metric))
-    if n_params > 1 and has_model:
+    if n_params > 1 and has_model and not is_multi_objective:
         for metric in exp.metrics:
             analyses_to_run.append(SensitivityAnalysisPlot(metric_name=metric, top_k=10))
 
@@ -84,7 +85,13 @@ def compute_analysis_cards(cfg: DictConfig, client: Client | None, open_html=Fal
                 show_pareto_frontier=True,
                 title=f"{metric_pair[0]} vs. {metric_pair[1]}"
             ))
+    # Suppress Ax's internal ERROR logs for analyses that fail gracefully
+    import logging as _logging
+    _ax_analysis_logger = _logging.getLogger("ax.analysis.analysis")
+    _prev_level = _ax_analysis_logger.level
+    _ax_analysis_logger.setLevel(_logging.CRITICAL)
     cards = client.compute_analyses(display=False, analyses=analyses_to_run)
+    _ax_analysis_logger.setLevel(_prev_level)
     for card in cards:
         if "Marginal Effects" in card.title:
             metric_in_card = next(metric for metric in exp.metrics if metric in card._repr_html_())

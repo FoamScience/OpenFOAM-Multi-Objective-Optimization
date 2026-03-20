@@ -653,13 +653,36 @@ class StoreOptions(FoamBOBaseModel):
         if not client:
             raise ValueError(f"read_from entry must be either 'nowhere', 'json', or 'sqlite'")
         return client
+    # Attached foamBO config to embed in the JSON state file
+    _foambo_config: dict | None = None
+
     def save(self, client: Client, cards: Iterable[AnalysisCardBase] | None = None):
+        filepath = f"artifacts/{get_experiment_name()}_client_state.json"
         if self.save_to == "json":
-            client.save_to_json_file(filepath=f"artifacts/{get_experiment_name()}_client_state.json")
+            client.save_to_json_file(filepath=filepath)
+            # Embed the foamBO config inside the JSON state
+            if self._foambo_config is not None:
+                import json
+                with open(filepath, "r") as f:
+                    state = json.load(f)
+                state["foambo_config"] = self._foambo_config
+                with open(filepath, "w") as f:
+                    json.dump(state, f)
         client._maybe_save_experiment_and_generation_strategy(client._experiment, client._generation_strategy)
         if cards:
             for card in cards:
                 client._save_analysis_card_to_db_if_possible(experiment=client._experiment, analysis_card=card)
+
+    @staticmethod
+    def load_foambo_config(name: str, artifacts: str = "./artifacts") -> dict | None:
+        """Read the embedded foamBO config from a saved JSON state file."""
+        import json, os
+        filepath = os.path.join(artifacts, f"{name}_client_state.json")
+        if not os.path.isfile(filepath):
+            return None
+        with open(filepath) as f:
+            state = json.load(f)
+        return state.get("foambo_config")
 
 
 class ExistingTrialsOptions(FoamBOBaseModel):

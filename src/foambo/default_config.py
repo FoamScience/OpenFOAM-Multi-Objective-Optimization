@@ -666,14 +666,15 @@ def get_config_docs() -> Dict[str, Any]:
             - `.minimize(name, command=... | fn=...)` / `.maximize(...)` — add an objective
             - `.track(name, command=... | fn=...)` — tracking metric (for early stopping)
             - `.substitute(file, param=path)` — map params to OpenFOAM fields
+            - `.kernel(cls)` — custom GP kernel (gpytorch)
+            - `.transforms(exclude=[...])` — control Ax transform pipeline
             - `.stop(max_trials, improvement_bar)` — global stopping
             - `.early_stop(type, ...)` — trial-level early stopping
             - `.depend(name, source, command)` — trial-to-trial dependencies
-            - `.visualizer(sensitivity_fn=...)` — configure visualization callback
-            - `.show()` — launch the web UI
             - `.preflight(dry_run=True)` — validate config before running
             - `.run(parallelism, ...)` — execute and return the Ax Client
-            - `.build()` — return a `FoamBOConfig` without running
+            - `FoamBO.load(name)` — load a saved experiment for analysis
+            - `FoamBO.cross_validate(client)` — leave-one-out CV on the surrogate
             """,
     }
 
@@ -774,22 +775,26 @@ def get_config_docs() -> Dict[str, Any]:
 
     harvested["python.loading_client_state"] = {
         "category": "Python snippet",
-        "content": f"""
-            You can load an [Ax](https://ax.dev) client for your experiment with:
+        "content": """
+            Load a saved experiment for analysis, predictions, or visualization:
             ```python
-            from foambo.common import set_experiment_name
-            from foambo.orchestrate import StoreOptions
-            set_experiment_name("MyExperiment")
-            store = StoreOptions.model_validate({{"save_to": "json", "read_from": "json", "backend_options": {{}}}})
-            client = store.load()
+            from foambo import FoamBO
+
+            result = FoamBO.load("MyExperiment")
+            predictions = result.predict([{"x": 10}])
+            cv = result.cross_validate()
+            result.show()  # launch visualizer
             ```
+
+            The underlying Ax Client is available as ``result.client`` for
+            advanced use (e.g. ``result.client.get_pareto_frontier()``).
             """,
     }
 
     harvested["python.resume_from_library"] = {
         "category": "Python snippet",
         "content": """
-            Resume a previously saved experiment from Python:
+            Resume a previously saved experiment and continue optimization:
 
             ```python
             from foambo import FoamBO
@@ -803,6 +808,13 @@ def get_config_docs() -> Dict[str, Any]:
                 .resume()              # load from saved JSON state
                 .run(parallelism=4)
             )
+            ```
+
+            For read-only access (predictions, visualization) without
+            re-specifying the config, use ``FoamBO.load()`` instead:
+            ```python
+            result = FoamBO.load("MyExperiment")
+            result.show()
             ```
             """,
     }

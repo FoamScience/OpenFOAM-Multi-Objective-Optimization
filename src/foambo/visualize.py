@@ -741,6 +741,7 @@ def visualizer_ui(cfg: DictConfig, host: str = "127.0.0.1", port: int = 8099, op
     orch_dict["early_stopping_strategy"] = None
     state.orch_opts = ConfigOrchestratorOptions.model_validate(orch_dict)
     state.opt_opts = OptimizationOptions.model_validate(dict(cfg["optimization"]))
+
     store_cfg = StoreOptions.model_validate(dict(cfg["store"]))
     state.client = store_cfg.load()
 
