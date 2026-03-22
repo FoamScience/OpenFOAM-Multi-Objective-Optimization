@@ -165,8 +165,127 @@ def optimize(cfg):
     data_attacher = ExistingTrialsOptions.model_validate(dict(raw_cfg["existing_trials"]))
     data_attacher.load_data(client)
 
+    _dim_reduction_done = False
+    _dim_reduction_attempts = 0
+
+    def _maybe_reduce_dimensions():
+        nonlocal _dim_reduction_done, _dim_reduction_attempts
+        if _dim_reduction_done:
+            return
+        dr = orch_cfg.dimensionality_reduction
+        if not dr.enabled:
+            return
+        exp = client._experiment
+        from ax.core.base_trial import TrialStatus as AxTrialStatus
+        n_completed = sum(1 for t in exp.trials.values() if t.status == AxTrialStatus.COMPLETED)
+        if n_completed < dr.after_trials:
+            return
+        gs = client._generation_strategy
+        if gs is None or gs.adapter is None:
+            return
+
+        try:
+            import torch
+            import numpy as _np
+            from ax.utils.sensitivity.sobol_measures import SobolSensitivityGPMean
+            from ax.adapter.cross_validation import cross_validate as ax_cv
+
+            # Check model fit quality via cross-validation before trusting Sobol
+            try:
+                cv_results = ax_cv(adapter=gs.adapter)
+                cv_errors = []
+                for r in cv_results:
+                    for mname, obs_mean in r.observed.data.means_dict.items():
+                        pred_mean = r.predicted.means_dict.get(mname, obs_mean)
+                        cv_errors.append(abs(obs_mean - pred_mean))
+                if cv_errors:
+                    obs_range = max(abs(e) for e in cv_errors)
+                    mean_cv_error = _np.mean(cv_errors)
+                    # If mean CV error > 50% of error range, model fit is poor
+                    if obs_range > 0 and mean_cv_error / obs_range > 0.5:
+                        log.debug(f"Dimensionality reduction deferred — model fit too poor "
+                                  f"(CV error ratio: {mean_cv_error / obs_range:.2f})")
+                        return
+            except Exception:
+                pass  # CV failed — proceed with Sobol anyway
+
+            surr = gs.adapter.generator.surrogate
+            model = surr.model
+            # Build bounds tensor from search space (normalized [0,1] by Ax)
+            param_names = [p for p in exp.search_space.parameters
+                           if hasattr(exp.search_space.parameters[p], 'lower')]
+            n_params = len(param_names)
+            bounds = torch.zeros(2, n_params, dtype=torch.float64)
+            bounds[1] = 1.0  # model operates in normalized space
+            sobol = SobolSensitivityGPMean(model=model, bounds=bounds, num_mc_samples=1000)
+            first_order = sobol.first_order_indices()  # shape: (n_params,) aggregated across outputs
+            # Map to param names
+            sensitivities = {"_aggregated": {
+                pname: float(first_order[i].abs()) for i, pname in enumerate(param_names)
+            }}
+        except Exception as e:
+            _dim_reduction_attempts += 1
+            if _dim_reduction_attempts >= 3:
+                log.warning(f"Dimensionality reduction disabled after 3 failed attempts: {e}")
+                _dim_reduction_done = True
+            else:
+                log.debug(f"Dimensionality reduction attempt {_dim_reduction_attempts} failed: {e}")
+            return
+
+        # Aggregate importance across metrics (max importance across all objectives)
+        param_names = list(exp.search_space.parameters.keys())
+        importance = {}
+        for pname in param_names:
+            max_imp = 0.0
+            for metric_sens in sensitivities.values():
+                max_imp = max(max_imp, abs(metric_sens.get(pname, 0.0)))
+            importance[pname] = max_imp
+
+        # Sort by importance, find parameters to fix
+        sorted_params = sorted(importance.items(), key=lambda x: x[1])
+        max_fixable = min(int(len(param_names) * dr.max_fix_fraction), len(param_names) - 1)
+        to_fix = [(name, imp) for name, imp in sorted_params if imp < dr.min_importance]
+        to_fix = to_fix[:max_fixable]
+
+        if not to_fix:
+            log.info("Dimensionality reduction: all parameters are above the importance threshold")
+            _dim_reduction_done = True
+            return
+
+        # Determine fix values
+        if dr.fix_at == "best":
+            try:
+                best_params, _, _, _ = client.get_best_parameterization(use_model_predictions=False)
+            except Exception:
+                best_params = {p: exp.search_space.parameters[p].lower +
+                               (exp.search_space.parameters[p].upper - exp.search_space.parameters[p].lower) / 2
+                               for p in param_names if hasattr(exp.search_space.parameters[p], 'lower')}
+
+        from ax.core.parameter import FixedParameter
+        for pname, imp in to_fix:
+            param = exp.search_space.parameters[pname]
+            if dr.fix_at == "best":
+                fix_val = best_params.get(pname)
+            else:  # center
+                if hasattr(param, 'lower') and hasattr(param, 'upper'):
+                    fix_val = (param.lower + param.upper) / 2
+                elif hasattr(param, 'values'):
+                    fix_val = param.values[0]
+                else:
+                    continue
+            if fix_val is None:
+                continue
+            fixed = FixedParameter(name=pname, parameter_type=param.parameter_type, value=fix_val)
+            exp.search_space.update_parameter(fixed)
+            log.info(f"Dimensionality reduction: fixed '{pname}' = {fix_val} (importance={imp:.4f})")
+
+        log.info(f"Dimensionality reduction: {len(to_fix)} parameter(s) fixed, "
+                 f"{len(param_names) - len(to_fix)} remaining active")
+        _dim_reduction_done = True
+
     def callback(sched: Orchestrator):
         store_cfg.save(client)
+        _maybe_reduce_dimensions()
         streaming_metric(client, raw_cfg["optimization"])
         # Update runner's trial registry for dependency resolution
         runner = client._experiment.runner

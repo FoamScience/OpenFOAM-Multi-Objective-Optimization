@@ -670,6 +670,7 @@ def get_config_docs() -> Dict[str, Any]:
             - `.transforms(exclude=[...])` — control Ax transform pipeline
             - `.stop(max_trials, improvement_bar)` — global stopping
             - `.early_stop(type, ...)` — trial-level early stopping
+            - `.reduce(after_trials, min_importance)` — auto-fix irrelevant parameters
             - `.depend(name, source, command)` — trial-to-trial dependencies
             - `.preflight(dry_run=True)` — validate config before running
             - `.run(parallelism, ...)` — execute and return the Ax Client
@@ -770,6 +771,67 @@ def get_config_docs() -> Dict[str, Any]:
             ```
             The analysis HTML reports also include cross-validation plots
             when a BO model has been fitted.
+            """,
+    }
+
+    harvested["python.dimensionality_reduction"] = {
+        "category": "Python snippet",
+        "content": """
+            **Automatic parameter screening (Dakota-style)**
+
+            When the parameter space is large, many parameters may have
+            negligible influence on the objectives. foamBO can detect and
+            fix these mid-optimization using Sobol sensitivity indices.
+
+            **Library API:**
+            ```python
+            FoamBO("Exp")
+                .parameter("x", bounds=[0, 1])
+                .parameter("y", bounds=[0, 1])
+                .parameter("z", bounds=[0, 1])
+                .minimize("metric", fn=my_fn)
+                .reduce(after_trials=15, min_importance=0.05, fix_at="best")
+                .run()
+            ```
+
+            **YAML config:**
+            ```yaml
+            orchestration_settings:
+              dimensionality_reduction:
+                enabled: true
+                after_trials: 15
+                min_importance: 0.05
+                fix_at: best           # or "center"
+                max_fix_fraction: 0.5
+            ```
+
+            **How it works:**
+            1. Optimization runs normally for ``after_trials`` trials
+            2. GP model fit is checked via cross-validation — if the model is
+               too inaccurate, reduction is deferred until the next poll cycle
+            3. Sobol first-order sensitivity indices are computed directly from
+               the BoTorch GP model (works for both single and multi-objective)
+            4. Parameters with index below ``min_importance`` are fixed at
+               their best observed value (or center of bounds)
+            5. At most ``max_fix_fraction`` of parameters are fixed, and at
+               least one parameter always remains active
+            6. Optimization continues in the reduced search space
+
+            **Settings:**
+            - ``after_trials``: must be past the SOBOL init phase (BO model needed)
+            - ``min_importance``: threshold [0, 1]. 0.05 = drop params < 5%% variance
+            - ``fix_at``: ``"best"`` (from best trial) or ``"center"`` (midpoint)
+            - ``max_fix_fraction``: safety cap (default 0.5 = at most half)
+
+            **Safety guards:**
+            - Model fit is validated before trusting Sobol indices — poor GP
+              fit causes the reduction to be deferred, not skipped permanently
+            - If sensitivity analysis fails 3 times, reduction is disabled
+              for the remainder of the run
+            - At least one parameter always remains active
+
+            The reduced state persists across save/load — fixed parameters
+            remain fixed on restart.
             """,
     }
 

@@ -97,6 +97,7 @@ class FoamBO:
         self._dependencies: list[dict] = []
         self._transforms: list[str] | None = None
         self._exclude_transforms: list[str] | None = None
+        self._dim_reduction: dict | None = None
         self._kernel = None  # gpytorch kernel class
         self._likelihood_class = None
         self._likelihood_options = {}
@@ -286,6 +287,39 @@ class FoamBO:
                         percentile_threshold=25, min_progression=5)
         """
         self._early_stop = kwargs
+        return self
+
+    def reduce(self, after_trials: int = 10, min_importance: float = 0.05,
+               fix_at: str = "best", max_fix_fraction: float = 0.5) -> FoamBO:
+        """Enable automatic dimensionality reduction via Sobol sensitivity screening.
+
+        After ``after_trials`` completed trials, parameters contributing less
+        than ``min_importance`` of the total variance are fixed at their best
+        (or center) value and removed from the search space.
+
+        Args:
+            after_trials: When to run the screening (must be past the SOBOL phase).
+            min_importance: Sobol index threshold — params below this are fixed.
+            fix_at: ``"best"`` (from best trial) or ``"center"`` (midpoint of bounds).
+            max_fix_fraction: Never fix more than this fraction of parameters.
+
+        Example::
+
+            FoamBO("Exp")
+                .parameter("x", bounds=[0, 1])
+                .parameter("y", bounds=[0, 1])
+                .parameter("z", bounds=[0, 1])
+                .minimize("metric", fn=my_fn)
+                .reduce(after_trials=15, min_importance=0.05)
+                .run()
+        """
+        self._dim_reduction = {
+            "enabled": True,
+            "after_trials": after_trials,
+            "min_importance": min_importance,
+            "fix_at": fix_at,
+            "max_fix_fraction": max_fix_fraction,
+        }
         return self
 
     def transforms(self, only: list[str] | None = None,
@@ -650,6 +684,8 @@ class FoamBO:
         }
         if self._ttl is not None:
             orch["ttl_seconds_for_trials"] = self._ttl
+        if self._dim_reduction is not None:
+            orch["dimensionality_reduction"] = self._dim_reduction
 
         return {
             "experiment": {

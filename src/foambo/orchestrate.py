@@ -46,6 +46,29 @@ EARLY_STOPPER_MAP = {
 }
 
 
+class DimensionalityReductionOptions(FoamBOBaseModel):
+    """Automatic parameter screening based on Sobol sensitivity analysis."""
+    enabled: bool = Field(default=False, description="Enable automatic dimensionality reduction")
+    after_trials: int = Field(default=10, description=(
+        "Run sensitivity analysis after this many completed trials. "
+        "Must be enough for the BO model to be fitted (past the SOBOL phase)."
+    ))
+    min_importance: float = Field(default=0.05, description=(
+        "Parameters with first-order Sobol index below this threshold are fixed. "
+        "Range [0, 1]. Example: 0.05 means parameters contributing less than 5%% of variance are dropped."
+    ))
+    fix_at: Literal["best", "center"] = Field(default="best", description=(
+        "How to choose the fixed value for dropped parameters. "
+        "'best' uses the value from the best trial so far. "
+        "'center' uses the midpoint of the parameter bounds."
+    ))
+    max_fix_fraction: float = Field(default=0.5, description=(
+        "Never fix more than this fraction of total parameters. "
+        "At least one parameter always remains active. "
+        "Example: 0.5 means at most half the parameters can be fixed."
+    ))
+
+
 class ConfigOrchestratorOptions(FoamBOBaseModel):
     """Controls for timeouts, poll times, early-stopping and convergence criteria."""
     max_trials: int = Field(description="Maximum number of trials to run, baseline included", examples=[20])
@@ -114,6 +137,17 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
     process_reap_timeout: int = Field(default=5, description=(
         "Timeout in seconds to wait for a killed process to exit before giving up."
     ))
+    dimensionality_reduction: DimensionalityReductionOptions = Field(
+        default_factory=lambda: DimensionalityReductionOptions(enabled=False),
+        description="Automatic parameter fixing based on Sobol sensitivity analysis after an exploration phase"
+    )
+
+    @field_validator("dimensionality_reduction", mode="before")
+    @classmethod
+    def parse_dim_reduction(cls, v):
+        if isinstance(v, dict | DictConfig):
+            return DimensionalityReductionOptions.model_validate(dict(v))
+        return v
 
     @field_validator("global_stopping_strategy", mode="before")
     @classmethod
@@ -150,6 +184,12 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
                 _resolve(strategy.right)
             return strategy
         _resolve(self.early_stopping_strategy)
+        return self
+
+    @model_validator(mode="after")
+    def unlock_search_space_for_dim_reduction(self):
+        if self.dimensionality_reduction.enabled:
+            object.__setattr__(self, 'immutable_search_space', False)
         return self
 
     def to_scheduler_options(self) -> OrchestratorOptions:
