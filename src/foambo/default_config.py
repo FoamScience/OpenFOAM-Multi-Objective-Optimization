@@ -761,16 +761,9 @@ def get_config_docs() -> Dict[str, Any]:
                       f"predicted={row['predicted_mean']:.3f} error={err:.3f}")
             ```
             Large errors in specific regions indicate where the surrogate
-            needs more samples. To improve coverage, add space-filling trials:
-            ```python
-            client = (
-                FoamBO("Exp").minimize("F1", fn=my_fn)
-                .generation(method="random_search")  # pure SOBOL
-                .stop(max_trials=20).resume().run()
-            )
-            ```
-            The analysis HTML reports also include cross-validation plots
-            when a BO model has been fitted.
+            needs more samples. Re-run with more trials or a space-filling
+            strategy to improve coverage. The analysis HTML reports also
+            include cross-validation plots when a BO model has been fitted.
             """,
     }
 
@@ -856,27 +849,22 @@ def get_config_docs() -> Dict[str, Any]:
     harvested["python.resume_from_library"] = {
         "category": "Python snippet",
         "content": """
-            Resume a previously saved experiment and continue optimization:
+            Load a saved experiment for analysis, visualization, or predictions:
 
             ```python
             from foambo import FoamBO
 
-            client = (
-                FoamBO("MyExperiment", case="./case")
-                .parameter("x", bounds=[0.0, 1.0])
-                .minimize("metric", command="./evaluate.sh")
-                .substitute("/FxDict", x="x")
-                .stop(max_trials=100)
-                .resume()              # load from saved JSON state
-                .run(parallelism=4)
-            )
+            result = FoamBO.load("MyExperiment")
+            result.predict([{"x": 10}])
+            result.cross_validate()
+            result.show()  # launch visualizer
             ```
 
-            For read-only access (predictions, visualization) without
-            re-specifying the config, use ``FoamBO.load()`` instead:
-            ```python
-            result = FoamBO.load("MyExperiment")
-            result.show()
+            To continue optimization with more trials, use the CLI:
+            ```bash
+            uvx foamBO --config MyOpt.yaml \\
+                ++store.read_from=json \\
+                ++orchestration_settings.max_trials=200
             ```
             """,
     }

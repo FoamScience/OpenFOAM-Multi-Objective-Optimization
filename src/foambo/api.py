@@ -415,11 +415,6 @@ class FoamBO:
         self._baseline = params
         return self
 
-    def resume(self, backend: str = "json") -> FoamBO:
-        """Resume from a previously saved experiment state."""
-        self._read_from = backend
-        return self
-
     def generation(self, method: str = "fast", **kwargs) -> FoamBO:
         """Configure trial generation strategy."""
         self._trial_gen = {"method": method, **kwargs}
