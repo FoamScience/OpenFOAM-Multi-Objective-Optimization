@@ -27,6 +27,7 @@ def optimize(cfg):
     from .common import VERSION, set_experiment_name, get_experiment_name
     from .metrics import streaming_metric
     from .analysis import compute_analysis_cards, plot_pareto_frontier
+    from .feature_report import FeatureReporter
     from .orchestrate import (
         ExistingTrialsOptions, ExperimentOptions, OptimizationOptions,
         ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
@@ -167,6 +168,19 @@ def optimize(cfg):
 
     _dim_reduction_done = False
     _dim_reduction_attempts = 0
+
+    _reporter = FeatureReporter(
+        raw_cfg,
+        raw_cfg["optimization"]["case_runner"]["artifacts_folder"],
+        raw_cfg["experiment"]["name"],
+    )
+    # Restore reporter state from a previous run (resume support)
+    _saved_reporter = StoreOptions.load_feature_reporter_state(
+        raw_cfg["experiment"]["name"],
+        raw_cfg["optimization"]["case_runner"]["artifacts_folder"],
+    )
+    if _saved_reporter:
+        _reporter.restore(_saved_reporter)
 
     def _maybe_reduce_dimensions():
         nonlocal _dim_reduction_done, _dim_reduction_attempts
@@ -317,6 +331,8 @@ def optimize(cfg):
             f"{raw_cfg["optimization"]["case_runner"]["artifacts_folder"]}/{raw_cfg["experiment"]["name"]}_report.csv",
             index=False
         )
+        _reporter.update(client)
+        store_cfg._feature_reporter_state = _reporter.to_dict()
 
     if not has_experiment and baseline_cfg.parameters:
         log.info("=============== Running Baseline ================")
@@ -393,7 +409,11 @@ def optimize(cfg):
 
     log.info("=================================================")
     cards = compute_analysis_cards(raw_cfg, client, open_html=False)
+
+    _reporter.update(client)
+    store_cfg._feature_reporter_state = _reporter.to_dict()
     store_cfg.save(client, cards)
+    log.info(f"Feature report: {_reporter.path}")
 
     log.info("==================== End ========================")
     return client

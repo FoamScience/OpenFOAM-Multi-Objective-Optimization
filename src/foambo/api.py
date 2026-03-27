@@ -391,20 +391,37 @@ class FoamBO:
     # --- Trial Dependencies ---
 
     def depend(self, name: str, source: str = "best", command: str | list[str] = "",
-               fallback: str = "skip", enabled: bool = True) -> FoamBO:
+               phase: str = "immediate", fallback: str = "skip",
+               enabled: bool = True) -> FoamBO:
         """Add a trial dependency.
 
         Args:
             name: Label for this dependency.
             source: Selection strategy (``"best"``, ``"nearest"``, ``"latest"``, ``"baseline"``).
-            command: Shell command with ``$SOURCE_TRIAL`` / ``$TARGET_TRIAL`` substitution.
+            command: Shell command with ``$FOAMBO_SOURCE_TRIAL`` / ``$FOAMBO_TARGET_TRIAL`` substitution.
+            phase: When the action runs in the trial lifecycle:
+
+                * ``"immediate"`` -- before the runner starts (default).
+                * ``"pre_init"`` / ``"pre_mesh"`` / ``"pre_solve"`` / ``"post_solve"``
+                  -- deferred to a hook script the runner invokes via
+                  ``$FOAMBO_PRE_INIT``, ``$FOAMBO_PRE_MESH``, etc.
+
             fallback: ``"skip"`` or ``"error"`` when no source trial found.
+
+        Example Allrun using hooks::
+
+            #!/bin/bash
+            $FOAMBO_PRE_INIT
+            blockMesh
+            $FOAMBO_PRE_SOLVE   # e.g. mapFields from source trial
+            simpleFoam
+            $FOAMBO_POST_SOLVE
         """
         self._dependencies.append({
             "name": name,
             "enabled": enabled,
             "source": {"strategy": source, "fallback": fallback},
-            "actions": [{"type": "run_command", "command": command}] if command else [],
+            "actions": [{"type": "run_command", "command": command, "phase": phase}] if command else [],
         })
         return self
 
@@ -753,6 +770,30 @@ class FoamBOClient:
             List of prediction dicts with ``(mean, sem)`` per metric.
         """
         return self.client.predict(parameterizations)
+
+    def feature_report(self) -> str:
+        """Generate a feature usage report for this experiment.
+
+        Analyses which optional features (early stopping, dimensionality
+        reduction, trial dependencies, etc.) were configured, whether they
+        triggered, and what gains they delivered.
+
+        The report is written to ``<artifacts>/<name>_feature_report.txt``.
+
+        Returns:
+            Path to the generated report file.
+        """
+        from .feature_report import FeatureReporter
+        from omegaconf import DictConfig
+
+        if self.saved_cfg is None:
+            raise RuntimeError(
+                "No saved config found — cannot generate feature report without config context."
+            )
+        cfg = DictConfig(dict(self.saved_cfg))
+        reporter = FeatureReporter(cfg, self.artifacts, self.name)
+        reporter.update(self.client)
+        return reporter.path
 
     def show(self, sensitivity_fn=None,
              host: str = "127.0.0.1", port: int = 8099, open_browser: bool = True):

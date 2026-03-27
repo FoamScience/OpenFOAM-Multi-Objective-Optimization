@@ -115,7 +115,10 @@ def process_input_command(command: str | List[str] | None, case: FoamCase):
         command = list(command.split())
     case_path_str = str(case.path)
     case_name_str = str(case.name)
-    return [c.replace("$CASE_PATH", case_path_str).replace("$CASE_NAME", case_name_str) for c in command]
+    return [c
+            .replace("$FOAMBO_CASE_PATH", case_path_str).replace("$CASE_PATH", case_path_str)
+            .replace("$FOAMBO_CASE_NAME", case_name_str).replace("$CASE_NAME", case_name_str)
+            for c in command]
 
 def assign_foam_path(foamfile, dotted_path, new_value):
     """

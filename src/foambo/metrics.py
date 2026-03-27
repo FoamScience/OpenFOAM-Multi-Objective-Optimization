@@ -65,10 +65,11 @@ class FoamJob(FoamBOBaseModel):
             cls,
             parameters: Dict[str, Union[str, float, int, bool]],
             case_path: str,
-            cfg: DictConfig
+            cfg: DictConfig,
+            hook_env: Dict[str, str] | None = None,
     ):
         """
-            Run shell command on local machine; asynchronously; and assume the job 
+            Run shell command on local machine; asynchronously; and assume the job
             status queries and early stopping will be handled with a job ID
         """
         job_id = -1
@@ -78,17 +79,23 @@ class FoamJob(FoamBOBaseModel):
             "cwd": case_path,
             "start_time": time.time(),
         }
+        # Build subprocess environment with all FOAMBO_* variables
+        run_env = os.environ.copy()
+        run_env["FOAMBO_CASE_PATH"] = case_path
+        run_env["FOAMBO_CASE_NAME"] = os.path.basename(case_path)
+        if hook_env:
+            run_env.update(hook_env)
         cmd = process_input_command(cfg.runner, FoamCase(case_path))
         if cmd:
             cmd = list(cmd)
             if cfg.log_runner == True:
                 log_path = os.path.join(case_path, "log.runner")
                 log_file = open(log_path, "w")
-                proc = sb.Popen(cmd, cwd=case_path, stdout=log_file, stderr=sb.STDOUT, text=True, start_new_session=True)
+                proc = sb.Popen(cmd, cwd=case_path, env=run_env, stdout=log_file, stderr=sb.STDOUT, text=True, start_new_session=True)
                 # Track the file handle on the proc for cleanup when process completes
                 proc._log_file = log_file
             else:
-                proc = sb.Popen(cmd, cwd=case_path, stdout=sb.DEVNULL, stderr=sb.PIPE, text=True, start_new_session=True)
+                proc = sb.Popen(cmd, cwd=case_path, env=run_env, stdout=sb.DEVNULL, stderr=sb.PIPE, text=True, start_new_session=True)
                 def stream_stderr(pipe):
                     for line in pipe:
                         log.error(f"[{proc.pid}] {line.rstrip()}")
@@ -133,14 +140,15 @@ class FoamJob(FoamBOBaseModel):
         cls,
         parameters: Dict[str, Union[str, float, int, bool]],
         case_path: str,
-        cfg: DictConfig
+        cfg: DictConfig,
+        hook_env: Dict[str, str] | None = None,
     ):
         """
             Runs a local command, but assumes the actual job is triggered remotely,
             so that Job status queries and early stopping get carried out properly
             without relying on a job ID
         """
-        return cls.local_case_run(parameters=parameters, case_path=case_path, cfg=cfg)
+        return cls.local_case_run(parameters=parameters, case_path=case_path, cfg=cfg, hook_env=hook_env)
 
     @classmethod
     def local_status_query(cls, job_id: int, cfg: DictConfig, metadata: Mapping[str, Any]):
@@ -276,15 +284,15 @@ class LocalJobMetric(FoamBOBaseModel):
     command: str | List[str] | None = Field(default=None, description=(
         "Shell command to evaluate the metric at trial completion. "
         "Runs as a blocking op in the trial's CWD. Must print a `<scalar>` or `(<mean>, <sem>)` to stdout. "
-        "Supports `$CASE_NAME` and `$CASE_PATH` substitution. "
+        "Supports `$FOAMBO_CASE_NAME` and `$FOAMBO_CASE_PATH` substitution. "
         "Accepts a string (`'echo 0'`) or a list (`['echo', '0']`). "
         "Optional when using Python callables via the library API."
     ), examples=[["echo", "0"]])
     progress: str | List[str] | None = Field(default=None, description=(
         "Optional shell command to evaluate the metric while the trial is still running. "
-        "Runs each poll cycle. Supports `$STEP` substitution with the current progression step. "
+        "Runs each poll cycle. Supports `$FOAMBO_STEP` substitution with the current progression step. "
         "Accepts a string or a list."
-    ), examples=[["echo", "$STEP"]])
+    ), examples=[["echo", "$FOAMBO_STEP"]])
     lower_is_better: bool | None = Field(default=None, description=(
         "Required only if the metric is used in early stopping but is not an objective. "
         "Defines the direction for 'worse' comparison in early stopping strategies."
@@ -397,10 +405,13 @@ def streaming_metric(client: Client, opt_cfg: Dict):
         {
             **metric,
             "progress": (
-                metric["progress"].replace("$STEP", str(trial_progression_step[trial_idx][metric["name"]]))
+                metric["progress"]
+                    .replace("$FOAMBO_STEP", str(trial_progression_step[trial_idx][metric["name"]]))
+                    .replace("$STEP", str(trial_progression_step[trial_idx][metric["name"]]))
                 if "progress" in metric and isinstance(metric["progress"], str)
                 else [
-                    p.replace("$STEP", str(trial_progression_step[trial_idx][metric["name"]]))
+                    p.replace("$FOAMBO_STEP", str(trial_progression_step[trial_idx][metric["name"]]))
+                     .replace("$STEP", str(trial_progression_step[trial_idx][metric["name"]]))
                     if isinstance(p, str) else p
                     for p in metric["progress"]
                 ]
@@ -564,29 +575,73 @@ class FoamJobRunner(IRunner):
                 return None
         return None
 
+    # Well-known hook phases and their environment variable names
+    HOOK_PHASES = ("pre_init", "pre_mesh", "pre_solve", "post_solve")
+
+    def _substitute_cmd(self, cmd: str | List[str], source_path: str, target_path: str) -> str:
+        """Apply $FOAMBO_SOURCE_TRIAL / $FOAMBO_TARGET_TRIAL substitution, return a single shell string."""
+        if isinstance(cmd, list):
+            cmd = " ".join(cmd)
+        return (cmd
+                .replace("$FOAMBO_SOURCE_TRIAL", source_path).replace("$SOURCE_TRIAL", source_path)
+                .replace("$FOAMBO_TARGET_TRIAL", target_path).replace("$TARGET_TRIAL", target_path))
+
     def _execute_dependency_actions(self, dep, source_path: str, target_path: str) -> List[str]:
-        """Execute a dependency's actions, return list of action types applied."""
+        """Execute a dependency's immediate actions, return list of action types applied."""
         applied = []
         for action in dep.actions:
+            if action.phase != "immediate":
+                continue
             if action.type == "run_command":
-                cmd = action.command
-                if isinstance(cmd, str):
-                    cmd = cmd.replace("$SOURCE_TRIAL", source_path).replace("$TARGET_TRIAL", target_path)
-                    cmd = cmd.split()
-                else:
-                    cmd = [c.replace("$SOURCE_TRIAL", source_path).replace("$TARGET_TRIAL", target_path)
-                           for c in cmd]
+                cmd = self._substitute_cmd(action.command, source_path, target_path)
                 try:
-                    sb.check_call(cmd, cwd=target_path, timeout=DEPENDENCY_ACTION_TIMEOUT)
+                    sb.check_call(cmd, shell=True, cwd=target_path, timeout=DEPENDENCY_ACTION_TIMEOUT)
                     applied.append("run_command")
                 except Exception as e:
                     log.warning(f"Dependency '{dep.name}' action failed: {e}")
         return applied
 
+    def _write_hook_scripts(self, target_path: str, phase_commands: Dict[str, List[str]]) -> Dict[str, str]:
+        """Write per-phase hook scripts into the trial case directory.
+
+        Returns a mapping of ``FOAMBO_<PHASE>`` env-var names to script paths.
+        Phases with no commands get a no-op script so Allrun scripts never fail.
+        """
+        hook_env: Dict[str, str] = {}
+        for phase in self.HOOK_PHASES:
+            env_name = f"FOAMBO_{phase.upper()}"
+            script_path = os.path.join(target_path, f".foambo_{phase}.sh")
+            cmds = phase_commands.get(phase, [])
+            with open(script_path, "w") as f:
+                f.write("#!/bin/bash\n")
+                f.write(f"# foamBO hook: {phase}\n")
+                f.write("set -e\n")
+                if cmds:
+                    for cmd in cmds:
+                        f.write(f"{cmd}\n")
+                else:
+                    f.write("# (no actions for this phase)\n")
+                    f.write("true\n")
+            os.chmod(script_path, 0o755)
+            hook_env[env_name] = script_path
+        return hook_env
+
     def _resolve_dependencies(self, trial_index: int, target_path: str,
                               parameterization: dict) -> Dict[str, Any]:
-        """Resolve and execute all enabled trial dependencies. Returns metadata dict."""
-        dep_meta = {}
+        """Resolve all enabled trial dependencies.
+
+        * ``immediate`` actions execute inline (before the runner starts).
+        * Phased actions (``pre_mesh``, ``post_mesh``, ``pre_solve``) are
+          written to hook scripts inside the trial case directory and exposed
+          to the runner via ``$FOAMBO_PRE_MESH``, ``$FOAMBO_POST_MESH``,
+          ``$FOAMBO_PRE_SOLVE`` environment variables.
+
+        Returns a metadata dict with per-dependency info and a ``hook_env``
+        mapping for the runner subprocess.
+        """
+        dep_meta: Dict[str, Any] = {}
+        phase_commands: Dict[str, List[str]] = {}
+
         for dep in self.trial_dependencies:
             if not dep.enabled:
                 continue
@@ -597,12 +652,30 @@ class FoamJobRunner(IRunner):
                         f"Dependency '{dep.name}': no source trial found and fallback is 'error'")
                 log.debug(f"Dependency '{dep.name}': no source trial found, skipping")
                 continue
+
             log.info(f"Trial {trial_index}: resolving dependency '{dep.name}' from {source_path}")
+
+            # Execute immediate actions now
             applied = self._execute_dependency_actions(dep, source_path, target_path)
+
+            # Collect phased actions for hook scripts
+            phased = []
+            for action in dep.actions:
+                if action.phase != "immediate" and action.type == "run_command":
+                    resolved_cmd = self._substitute_cmd(action.command, source_path, target_path)
+                    phase_commands.setdefault(action.phase, []).append(resolved_cmd)
+                    phased.append(action.phase)
+
             dep_meta[dep.name] = {
                 "source_case_path": source_path,
                 "actions_applied": applied,
+                "phased_actions": phased,
             }
+
+        # Always write hook scripts (no-op when empty) so env vars are always set
+        hook_env = self._write_hook_scripts(target_path, phase_commands)
+        dep_meta["_hook_env"] = hook_env
+
         return dep_meta
 
     def run_trial(self, trial_index: int, parameterization: TParameterization) -> dict[str, Any]:
@@ -611,6 +684,8 @@ class FoamJobRunner(IRunner):
         case_path = str(case_data['case'].path)
         # Resolve trial dependencies before dispatching
         dep_meta = self._resolve_dependencies(trial_index, case_path, dict(parameterization))
+        # Extract hook env vars (always present, may be no-ops)
+        hook_env = dep_meta.pop("_hook_env", {})
         # If all metrics are Python callables and no runner is set, skip subprocess dispatch
         all_metrics_are_fns = all(m in _fn_registry for m in self._metric_names) if self._metric_names else False
         has_runner = self.cfg['template_case'].get('runner') not in (None, "", "null", "None")
@@ -620,7 +695,7 @@ class FoamJobRunner(IRunner):
                     "parameters": dict(parameterization)}
         else:
             (job_id, job) = self.dispatcher[self.mode](
-                parameterization, case_path, self.cfg['template_case'])
+                parameterization, case_path, self.cfg['template_case'], hook_env=hook_env)
             log.info(f"Dispatched trial {trial_index}: {case_path}")
             meta = {"job_id": job_id, "job": job.model_dump(), "case_path": case_path,
                     "parameters": dict(parameterization)}

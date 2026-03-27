@@ -214,15 +214,60 @@ def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightRes
                              f"not in parameters (may be a constant)")
 
     # --- Dependency commands contain substitution variables ---
+    phased_hooks_used = set()
     for dep in cfg.get("trial_dependencies", []):
         if not dep.get("enabled", True):
             continue
         for action in dep.get("actions", []):
             cmd = action.get("command", "")
             cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
-            if "$SOURCE_TRIAL" not in cmd_str and "$TARGET_TRIAL" not in cmd_str:
+            phase = action.get("phase", "immediate")
+
+            if ("$FOAMBO_SOURCE_TRIAL" not in cmd_str and "$SOURCE_TRIAL" not in cmd_str
+                    and "$FOAMBO_TARGET_TRIAL" not in cmd_str and "$TARGET_TRIAL" not in cmd_str):
                 r.warned(f"Dependency '{dep['name']}' action",
-                         "command has no $SOURCE_TRIAL or $TARGET_TRIAL substitution")
+                         "command has no $FOAMBO_SOURCE_TRIAL or $FOAMBO_TARGET_TRIAL substitution")
+
+            if phase != "immediate":
+                phased_hooks_used.add(phase)
+
+    # --- Runner command references phased hooks ---
+    if phased_hooks_used:
+        runner_cmd = runner_cfg.get("runner", "")
+        runner_str = runner_cmd if isinstance(runner_cmd, str) else " ".join(runner_cmd or [])
+        # Check if runner is a script file that might contain hook references
+        runner_is_script = runner_str and (
+            runner_str.strip().startswith("./") or runner_str.strip().startswith("/")
+            or runner_str.strip().startswith("bash") or runner_str.strip().startswith("sh"))
+        # Try to read the runner script for hook references
+        hook_file_content = ""
+        if runner_is_script:
+            script_path = runner_str.split()[0] if runner_str else ""
+            # Resolve relative to template case
+            for candidate in [script_path,
+                              os.path.join(template, script_path.lstrip("./")) if template else ""]:
+                if candidate and os.path.isfile(candidate):
+                    try:
+                        with open(candidate) as f:
+                            hook_file_content = f.read()
+                    except Exception:
+                        pass
+                    break
+
+        search_text = runner_str + " " + hook_file_content
+        for phase in phased_hooks_used:
+            env_var = f"FOAMBO_{phase.upper()}"
+            if f"${env_var}" in search_text or env_var in search_text:
+                r.passed(f"Hook reference: ${env_var}",
+                         "found in runner command or script")
+            elif hook_file_content:
+                r.warned(f"Hook reference: ${env_var}",
+                         f"dependency uses phase '{phase}' but ${env_var} not found in runner script. "
+                         f"Call ${env_var} in your Allrun to execute the hook")
+            else:
+                r.warned(f"Hook reference: ${env_var}",
+                         f"dependency uses phase '{phase}' — ensure your runner calls ${env_var}. "
+                         f"For non-shell runners, execute the script at .foambo_{phase}.sh in the case directory")
 
     return r
 

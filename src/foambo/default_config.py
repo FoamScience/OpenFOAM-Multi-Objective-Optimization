@@ -208,7 +208,7 @@ def get_default_config() -> Dict[str, Any]:
             "actions": [
                 {
                     "type": "run_command",
-                    "command": "cp -rT $SOURCE_TRIAL/0.5 $TARGET_TRIAL/0",
+                    "command": "cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0",
                 },
             ],
         },
@@ -442,7 +442,7 @@ def get_config_docs() -> Dict[str, Any]:
                   fallback: skip
                 actions:
                   - type: run_command
-                    command: "cp -rT $SOURCE_TRIAL/0.5 $TARGET_TRIAL/0"
+                    command: "cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0"
             ```
 
             Copy mesh from the nearest completed trial:
@@ -454,7 +454,7 @@ def get_config_docs() -> Dict[str, Any]:
                   fallback: skip
                 actions:
                   - type: run_command
-                    command: "cp -rT $SOURCE_TRIAL/constant/polyMesh $TARGET_TRIAL/constant/polyMesh"
+                    command: "cp -rT $FOAMBO_SOURCE_TRIAL/constant/polyMesh $FOAMBO_TARGET_TRIAL/constant/polyMesh"
             ```
 
             Use OpenFOAM's mapFields to interpolate between different meshes:
@@ -466,7 +466,7 @@ def get_config_docs() -> Dict[str, Any]:
                   fallback: skip
                 actions:
                   - type: run_command
-                    command: "mapFields $SOURCE_TRIAL -sourceTime latestTime -targetRegion $TARGET_TRIAL"
+                    command: "mapFields $FOAMBO_SOURCE_TRIAL -sourceTime latestTime -targetRegion $FOAMBO_TARGET_TRIAL"
             ```
 
             Actions run in order after the template case is cloned and parameters are
@@ -625,7 +625,7 @@ def get_config_docs() -> Dict[str, Any]:
                 .early_stop(type="percentile", metric_names=["residuals"],
                             percentile_threshold=25, min_progression=5)
                 .depend("warm_start", source="best",
-                        command="cp -rT $SOURCE_TRIAL/0.5 $TARGET_TRIAL/0")
+                        command="cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0")
                 .run(parallelism=3, poll_interval=10, ttl=600)
             )
             predictions = client.predict([{"x": 10, "y": "A"}])

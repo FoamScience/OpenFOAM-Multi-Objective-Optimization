@@ -545,13 +545,18 @@ class FoamJobRunnerOptions(FoamBOBaseModel):
                                    examples=["./artifacts"])
     variable_substitution: List[VariableSubstOptions] = Field(description="Parameter-to-file-field mappings for value substitution via foamlib")
     file_substitution: List[FileSubstOptions] = Field(description="File replacement rules for choice parameters")
-    runner: str | None = Field(default="", description="Shell command to run the trial (e.g. `./Allrun`). Supports `$CASE_NAME`/`$CASE_PATH`. Empty = no execution",
-                               examples=["./run_on_cluster.sh $CASE_NAME"])
+    runner: str | None = Field(default="", description=(
+        "Shell command to run the trial (e.g. `./Allrun`). "
+        "Supports `$FOAMBO_CASE_NAME`/`$FOAMBO_CASE_PATH` substitution. "
+        "These are also available as environment variables, along with "
+        "`$FOAMBO_PRE_INIT`, `$FOAMBO_PRE_MESH`, `$FOAMBO_PRE_SOLVE`, `$FOAMBO_POST_SOLVE` "
+        "hook scripts from trial dependencies. Empty = no execution"),
+                               examples=["./run_on_cluster.sh $FOAMBO_CASE_NAME"])
     log_runner: bool | None = Field(default=False, description="Write runner stdout to `log.runner` in the trial folder instead of discarding it")
     remote_status_query: str | None = Field(default="", description="Command returning SLURM-like job status (required for mode=remote)",
-                                             examples=["./state_on_cluster.sh $CASE_NAME"])
-    remote_early_stop: str | None = Field(default="", description="Command to kill a remote job (e.g. `scancel --name $CASE_NAME`). Required if early stopping is on",
-                                           examples=["scancel --name $CASE_NAME"])
+                                             examples=["./state_on_cluster.sh $FOAMBO_CASE_NAME"])
+    remote_early_stop: str | None = Field(default="", description="Command to kill a remote job (e.g. `scancel --name $FOAMBO_CASE_NAME`). Required if early stopping is on",
+                                           examples=["scancel --name $FOAMBO_CASE_NAME"])
 
     @field_validator("variable_substitution", mode="before")
     @classmethod
@@ -695,17 +700,24 @@ class StoreOptions(FoamBOBaseModel):
         return client
     # Attached foamBO config to embed in the JSON state file
     _foambo_config: dict | None = None
+    # Feature reporter incremental state (serialized alongside foambo_config)
+    _feature_reporter_state: dict | None = None
 
     def save(self, client: Client, cards: Iterable[AnalysisCardBase] | None = None):
         filepath = f"artifacts/{get_experiment_name()}_client_state.json"
         if self.save_to == "json":
             client.save_to_json_file(filepath=filepath)
-            # Embed the foamBO config inside the JSON state
+            # Embed foamBO extras inside the JSON state
+            extras = {}
             if self._foambo_config is not None:
+                extras["foambo_config"] = self._foambo_config
+            if self._feature_reporter_state is not None:
+                extras["feature_reporter"] = self._feature_reporter_state
+            if extras:
                 import json
                 with open(filepath, "r") as f:
                     state = json.load(f)
-                state["foambo_config"] = self._foambo_config
+                state.update(extras)
                 with open(filepath, "w") as f:
                     json.dump(state, f)
         client._maybe_save_experiment_and_generation_strategy(client._experiment, client._generation_strategy)
@@ -723,6 +735,17 @@ class StoreOptions(FoamBOBaseModel):
         with open(filepath) as f:
             state = json.load(f)
         return state.get("foambo_config")
+
+    @staticmethod
+    def load_feature_reporter_state(name: str, artifacts: str = "./artifacts") -> dict | None:
+        """Read the embedded feature reporter state from a saved JSON state file."""
+        import json, os
+        filepath = os.path.join(artifacts, f"{name}_client_state.json")
+        if not os.path.isfile(filepath):
+            return None
+        with open(filepath) as f:
+            state = json.load(f)
+        return state.get("feature_reporter")
 
 
 class ExistingTrialsOptions(FoamBOBaseModel):
@@ -803,15 +826,30 @@ class TrialSelector(FoamBOBaseModel):
 class TrialAction(FoamBOBaseModel):
     """An action to execute using the resolved source trial."""
     type: Literal["run_command"] = Field(
-        description="Action type. `run_command` executes a shell command with `$SOURCE_TRIAL` and `$TARGET_TRIAL` substitution",
+        description="Action type. `run_command` executes a shell command with `$FOAMBO_SOURCE_TRIAL` and `$FOAMBO_TARGET_TRIAL` substitution",
         examples=["run_command"])
     command: str | List[str] = Field(
         description=(
             "Shell command to execute. Supports substitution variables:\n"
-            "- `$SOURCE_TRIAL`: absolute path to the source trial's case directory\n"
-            "- `$TARGET_TRIAL`: absolute path to the new trial's case directory\n\n"
-            "Example: `cp -rT $SOURCE_TRIAL/0.5 $TARGET_TRIAL/0`"
-        ), examples=["cp -rT $SOURCE_TRIAL/constant/polyMesh $TARGET_TRIAL/constant/polyMesh"])
+            "- `$FOAMBO_SOURCE_TRIAL`: absolute path to the source trial's case directory\n"
+            "- `$FOAMBO_TARGET_TRIAL`: absolute path to the new trial's case directory\n\n"
+            "Example: `cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0`"
+        ), examples=["cp -rT $FOAMBO_SOURCE_TRIAL/constant/polyMesh $FOAMBO_TARGET_TRIAL/constant/polyMesh"])
+    phase: Literal["immediate", "pre_init", "pre_mesh", "pre_solve", "post_solve"] = Field(
+        default="immediate",
+        description=(
+            "When the action executes in the trial lifecycle:\n"
+            "- `immediate`: executed during dependency resolution, before the runner starts (default)\n"
+            "- `pre_init`, `pre_mesh`, `pre_solve`, `post_solve`: deferred to hook scripts "
+            "that the runner can invoke via `$FOAMBO_PRE_INIT`, `$FOAMBO_PRE_MESH`, "
+            "`$FOAMBO_PRE_SOLVE`, `$FOAMBO_POST_SOLVE` environment variables.\n\n"
+            "Example Allrun script:\n"
+            "  $FOAMBO_PRE_INIT    # e.g. copy case structure from source trial\n"
+            "  blockMesh\n"
+            "  $FOAMBO_PRE_SOLVE   # e.g. mapFields from source trial\n"
+            "  simpleFoam\n"
+            "  $FOAMBO_POST_SOLVE  # e.g. post-processing with source comparison"
+        ))
 
 
 class TrialDependency(FoamBOBaseModel):
