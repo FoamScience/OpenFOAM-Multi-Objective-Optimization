@@ -209,6 +209,7 @@ def get_default_config() -> Dict[str, Any]:
                 {
                     "type": "run_command",
                     "command": "cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0",
+                    "phase": "immediate",
                 },
             ],
         },
@@ -431,9 +432,10 @@ def get_config_docs() -> Dict[str, Any]:
             """,
         "trial_dependencies[]": """
             Define trial-to-trial relationships. Each dependency selects a source trial
-            and runs actions before the new trial's solver starts.
+            and runs actions either immediately (before the runner starts) or deferred
+            to a hook phase that the runner invokes at the right moment.
 
-            Warm-start from the best trial's converged fields:
+            Warm-start from the best trial's converged fields (immediate, default):
             ```yaml
             trial_dependencies:
               - name: warm_start
@@ -443,9 +445,10 @@ def get_config_docs() -> Dict[str, Any]:
                 actions:
                   - type: run_command
                     command: "cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0"
+                    phase: immediate  # default — runs before the runner starts
             ```
 
-            Copy mesh from the nearest completed trial:
+            Copy mesh before meshing (deferred to `$FOAMBO_PRE_MESH` hook):
             ```yaml
             trial_dependencies:
               - name: mesh_inherit
@@ -455,9 +458,10 @@ def get_config_docs() -> Dict[str, Any]:
                 actions:
                   - type: run_command
                     command: "cp -rT $FOAMBO_SOURCE_TRIAL/constant/polyMesh $FOAMBO_TARGET_TRIAL/constant/polyMesh"
+                    phase: pre_mesh
             ```
 
-            Use OpenFOAM's mapFields to interpolate between different meshes:
+            Use mapFields after meshing (deferred to `$FOAMBO_PRE_SOLVE` hook):
             ```yaml
             trial_dependencies:
               - name: map_fields
@@ -466,12 +470,43 @@ def get_config_docs() -> Dict[str, Any]:
                   fallback: skip
                 actions:
                   - type: run_command
-                    command: "mapFields $FOAMBO_SOURCE_TRIAL -sourceTime latestTime -targetRegion $FOAMBO_TARGET_TRIAL"
+                    command: "mapFields $FOAMBO_SOURCE_TRIAL -sourceTime latestTime -case $FOAMBO_TARGET_TRIAL"
+                    phase: pre_solve
             ```
 
-            Actions run in order after the template case is cloned and parameters are
-            substituted, but before the runner command executes. The dependency resolution
-            result is recorded in `run_metadata["dependencies"]` for traceability.
+            With the corresponding Allrun script calling the hooks:
+            ```bash
+            #!/bin/bash
+            $FOAMBO_PRE_INIT       # no-op unless configured
+            blockMesh
+            $FOAMBO_PRE_MESH       # no-op unless configured
+            $FOAMBO_PRE_SOLVE      # runs mapFields from source trial
+            simpleFoam
+            $FOAMBO_POST_SOLVE     # no-op unless configured
+            ```
+
+            **Phases and environment variables:**
+            - `immediate` (default): action runs before the runner starts
+            - `pre_init` / `pre_mesh` / `pre_solve` / `post_solve`: action is
+              written to a hook script (`.foambo_<phase>.sh`) in the case directory
+              and exposed via `$FOAMBO_<PHASE>` environment variable
+
+            All hooks default to no-op on the first trial (no source yet).
+
+            **Additional env vars available to the runner:**
+            - `$FOAMBO_CASE_PATH` / `$FOAMBO_CASE_NAME` — trial case directory
+            - `$FOAMBO_SOURCE_TRIAL` — resolved source path (empty on first trial)
+            - `$FOAMBO_TARGET_TRIAL` — current trial path
+
+            **Non-shell runners** (Python, binary) can execute hook scripts directly:
+            ```python
+            import subprocess, os
+            subprocess.run(os.environ["FOAMBO_PRE_SOLVE"])
+            # or: subprocess.run("./.foambo_pre_solve.sh")
+            ```
+
+            The dependency resolution result is recorded in
+            `run_metadata["dependencies"]` for traceability.
             """,
         "trial_generation.generation_nodes[].generator_specs[].transforms": """
             Ax applies a chain of data transforms before fitting the GP surrogate.
@@ -626,6 +661,9 @@ def get_config_docs() -> Dict[str, Any]:
                             percentile_threshold=25, min_progression=5)
                 .depend("warm_start", source="best",
                         command="cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0")
+                .depend("map_fields", source="nearest",
+                        command="mapFields $FOAMBO_SOURCE_TRIAL -case $FOAMBO_TARGET_TRIAL -sourceTime latestTime",
+                        phase="pre_solve")
                 .run(parallelism=3, poll_interval=10, ttl=600)
             )
             predictions = client.predict([{"x": 10, "y": "A"}])

@@ -119,8 +119,10 @@ def optimize(cfg):
     client.configure_runner(**opt_cfg.to_runner_dict())
     # Wire trial dependencies and metric names onto the runner
     runner = client._experiment.runner
+    log.info(f"[ES-DEBUG] trial_deps parsed: {len(trial_deps)} dependencies: {[d.name for d in trial_deps] if trial_deps else 'none'}")
     if trial_deps:
         runner.trial_dependencies = trial_deps
+        log.info(f"[ES-DEBUG] Wired {len(trial_deps)} dependencies onto runner")
     runner._metric_names = [m.name for m in opt_cfg.metrics]
     # Inject custom kernel surrogate spec if set via .kernel() API
     if hasattr(cfg, '_kernel_surrogate_spec') and cfg._kernel_surrogate_spec is not None:
@@ -145,7 +147,7 @@ def optimize(cfg):
                 return names
             if hasattr(strategy, 'metric_names') and strategy.metric_names:
                 names.update(strategy.metric_names)
-            if hasattr(strategy, 'metric_threshold') and strategy.metric_threshold:
+            if hasattr(strategy, 'metric_threshold') and isinstance(strategy.metric_threshold, dict):
                 names.update(strategy.metric_threshold.keys())
             if hasattr(strategy, 'left'):
                 names.update(_collect_es_metric_names(strategy.left))
@@ -297,19 +299,63 @@ def optimize(cfg):
                  f"{len(param_names) - len(to_fix)} remaining active")
         _dim_reduction_done = True
 
+    _reported_failures: set[int] = set()
+
+    def _log_trial_failure(trial_index: int, case_path: str | None, log: Logger):
+        """Log the tail of a failed trial's runner log."""
+        if not case_path:
+            log.warning(f"Trial {trial_index} FAILED (no case path available)")
+            return
+        import os
+        log_path = os.path.join(case_path, "log.runner")
+        tail = ""
+        if os.path.isfile(log_path):
+            try:
+                with open(log_path) as f:
+                    lines = f.readlines()
+                tail = "".join(lines[-20:]).rstrip()
+            except Exception:
+                pass
+        if tail:
+            log.warning(f"Trial {trial_index} FAILED — last lines of {log_path}:\n{tail}")
+        else:
+            log.warning(f"Trial {trial_index} FAILED — case: {case_path} (no log.runner found)")
+
     def callback(sched: Orchestrator):
         store_cfg.save(client)
         _maybe_reduce_dimensions()
         streaming_metric(client, raw_cfg["optimization"])
+        # [ES-DEBUG] Log early stopping state
+        from ax.core.base_trial import TrialStatus as _TS_DBG
+        running = [t.index for t in client._experiment.trials.values() if t.status == _TS_DBG.RUNNING]
+        if running and orch_cfg.early_stopping_strategy is not None:
+            log.info(f"[ES-DEBUG] Running trials: {running}")
+            try:
+                es = orch_cfg.early_stopping_strategy
+                stop_decisions = es.should_stop_trials_early(
+                    trial_indices=set(running),
+                    experiment=client._experiment,
+                )
+                log.info(f"[ES-DEBUG] Stop decisions: {stop_decisions}")
+            except Exception as e:
+                log.info(f"[ES-DEBUG] Early stopping eval error: {e}")
         # Update runner's trial registry for dependency resolution
         runner = client._experiment.runner
+        from ax.core.base_trial import TrialStatus as _TS
         for tidx, trial in client._experiment.trials.items():
+            case_path = (trial.run_metadata.get("case_path")
+                         or trial.run_metadata.get("job", {}).get("case_path"))
             runner.trial_registry[tidx] = {
-                "case_path": trial.run_metadata.get("case_path")
-                             or trial.run_metadata.get("job", {}).get("case_path"),
+                "case_path": case_path,
                 "status": trial.status.name,
                 "parameters": trial.arm.parameters if trial.arm else {},
             }
+            if trial.status == _TS.FAILED and tidx not in _reported_failures:
+                _reported_failures.add(tidx)
+                _log_trial_failure(tidx, case_path, log)
+        _reporter.update(client)
+        store_cfg._feature_reporter_state = _reporter.to_dict()
+
         data = client._experiment.fetch_data()
         if data.df.empty:
             return
@@ -331,8 +377,6 @@ def optimize(cfg):
             f"{raw_cfg["optimization"]["case_runner"]["artifacts_folder"]}/{raw_cfg["experiment"]["name"]}_report.csv",
             index=False
         )
-        _reporter.update(client)
-        store_cfg._feature_reporter_state = _reporter.to_dict()
 
     if not has_experiment and baseline_cfg.parameters:
         log.info("=============== Running Baseline ================")
@@ -433,7 +477,8 @@ def setup_colored_logging():
             "CRITICAL": "bold_red",
         },
     )
-    handler = colorlog.StreamHandler()
+    import sys
+    handler = colorlog.StreamHandler(stream=sys.stdout)
     handler.setFormatter(fmt)
     # Clear all existing handlers to avoid duplicates, set colored handler on root only
     root = logging.getLogger()
@@ -445,10 +490,13 @@ def setup_colored_logging():
         lgr = logging.getLogger(name)
         lgr.handlers.clear()
         lgr.propagate = True
-    # Rich tracebacks: syntax-highlighted, with locals, dimmed frames for libraries
+    # Rich tracebacks: syntax-highlighted, dimmed frames for libraries
+    from rich.console import Console
     install_rich_traceback(
-        show_locals=True,
+        console=Console(file=sys.stdout, force_terminal=True),
+        show_locals=False,
         width=120,
+        max_frames=6,
         suppress=[
             "ax",
             "botorch",
@@ -457,6 +505,28 @@ def setup_colored_logging():
             "pydantic",
         ],
     )
+    # Suppress foamlib's Rich progress bars (they clutter the log output)
+    try:
+        from foamlib._cases._run import FoamCaseRunBase
+        from contextlib import contextmanager
+
+        class _NoOpProgress:
+            """Drop-in replacement for Rich Progress that does nothing."""
+            def add_task(self, *a, **kw): return 0
+            def update(self, *a, **kw): pass
+
+        @contextmanager
+        def _noop_ctx():
+            yield _NoOpProgress()
+
+        class _NoOpSingleton:
+            """Replaces SingletonContextManager(Progress) with a no-op."""
+            def __enter__(self): self._p = _NoOpProgress(); return self._p
+            def __exit__(self, *a): pass
+
+        FoamCaseRunBase._FoamCaseRunBase__progress = _NoOpSingleton()
+    except Exception:
+        pass
 
 
 def main():

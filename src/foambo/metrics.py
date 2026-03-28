@@ -426,6 +426,7 @@ def streaming_metric(client: Client, opt_cfg: Dict):
     has_progress_fn = any(name in _progress_fn_registry
         for name in [cfg["name"] for cfg in opt_cfg["metrics"]] if name not in objective_names)
     running_trials = client._experiment.trials_by_status[TrialStatus.RUNNING]
+    log.info(f"[ES-DEBUG] streaming_metric: {len(running_trials)} running trials, has_progress_cmd={has_progress_cmd}, has_progress_fn={has_progress_fn}")
     if (not has_progress_cmd and not has_progress_fn) or (len(running_trials) == 0):
         return
     # For running trials, stream metric value using the progress "command" or callable
@@ -441,7 +442,9 @@ def streaming_metric(client: Client, opt_cfg: Dict):
         }
         metrics_cfg = trial_metrics_cfg(idx, opt_cfg["metrics"])
         gms = {metric["name"]: LocalJobMetric.model_validate(metric) for metric in metrics_cfg}
+        log.info(f"[ES-DEBUG] trial {idx}: streaming metrics to eval: {list(gms.keys())}")
         for k,v in gms.items():
+            log.info(f"[ES-DEBUG] trial {idx}: evaluating {k}, progress={v.progress}, progression_source={v.progression_source}")
             try:
                 progress_fn = _progress_fn_registry.get(k)
                 if progress_fn is not None:
@@ -458,7 +461,9 @@ def streaming_metric(client: Client, opt_cfg: Dict):
                         trial_metrics[k] = result
                 elif v.progress and v.progress != "" and v.progress != "none":
                     v.command = v.progress
+                    log.info(f"[ES-DEBUG] trial {idx}: running progress cmd for {k}: {v.progress}")
                     metric_val = v.to_metric().fetch(idx, trial_metadata=metadata)
+                    log.info(f"[ES-DEBUG] trial {idx}: progress cmd result for {k}: {metric_val}")
                     is_nan_outcome = False
                     if isinstance(metric_val[1], tuple):
                         is_nan_outcome = bool(np.isnan(metric_val[1][0]))
@@ -482,7 +487,7 @@ def streaming_metric(client: Client, opt_cfg: Dict):
             for metric_name, metric_value in trial_metrics.items():
                 metric_cfg = gms[metric_name]
                 step = resolve_progression(metric_cfg, idx, metadata['job']['case_path'])
-                log.debug(f"Streaming {metric_name} for trial {idx} at step={step} value={metric_value}")
+                log.info(f"[ES-DEBUG] Streaming {metric_name} for trial {idx} at step={step} value={metric_value}")
                 client.attach_data(
                     trial_index=idx,
                     raw_data={metric_name: metric_value},
@@ -641,18 +646,21 @@ class FoamJobRunner(IRunner):
         """
         dep_meta: Dict[str, Any] = {}
         phase_commands: Dict[str, List[str]] = {}
+        last_source_path: str | None = None
 
         for dep in self.trial_dependencies:
             if not dep.enabled:
                 continue
             source_path = self._resolve_source_trial(dep.source, parameterization)
+            log.info(f"[ES-DEBUG] Dependency '{dep.name}': source_path={source_path}, registry has {len(self.trial_registry)} trials, strategy={dep.source.strategy}")
             if source_path is None:
                 if dep.source.fallback == "error":
                     raise RuntimeError(
                         f"Dependency '{dep.name}': no source trial found and fallback is 'error'")
-                log.debug(f"Dependency '{dep.name}': no source trial found, skipping")
+                log.info(f"[ES-DEBUG] Dependency '{dep.name}': no source trial found, skipping")
                 continue
 
+            last_source_path = source_path
             log.info(f"Trial {trial_index}: resolving dependency '{dep.name}' from {source_path}")
 
             # Execute immediate actions now
@@ -674,6 +682,9 @@ class FoamJobRunner(IRunner):
 
         # Always write hook scripts (no-op when empty) so env vars are always set
         hook_env = self._write_hook_scripts(target_path, phase_commands)
+        # Expose source/target as env vars for the runner (empty string if no source found)
+        hook_env["FOAMBO_SOURCE_TRIAL"] = last_source_path or ""
+        hook_env["FOAMBO_TARGET_TRIAL"] = target_path
         dep_meta["_hook_env"] = hook_env
 
         return dep_meta

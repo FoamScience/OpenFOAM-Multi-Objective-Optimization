@@ -70,7 +70,6 @@ def static_checks(cfg: DictConfig) -> PreflightResult:
     orch = cfg.get("orchestration_settings", {})
     exp = cfg.get("experiment", {})
 
-    # --- Template case ---
     template = runner_cfg.get("template_case", "")
     if os.path.isdir(template):
         r.passed("Template case exists", template)
@@ -79,7 +78,6 @@ def static_checks(cfg: DictConfig) -> PreflightResult:
         # Can't check files inside if template is missing
         return _check_config_coherence(cfg, r)
 
-    # --- Variable substitution files ---
     for entry in runner_cfg.get("variable_substitution", []):
         fpath = os.path.join(template, entry["file"].lstrip("/"))
         if os.path.isfile(fpath):
@@ -87,7 +85,6 @@ def static_checks(cfg: DictConfig) -> PreflightResult:
         else:
             r.failed(f"Substitution file: {entry['file']}", f"not found: {fpath}")
 
-    # --- File substitution variants ---
     params = exp.get("parameters", [])
     param_values = {}
     for p in params:
@@ -106,7 +103,6 @@ def static_checks(cfg: DictConfig) -> PreflightResult:
         else:
             r.warned(f"File substitution: {pname}", "parameter not found in experiment.parameters")
 
-    # --- Runner command ---
     runner_cmd = runner_cfg.get("runner")
     if runner_cmd and runner_cmd != "null":
         cmd_str = runner_cmd if isinstance(runner_cmd, str) else " ".join(runner_cmd)
@@ -116,7 +112,6 @@ def static_checks(cfg: DictConfig) -> PreflightResult:
         else:
             r.warned(f"Runner executable: {exe}", f"not found in PATH — full command: {cmd_str}")
 
-    # --- Remote commands ---
     if runner_cfg.get("mode") == "remote":
         for key, label in [("remote_status_query", "Remote status query"),
                            ("remote_early_stop", "Remote early stop")]:
@@ -133,7 +128,6 @@ def static_checks(cfg: DictConfig) -> PreflightResult:
             elif key == "remote_status_query":
                 r.failed(label, "required for mode=remote but not set")
 
-    # --- Trial destination writable ---
     trial_dest = runner_cfg.get("trial_destination", "")
     if trial_dest:
         parent = os.path.dirname(os.path.abspath(trial_dest)) or "."
@@ -142,7 +136,6 @@ def static_checks(cfg: DictConfig) -> PreflightResult:
         else:
             r.failed(f"Trial destination writable", f"parent not writable: {parent}")
 
-    # --- Artifacts folder writable ---
     artifacts = runner_cfg.get("artifacts_folder", "")
     if artifacts:
         parent = os.path.dirname(os.path.abspath(artifacts)) or "."
@@ -151,7 +144,6 @@ def static_checks(cfg: DictConfig) -> PreflightResult:
         else:
             r.failed(f"Artifacts folder writable", f"parent not writable: {parent}")
 
-    # --- Store coherence ---
     store = cfg.get("store", {})
     if store.get("read_from") == "json":
         from .common import get_experiment_name, set_experiment_name
@@ -171,7 +163,6 @@ def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightRes
     orch = cfg.get("orchestration_settings", {})
     exp = cfg.get("experiment", {})
 
-    # --- Metrics reference check ---
     metric_names = {m["name"] for m in opt.get("metrics", [])}
     objective_str = opt.get("objective", "")
     objective_names = {s.strip().lstrip("+-") for s in objective_str.split(",") if s.strip()}
@@ -182,7 +173,6 @@ def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightRes
         else:
             r.failed(f"Objective metric defined: {name}", "referenced in objective but not in metrics list")
 
-    # --- Outcome constraints reference valid metrics ---
     for constraint in opt.get("outcome_constraints", []):
         # Parse "metric_name >= ..." or "metric_name <= ..."
         parts = constraint.replace(">=", " ").replace("<=", " ").split()
@@ -194,12 +184,10 @@ def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightRes
                 r.failed(f"Outcome constraint metric: {cname}",
                          f"'{cname}' in constraint '{constraint}' not in metrics list")
 
-    # --- Early stopping metric coherence ---
     es = orch.get("early_stopping_strategy")
     if es and isinstance(es, dict):
         _check_early_stopping_metrics(es, metric_names, objective_names, opt.get("metrics", []), r)
 
-    # --- Parameter constraints reference valid params ---
     param_names = {p["name"] for p in exp.get("parameters", [])}
     for constraint in exp.get("parameter_constraints", []):
         # Rough check: each word that's alphanumeric could be a param name
@@ -213,7 +201,6 @@ def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightRes
                     r.warned(f"Parameter constraint token: {token}",
                              f"not in parameters (may be a constant)")
 
-    # --- Dependency commands contain substitution variables ---
     phased_hooks_used = set()
     for dep in cfg.get("trial_dependencies", []):
         if not dep.get("enabled", True):
@@ -231,7 +218,6 @@ def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightRes
             if phase != "immediate":
                 phased_hooks_used.add(phase)
 
-    # --- Runner command references phased hooks ---
     if phased_hooks_used:
         runner_cmd = runner_cfg.get("runner", "")
         runner_str = runner_cmd if isinstance(runner_cmd, str) else " ".join(runner_cmd or [])
@@ -298,6 +284,68 @@ def _check_early_stopping_metrics(es: dict, metric_names: set, objective_names: 
             _check_early_stopping_metrics(sub, metric_names, objective_names, metrics_cfg, r)
 
 
+def _check_outcome_constraints(client, data, cfg, r: PreflightResult):
+    """Check if the dry-run trial's metrics violate outcome constraints."""
+    try:
+        opt = cfg.get("optimization", {})
+        constraints = opt.get("outcome_constraints", [])
+        if not constraints:
+            return
+
+        df = data.df
+        metric_vals = {}
+        for _, row in df.iterrows():
+            metric_vals[row["metric_name"]] = row["mean"]
+
+        # Resolve baseline values for relative constraints (e.g. "metric >= 0.9*baseline")
+        baseline_vals = {}
+        sq = client._experiment.status_quo
+        if sq:
+            for _, row in df[df["arm_name"] == sq.name].iterrows():
+                baseline_vals[row["metric_name"]] = row["mean"]
+
+        violations = []
+        for constraint_str in constraints:
+            import re
+            m = re.match(r"(\w+)\s*(>=|<=)\s*(.+)", constraint_str.strip())
+            if not m:
+                continue
+            metric_name, op, rhs_str = m.group(1), m.group(2), m.group(3).strip()
+
+            if metric_name not in metric_vals:
+                continue
+            val = metric_vals[metric_name]
+
+            # Resolve RHS: could be a number, or "0.9*baseline", etc.
+            try:
+                rhs = float(rhs_str)
+            except ValueError:
+                if "baseline" in rhs_str and metric_name in baseline_vals:
+                    rhs = eval(rhs_str.replace("baseline", str(baseline_vals[metric_name])))
+                else:
+                    continue
+
+            if op == ">=" and val < rhs:
+                violations.append(f"{metric_name}={val:.4g} violates {constraint_str} (bound={rhs:.4g})")
+            elif op == "<=" and val > rhs:
+                violations.append(f"{metric_name}={val:.4g} violates {constraint_str} (bound={rhs:.4g})")
+
+        if violations and len(violations) == len(constraints):
+            r.warned("Outcome constraints",
+                     "dry-run trial violates ALL outcome constraints — "
+                     "if this persists across trials, the global stopping strategy will crash "
+                     "(no feasible Pareto frontier). Violations:\n      "
+                     + "\n      ".join(violations))
+        elif violations:
+            r.warned("Outcome constraints",
+                     "dry-run trial violates some constraints (may be fine for initial trials):\n      "
+                     + "\n      ".join(violations))
+        else:
+            r.passed("Outcome constraints", "dry-run trial satisfies all constraints")
+    except Exception:
+        pass
+
+
 def dry_run_checks(cfg: DictConfig) -> PreflightResult:
     """Run a single trial through the real optimize() flow with center-of-domain params.
 
@@ -327,20 +375,8 @@ def dry_run_checks(cfg: DictConfig) -> PreflightResult:
     # Build a modified config for the dry run
     dryrun_cfg = OmegaConf.to_container(cfg, resolve=True)
     dryrun_cfg["experiment"]["name"] = dryrun_name
-    dryrun_cfg["baseline"] = {"parameters": None}
-    dryrun_cfg["existing_trials"] = {"file_path": ""}
-    dryrun_cfg["optimization"]["outcome_constraints"] = []
     dryrun_cfg["orchestration_settings"]["max_trials"] = 1
-    dryrun_cfg["orchestration_settings"]["parallelism"] = 1
-    dryrun_cfg["orchestration_settings"]["tolerated_trial_failure_rate"] = 0.99
-    dryrun_cfg["orchestration_settings"]["min_failed_trials_for_failure_rate_check"] = 999
-    dryrun_cfg["orchestration_settings"]["early_stopping_strategy"] = None
-    dryrun_cfg["orchestration_settings"]["global_stopping_strategy"] = {
-        "min_trials": 1, "window_size": 1, "improvement_bar": 0.0,
-    }
     dryrun_cfg["store"] = {"save_to": "json", "read_from": "nowhere", "backend_options": {"url": None}}
-    if "trial_dependencies" in dryrun_cfg:
-        dryrun_cfg["trial_dependencies"] = []
 
     dryrun_omegacfg = OmegaConf.create(dryrun_cfg)
 
@@ -372,6 +408,20 @@ def dry_run_checks(cfg: DictConfig) -> PreflightResult:
                     else:
                         metrics_collected = list(data.df["metric_name"].unique())
                         r.passed("Dry-run trial completed with metrics", ", ".join(metrics_collected))
+
+                    _check_outcome_constraints(client, data, cfg, r)
+
+                    elapsed = trial.run_metadata.get("job", {}).get("start_time")
+                    if elapsed is not None:
+                        import time
+                        trial_duration = time.time() - elapsed
+                        poll_interval = cfg.get("orchestration_settings", {}).get(
+                            "initial_seconds_between_polls", 10)
+                        r.warned("Poll interval tuning",
+                                 f"trial took {trial_duration:.0f}s, "
+                                 f"poll interval is {poll_interval}s — "
+                                 f"set initial_seconds_between_polls close to "
+                                 f"expected trial duration to avoid idle waiting")
                 elif trial.status == TrialStatus.FAILED:
                     r.failed("Dry-run trial", "trial FAILED — check runner/metric commands")
                 else:

@@ -403,12 +403,24 @@ class FoamBO:
 
                 * ``"immediate"`` -- before the runner starts (default).
                 * ``"pre_init"`` / ``"pre_mesh"`` / ``"pre_solve"`` / ``"post_solve"``
-                  -- deferred to a hook script the runner invokes via
+                  -- deferred to hook scripts the runner invokes via
                   ``$FOAMBO_PRE_INIT``, ``$FOAMBO_PRE_MESH``, etc.
 
             fallback: ``"skip"`` or ``"error"`` when no source trial found.
 
-        Example Allrun using hooks::
+        Hook scripts are written to ``.foambo_<phase>.sh`` in the trial case
+        directory and default to no-op (``true``) when no actions target that
+        phase or on the first trial when no source exists yet.
+
+        Environment variables available to the runner subprocess:
+
+        * ``$FOAMBO_PRE_INIT`` / ``$FOAMBO_PRE_MESH`` / ``$FOAMBO_PRE_SOLVE`` / ``$FOAMBO_POST_SOLVE``
+          -- paths to hook scripts (always set, no-op when empty)
+        * ``$FOAMBO_CASE_PATH`` / ``$FOAMBO_CASE_NAME`` -- trial case directory
+        * ``$FOAMBO_SOURCE_TRIAL`` -- resolved source path (empty on first trial)
+        * ``$FOAMBO_TARGET_TRIAL`` -- current trial path
+
+        Example Allrun (shell)::
 
             #!/bin/bash
             $FOAMBO_PRE_INIT
@@ -416,6 +428,11 @@ class FoamBO:
             $FOAMBO_PRE_SOLVE   # e.g. mapFields from source trial
             simpleFoam
             $FOAMBO_POST_SOLVE
+
+        For non-shell runners, execute the script at the env var path or
+        directly at ``.foambo_<phase>.sh`` in the case directory::
+
+            subprocess.run(os.environ["FOAMBO_PRE_SOLVE"])  # Python
         """
         self._dependencies.append({
             "name": name,

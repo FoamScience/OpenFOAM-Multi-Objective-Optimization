@@ -154,12 +154,27 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
     def parse_global_stopping(cls, v):
         if isinstance(v, dict | DictConfig):
             v = dict(v)
-            return ImprovementGlobalStoppingStrategy(
+            gss = ImprovementGlobalStoppingStrategy(
                 min_trials=v["min_trials"],
                 window_size=v["window_size"],
                 improvement_bar=v["improvement_bar"],
                 inactive_when_pending_trials=True,
             )
+            # Wrap to handle Ax crash when inferring objective thresholds
+            # with incomplete data (e.g. failed trials with no metrics).
+            # See: ax/service/utils/best_point.py:1378
+            _orig = gss._should_stop_optimization
+            def _safe_should_stop(experiment, **kwargs):
+                try:
+                    return _orig(experiment, **kwargs)
+                except (ValueError, RuntimeError) as e:
+                    import logging
+                    logging.getLogger("ax.foambo.optimize").warning(
+                        f"Global stopping evaluation failed (incomplete data): {e}. "
+                        f"Continuing optimization.")
+                    return False, f"Skipped due to error: {e}"
+            gss._should_stop_optimization = _safe_should_stop
+            return gss
         return v
 
     @field_validator("early_stopping_strategy", mode="before")
@@ -841,26 +856,56 @@ class TrialAction(FoamBOBaseModel):
             "When the action executes in the trial lifecycle:\n"
             "- `immediate`: executed during dependency resolution, before the runner starts (default)\n"
             "- `pre_init`, `pre_mesh`, `pre_solve`, `post_solve`: deferred to hook scripts "
-            "that the runner can invoke via `$FOAMBO_PRE_INIT`, `$FOAMBO_PRE_MESH`, "
-            "`$FOAMBO_PRE_SOLVE`, `$FOAMBO_POST_SOLVE` environment variables.\n\n"
-            "Example Allrun script:\n"
-            "  $FOAMBO_PRE_INIT    # e.g. copy case structure from source trial\n"
+            "that the runner can invoke via environment variables.\n\n"
+            "Hook scripts are written to `.foambo_<phase>.sh` in the trial case directory "
+            "and exposed as environment variables to the runner subprocess:\n"
+            "- `$FOAMBO_PRE_INIT`  — before any case initialisation\n"
+            "- `$FOAMBO_PRE_MESH`  — before mesh generation\n"
+            "- `$FOAMBO_PRE_SOLVE` — after meshing, before the solver\n"
+            "- `$FOAMBO_POST_SOLVE` — after the solver finishes\n\n"
+            "Hooks default to no-op (`true`) when no actions target that phase, "
+            "so runner scripts work safely from the very first trial (before any "
+            "source trial exists).\n\n"
+            "Additional environment variables available to the runner:\n"
+            "- `$FOAMBO_CASE_PATH` / `$FOAMBO_CASE_NAME` — trial case directory\n"
+            "- `$FOAMBO_SOURCE_TRIAL` — resolved source trial path (empty on first trial)\n"
+            "- `$FOAMBO_TARGET_TRIAL` — current trial path (same as `$FOAMBO_CASE_PATH`)\n\n"
+            "Example Allrun (shell):\n"
+            "  $FOAMBO_PRE_INIT\n"
             "  blockMesh\n"
-            "  $FOAMBO_PRE_SOLVE   # e.g. mapFields from source trial\n"
+            "  $FOAMBO_PRE_SOLVE\n"
             "  simpleFoam\n"
-            "  $FOAMBO_POST_SOLVE  # e.g. post-processing with source comparison"
+            "  $FOAMBO_POST_SOLVE\n\n"
+            "For non-shell runners (Python, binary), execute the hook script directly:\n"
+            "  subprocess.run(os.environ['FOAMBO_PRE_SOLVE'])  # Python\n"
+            "  ./.foambo_pre_solve.sh                          # from case directory"
         ))
 
 
 class TrialDependency(FoamBOBaseModel):
-    """A dependency relationship between a source trial and the trial being created."""
+    """A dependency relationship between a source trial and the trial being created.
+
+    Each dependency selects a source trial and runs one or more actions.
+    Actions with ``phase: immediate`` execute before the runner starts.
+    Actions with a named phase (``pre_init``, ``pre_mesh``, ``pre_solve``,
+    ``post_solve``) are deferred to hook scripts that the runner invokes
+    via ``$FOAMBO_<PHASE>`` environment variables.
+
+    On the first trial (no completed source yet), dependencies with
+    ``fallback: skip`` are silently skipped and all hooks are no-ops.
+    """
     name: str = Field(
         description="A label for this dependency (e.g. 'warm_start', 'mesh_inherit'). Recorded in trial metadata for traceability",
         examples=["warm_start"])
     source: TrialSelector = Field(
         description="How to select the source trial")
     actions: List[TrialAction] = Field(
-        description="Actions to execute after source trial is resolved. Run in order before the trial's runner command")
+        description=(
+            "Actions to execute after source trial is resolved. "
+            "`immediate` actions run inline before the runner command. "
+            "Phased actions are written to hook scripts invoked by the runner "
+            "via `$FOAMBO_PRE_INIT`, `$FOAMBO_PRE_MESH`, `$FOAMBO_PRE_SOLVE`, `$FOAMBO_POST_SOLVE`"
+        ))
     enabled: bool = Field(default=True,
         description="Toggle this dependency on/off without removing the configuration")
 

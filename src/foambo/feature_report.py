@@ -47,6 +47,8 @@ class FeatureReporter:
 
         # Incremental tracking state
         self._seen_early_stopped: set[int] = set()
+        self._seen_completed: set[int] = set()
+        self._trial_completions: dict[int, float] = {}  # trial_index -> completion timestamp
         self._dim_reduction_events: list[str] = []
         self._best_trace: list[dict] = []  # [{trial: int, metrics: {name: val}}]
         self._events: list[str] = []  # timestamped event log
@@ -62,7 +64,7 @@ class FeatureReporter:
         self._dr_fix_at = _field(dr, "fix_at", "best") if dr else "best"
         self._dr_max_frac = _field(dr, "max_fix_fraction", 0.5) if dr else 0.5
         deps = _get(cfg, "trial_dependencies")
-        self._deps = list(deps) if isinstance(deps, (list, tuple)) else []
+        self._deps = list(deps) if deps is not None else []
         self._deps_configured = len(self._deps) > 0
         baseline = _get(cfg, "baseline")
         bp = _field(baseline, "parameters", None) if baseline else None
@@ -73,16 +75,13 @@ class FeatureReporter:
         os.makedirs(artifacts_folder, exist_ok=True)
         self._event("Reporter initialised")
 
-    # ------------------------------------------------------------------
-    # Public
-    # ------------------------------------------------------------------
-
     def update(self, client: Client) -> None:
         """Re-scan experiment state and rewrite the report."""
         try:
             exp = client._experiment
             if self._original_param_names is None:
                 self._original_param_names = list(exp.search_space.parameters.keys())
+            self._detect_completions(exp)
             self._detect_early_stopping(exp)
             self._detect_dim_reduction(exp)
             self._detect_dep_resolutions(exp)
@@ -95,14 +94,12 @@ class FeatureReporter:
     def path(self) -> str:
         return self._path
 
-    # ------------------------------------------------------------------
-    # Serialization (embedded in client JSON state)
-    # ------------------------------------------------------------------
-
     def to_dict(self) -> dict:
         """Return serializable state for embedding in the client JSON."""
         return {
             "seen_early_stopped": sorted(self._seen_early_stopped),
+            "seen_completed": sorted(self._seen_completed),
+            "trial_completions": {str(k): v for k, v in self._trial_completions.items()},
             "dim_reduction_events": self._dim_reduction_events,
             "best_trace": self._best_trace,
             "events": self._events,
@@ -115,6 +112,8 @@ class FeatureReporter:
         if not state:
             return
         self._seen_early_stopped = set(state.get("seen_early_stopped", []))
+        self._seen_completed = set(state.get("seen_completed", []))
+        self._trial_completions = {int(k): v for k, v in state.get("trial_completions", {}).items()}
         self._dim_reduction_events = state.get("dim_reduction_events", [])
         self._best_trace = state.get("best_trace", [])
         self._events = state.get("events", [])
@@ -122,9 +121,16 @@ class FeatureReporter:
         self._dep_resolutions = state.get("dep_resolutions", [])
         self._event("Reporter restored from saved state")
 
-    # ------------------------------------------------------------------
-    # Event detection
-    # ------------------------------------------------------------------
+    def _detect_completions(self, exp) -> None:
+        """Track when trials complete to measure durations and idle time."""
+        import time
+        now = time.time()
+        for idx, trial in exp.trials.items():
+            if idx in self._seen_completed:
+                continue
+            if trial.status in (AxTrialStatus.COMPLETED, AxTrialStatus.EARLY_STOPPED, AxTrialStatus.FAILED):
+                self._seen_completed.add(idx)
+                self._trial_completions[idx] = now
 
     def _detect_early_stopping(self, exp) -> None:
         for idx, trial in exp.trials.items():
@@ -211,10 +217,6 @@ class FeatureReporter:
         except Exception:
             pass
 
-    # ------------------------------------------------------------------
-    # Report rendering (Markdown)
-    # ------------------------------------------------------------------
-
     def _write(self, client: Client) -> None:
         exp = client._experiment
         n_total = len(exp.trials)
@@ -240,6 +242,7 @@ class FeatureReporter:
         L.extend(self._section_parallelism())
         L.extend(self._section_custom_kernel(client))
         L.extend(self._section_existing_trials(exp))
+        L.extend(self._section_efficiency(exp))
         L.extend(self._section_best_progress())
         L.extend(self._section_event_log())
 
@@ -262,19 +265,35 @@ class FeatureReporter:
         n_stopped = len(self._seen_early_stopped)
         pct = n_stopped / n_total * 100 if n_total else 0
 
+        metric_sigs = _field(es_cfg, "metric_signatures", None) or _field(es_cfg, "metric_names", None)
+        metrics_str = ", ".join(f"`{m}`" for m in metric_sigs) if metric_sigs else "all objectives"
+        min_prog = _field(es_cfg, "min_progression", None)
+        threshold = _field(es_cfg, "percentile_threshold", None)
+
         L.append(f"**Strategy:** `{strategy_type}`")
+        L.append(f"**Metrics:** {metrics_str}")
+        if threshold is not None:
+            L.append(f"**Percentile threshold:** {threshold}")
+        if min_prog is not None:
+            L.append(f"**Min progression:** {min_prog} steps before stopping")
         L.append(f"**Trials stopped:** {n_stopped} / {n_total} ({pct:.1f}%)")
         L.append("")
 
         if self._seen_early_stopped:
-            L.append("| Trial | Parameters |")
-            L.append("|------:|:-----------|")
+            L.append("| Trial | Parameter | Value |")
+            L.append("|------:|:----------|:------|")
             for idx in sorted(self._seen_early_stopped):
                 trial = exp.trials.get(idx)
-                params_str = ""
                 if trial and trial.arm:
-                    params_str = _short_params(trial.arm.parameters)
-                L.append(f"| {idx} | `{params_str}` |")
+                    params = trial.arm.parameters
+                    first = True
+                    for pname, pval in params.items():
+                        trial_col = str(idx) if first else ""
+                        val_str = f"{pval:.4g}" if isinstance(pval, float) else str(pval)
+                        L.append(f"| {trial_col} | `{pname}` | {val_str} |")
+                        first = False
+                else:
+                    L.append(f"| {idx} | | |")
             L.append("")
             L.append(f"**Gain:** ~{pct:.0f}% compute savings on unpromising evaluations.")
         else:
@@ -369,7 +388,6 @@ class FeatureReporter:
             L.append("")
             return L
 
-        # --- configured rules ---
         L.append("### Configured Rules")
         L.append("")
         for d in self._deps:
@@ -391,29 +409,6 @@ class FeatureReporter:
                     L.append(f"  ```")
         L.append("")
 
-        # --- lifecycle diagram ---
-        L.append("### Execution Lifecycle")
-        L.append("")
-        L.append("```")
-        L.append("1. Clone template case")
-        L.append("2. Substitute parameters")
-        L.append("3. Resolve dependencies (source trial lookup)")
-        L.append("   - immediate actions execute here")
-        L.append("   - phased actions written to hook scripts")
-        L.append("4. Runner (Allrun) dispatched with hook env vars:")
-        L.append("   $FOAMBO_PRE_INIT  -> e.g. copy case structure")
-        L.append("   blockMesh")
-        L.append("   $FOAMBO_PRE_MESH  -> e.g. copy mesh from source")
-        L.append("   $FOAMBO_PRE_SOLVE -> e.g. mapFields from source")
-        L.append("   simpleFoam")
-        L.append("   $FOAMBO_POST_SOLVE -> e.g. compare with source")
-        L.append("```")
-        L.append("")
-        L.append("> Hooks default to no-op (`true`) when no actions target that phase, "
-                 "so Allrun scripts never fail even without dependencies configured.")
-        L.append("")
-
-        # --- per-trial resolution log ---
         if has_resolutions:
             L.append("### Resolution Log")
             L.append("")
@@ -556,6 +551,58 @@ class FeatureReporter:
         L.append("")
         return L
 
+    def _section_efficiency(self, exp) -> list[str]:
+        L = ["---", "", "## Compute Efficiency", ""]
+
+        # Gather trial durations: start_time from run_metadata, end from our tracked completions
+        durations: list[float] = []
+        start_times: list[float] = []
+        for idx, trial in exp.trials.items():
+            meta = trial.run_metadata or {}
+            start = meta.get("start_time") or (meta.get("job", {}) or {}).get("start_time")
+            if start is None:
+                continue
+            start_times.append(start)
+            end = self._trial_completions.get(idx)
+            if end is not None and end > start:
+                durations.append(end - start)
+
+        if len(durations) < 2:
+            L.append("Not enough completed trials to measure efficiency.")
+            L.append("")
+            return L
+
+        import time
+        avg_duration = sum(durations) / len(durations)
+        wall_time = time.time() - min(start_times)
+        ideal_time = (len(durations) * avg_duration) / self._parallelism
+        efficiency = ideal_time / wall_time if wall_time > 0 else 0.0
+        idle_fraction = 1.0 - min(efficiency, 1.0)
+
+        def _fmt(seconds: float) -> str:
+            if seconds < 60:
+                return f"{seconds:.0f}s"
+            if seconds < 3600:
+                return f"{seconds / 60:.1f}m"
+            return f"{seconds / 3600:.1f}h"
+
+        L.append(f"| Metric | Value |")
+        L.append(f"|:-------|:------|")
+        L.append(f"| Avg trial duration | {_fmt(avg_duration)} |")
+        L.append(f"| Wall time so far | {_fmt(wall_time)} |")
+        L.append(f"| Ideal wall time | {_fmt(ideal_time)} (= {len(durations)} trials x {_fmt(avg_duration)} / {self._parallelism} slots) |")
+        L.append(f"| Compute efficiency | **{efficiency:.0%}** |")
+        L.append(f"| Idle fraction | {idle_fraction:.0%} |")
+        L.append("")
+
+        if idle_fraction > 0.5:
+            L.append(f"> High idle time. Consider increasing parallelism or "
+                     f"reducing `initial_seconds_between_polls`.")
+        elif idle_fraction < 0.1:
+            L.append(f"> Excellent resource utilisation.")
+        L.append("")
+        return L
+
     def _section_best_progress(self) -> list[str]:
         L = ["---", "", "## Best Objective Progress", ""]
         if not self._best_trace:
@@ -600,18 +647,11 @@ class FeatureReporter:
         L.append("")
         return L
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
     def _event(self, msg: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
         self._events.append(f"`{ts}` {msg}")
 
 
-# ---------------------------------------------------------------------------
-# Module-level helpers
-# ---------------------------------------------------------------------------
 
 def _badge(configured: bool, triggered: bool) -> str:
     if configured and triggered:
