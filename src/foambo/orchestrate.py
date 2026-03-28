@@ -633,6 +633,11 @@ class OptimizationOptions(FoamBOBaseModel):
         "Linear objective constraints, e.g. `metric1 >= 0.5*baseline`, `metric2 <= 10`. "
         "Provide upper bounds for minimized metrics, lower bounds otherwise."
     ), examples=[["metric >= 0.9*baseline"]])
+    objective_thresholds: List[str] | None = Field(default=None, description=(
+        "Objective thresholds for multi-objective optimization. Defines the reference point "
+        "for Pareto hypervolume computation. Format: `metric >= value` (for maximized) or "
+        "`metric <= value` (for minimized). If not set, Ax infers them from data."
+    ), examples=[["efficiency >= 0.3", "pressureHead >= 0.01", "torque <= 100"]])
     metrics: List[LocalJobMetric] = Field(description="List of metric evaluation commands (objectives and tracking metrics)")
     case_runner: FoamJobRunnerOptions = Field(description="Trial case dispatch and monitoring configuration")
 

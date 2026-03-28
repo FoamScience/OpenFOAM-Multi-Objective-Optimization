@@ -111,6 +111,27 @@ def optimize(cfg):
         client.configure_optimization(**opt_cfg.to_optimization_dict())
         client.configure_metrics(**opt_cfg.to_objective_metrics_dict())
         client.configure_metrics(**opt_cfg.to_tracking_metrics_dict())
+        # Apply explicit objective thresholds for multi-objective (prevents Ax inference crash)
+        if opt_cfg.objective_thresholds:
+            from ax.core.outcome_constraint import ObjectiveThreshold
+            from ax.core.types import ComparisonOp
+            opt_config = client._experiment.optimization_config
+            if hasattr(opt_config, 'objective_thresholds'):
+                thresholds = []
+                for expr in opt_cfg.objective_thresholds:
+                    expr = expr.strip()
+                    if ">=" in expr:
+                        name, val = expr.split(">=")
+                        metric = opt_config.metrics[name.strip()]
+                        thresholds.append(ObjectiveThreshold(
+                            metric=metric, bound=float(val), op=ComparisonOp.GEQ))
+                    elif "<=" in expr:
+                        name, val = expr.split("<=")
+                        metric = opt_config.metrics[name.strip()]
+                        thresholds.append(ObjectiveThreshold(
+                            metric=metric, bound=float(val), op=ComparisonOp.LEQ))
+                opt_config._objective_thresholds = thresholds
+                log.info(f"Objective thresholds set: {opt_cfg.objective_thresholds}")
     log.info("=================================================")
     log.info(f"Objectives:\n%s", pprint.pformat(client._experiment.optimization_config._objective))
     if client._experiment._tracking_metrics:
@@ -119,10 +140,8 @@ def optimize(cfg):
     client.configure_runner(**opt_cfg.to_runner_dict())
     # Wire trial dependencies and metric names onto the runner
     runner = client._experiment.runner
-    log.info(f"[ES-DEBUG] trial_deps parsed: {len(trial_deps)} dependencies: {[d.name for d in trial_deps] if trial_deps else 'none'}")
     if trial_deps:
         runner.trial_dependencies = trial_deps
-        log.info(f"[ES-DEBUG] Wired {len(trial_deps)} dependencies onto runner")
     runner._metric_names = [m.name for m in opt_cfg.metrics]
     # Inject custom kernel surrogate spec if set via .kernel() API
     if hasattr(cfg, '_kernel_surrogate_spec') and cfg._kernel_surrogate_spec is not None:
@@ -325,20 +344,6 @@ def optimize(cfg):
         store_cfg.save(client)
         _maybe_reduce_dimensions()
         streaming_metric(client, raw_cfg["optimization"])
-        # [ES-DEBUG] Log early stopping state
-        from ax.core.base_trial import TrialStatus as _TS_DBG
-        running = [t.index for t in client._experiment.trials.values() if t.status == _TS_DBG.RUNNING]
-        if running and orch_cfg.early_stopping_strategy is not None:
-            log.info(f"[ES-DEBUG] Running trials: {running}")
-            try:
-                es = orch_cfg.early_stopping_strategy
-                stop_decisions = es.should_stop_trials_early(
-                    trial_indices=set(running),
-                    experiment=client._experiment,
-                )
-                log.info(f"[ES-DEBUG] Stop decisions: {stop_decisions}")
-            except Exception as e:
-                log.info(f"[ES-DEBUG] Early stopping eval error: {e}")
         # Update runner's trial registry for dependency resolution
         runner = client._experiment.runner
         from ax.core.base_trial import TrialStatus as _TS

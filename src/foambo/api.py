@@ -89,6 +89,7 @@ class FoamBO:
         self._fn_map: dict[str, Any] = {}           # metric_name -> callable
         self._progress_fn_map: dict[str, Any] = {}   # metric_name -> callable
         self._outcome_constraints: list[str] = []
+        self._objective_thresholds: list[str] = []
         self._variable_subst: list[dict] = []
         self._file_subst: list[dict] = []
         self._baseline: dict | None = None
@@ -226,6 +227,27 @@ class FoamBO:
     def outcome_constraint(self, expr: str) -> FoamBO:
         """Add an outcome constraint (e.g. ``"metric1 >= 0.5*baseline"``)."""
         self._outcome_constraints.append(expr)
+        return self
+
+    def objective_threshold(self, expr: str) -> FoamBO:
+        """Set an objective threshold for multi-objective Pareto reference point.
+
+        Defines what "minimally acceptable" means for each objective.
+        Prevents Ax from inferring thresholds (which can crash with incomplete data).
+
+        Args:
+            expr: Threshold expression, e.g. ``"efficiency >= 0.3"`` (maximized)
+                  or ``"torque <= 100"`` (minimized).
+
+        Example::
+
+            FoamBO("Exp")
+                .maximize("efficiency", ...)
+                .minimize("torque", ...)
+                .objective_threshold("efficiency >= 0.3")
+                .objective_threshold("torque <= 100")
+        """
+        self._objective_thresholds.append(expr)
         return self
 
     # --- Case Setup ---
@@ -730,6 +752,7 @@ class FoamBO:
                 "metrics": self._metrics,
                 "objective": objective_str,
                 "outcome_constraints": self._outcome_constraints,
+                "objective_thresholds": self._objective_thresholds or None,
                 "case_runner": {
                     "template_case": case_path,
                     "mode": self._mode,

@@ -352,6 +352,59 @@ def get_config_docs() -> Dict[str, Any]:
             ```
             Provide upper bounds for minimized metrics, lower bounds otherwise.
             """,
+        "optimization.objective_thresholds": """
+            Reference point for multi-objective Pareto hypervolume computation.
+            Defines "minimally acceptable" values for each objective.
+            If not set, Ax infers them from data (which can crash with incomplete data
+            from failed trials).
+
+            ```yaml
+            objective_thresholds:
+                - "efficiency >= 0.3"
+                - "pressureHead >= 0.01"
+                - "torque <= 100"
+            ```
+
+            Use ``>=`` for maximized objectives, ``<=`` for minimized.
+
+            **Library API:**
+            ```python
+            FoamBO("Exp")
+                .maximize("efficiency", ...)
+                .minimize("torque", ...)
+                .objective_threshold("efficiency >= 0.3")
+                .objective_threshold("torque <= 100")
+            ```
+
+            Strongly recommended for multi-objective optimization to avoid
+            inference failures when trials produce incomplete metric data.
+
+            **Objective thresholds vs outcome constraints:**
+
+            These serve different purposes and interact in specific ways:
+
+            - ``objective_thresholds`` define the **Pareto reference point** — the
+              "worst acceptable" corner of objective space for hypervolume computation.
+              Designs below a threshold still run and are evaluated, they just don't
+              contribute to the Pareto hypervolume.
+
+            - ``outcome_constraints`` are **hard feasibility filters** — designs that
+              violate them are excluded from the Pareto front entirely, regardless of
+              how good their other objectives are.
+
+            When Ax computes the Pareto frontier:
+            1. If explicit ``objective_thresholds`` are set, they are used directly
+               as the reference point.
+            2. If no thresholds are set, Ax infers them from the data — this can fail
+               when trials have incomplete metrics (e.g. failed evaluations).
+            3. If the resulting Pareto front is empty AND ``outcome_constraints`` exist,
+               Ax retries without constraints (temporary relaxation) to find at least
+               some frontier points.
+            4. If the front is still empty and no constraints exist, Ax raises an error.
+
+            Setting ``objective_thresholds`` explicitly avoids steps 2-4 entirely,
+            making the optimization robust to trial failures and incomplete data.
+            """,
         "optimization.case_runner": """
             File substitutions deal with choice parameters (string values):
             ```yaml
@@ -903,6 +956,36 @@ def get_config_docs() -> Dict[str, Any]:
             uvx foamBO --config MyOpt.yaml \\
                 ++store.read_from=json \\
                 ++orchestration_settings.max_trials=200
+            ```
+            """,
+    }
+
+    harvested["python.feature_report"] = {
+        "category": "Python snippet",
+        "content": """
+            foamBO generates a feature usage report (`<artifacts>/<name>_feature_report.md`)
+            that tracks which optional features are active and their impact on the optimization.
+            The report updates incrementally after each trial and persists across resumes.
+
+            **Sections:**
+            - Early stopping: monitored metrics, trials stopped, compute savings
+            - Global stopping: budget consumption, convergence detection
+            - Dimensionality reduction: fixed parameters, search space reduction %
+            - Trial dependencies: rules, phases, per-trial resolution log
+            - Baseline comparison: per-objective improvement over baseline
+            - Compute efficiency: ideal vs actual wall time, idle fraction
+            - Best objective progress: trace of when best values improved
+            - Event log: timestamped feature triggers
+
+            **Use cases:**
+            - Diagnosing slow runs (high idle fraction -> increase parallelism or reduce poll interval)
+            - Validating that early stopping, dependencies, and dim reduction trigger as expected
+            - Comparing runs by diffing reports across experiments
+
+            Generate post-optimization:
+            ```python
+            from foambo import FoamBO
+            path = FoamBO.load("MyExperiment").feature_report()
             ```
             """,
     }
