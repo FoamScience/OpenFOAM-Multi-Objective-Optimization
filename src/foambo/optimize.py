@@ -11,6 +11,61 @@ Artifacts: CSV data for experiment trials
 
 import sys, argparse, pprint, json
 
+def _apply_objective_thresholds(client, expressions: list[str], log=None,
+                                baseline_data: dict[str, float] | None = None):
+    """Parse and apply objective threshold expressions to the optimization config.
+
+    Expressions like ``"efficiency >= 0.3"`` or ``"torque <= 0.5*baseline"``
+    are supported.  Expressions containing ``baseline`` are silently skipped
+    when *baseline_data* is ``None`` (they will be resolved after the
+    baseline trial completes).
+    """
+    from ax.core.outcome_constraint import ObjectiveThreshold
+    from ax.core.types import ComparisonOp
+
+    opt_config = client._experiment.optimization_config
+    if not hasattr(opt_config, 'objective_thresholds'):
+        return
+
+    existing = {ot.metric.name: ot for ot in (opt_config._objective_thresholds or [])}
+
+    for expr in expressions:
+        expr = expr.strip()
+        if "baseline" in expr and baseline_data is None:
+            continue  # defer until baseline is available
+
+        if ">=" in expr:
+            name, rhs = expr.split(">=", 1)
+            op = ComparisonOp.GEQ
+        elif "<=" in expr:
+            name, rhs = expr.split("<=", 1)
+            op = ComparisonOp.LEQ
+        else:
+            continue
+
+        name = name.strip()
+        rhs = rhs.strip()
+
+        if "baseline" in rhs and baseline_data is not None:
+            bl_val = baseline_data.get(name)
+            if bl_val is None:
+                if log:
+                    log.warning(f"Objective threshold: no baseline value for '{name}', skipping")
+                continue
+            bound = float(eval(rhs.replace("baseline", str(bl_val))))
+        else:
+            bound = float(rhs)
+
+        metric = opt_config.metrics[name]
+        existing[name] = ObjectiveThreshold(metric=metric, bound=bound, op=op, relative=False)
+
+    opt_config._objective_thresholds = list(existing.values())
+    if log:
+        summary = [f"{ot.metric.name} {'>=' if ot.op == ComparisonOp.GEQ else '<='} {ot.bound}"
+                   for ot in existing.values()]
+        log.info(f"Objective thresholds set: {summary}")
+
+
 def optimize(cfg):
     """Main optimization loop.
 
@@ -65,10 +120,8 @@ def optimize(cfg):
         trial_deps = []
         if 'trial_dependencies' in cfg:
             deps_raw = cfg['trial_dependencies']
-            if isinstance(deps_raw, list):
+            if deps_raw is not None:
                 trial_deps = [TrialDependency.model_validate(dict(d)) for d in deps_raw]
-            elif hasattr(deps_raw, 'get') and 'dependencies' in deps_raw:
-                trial_deps = [TrialDependency.model_validate(dict(d)) for d in deps_raw['dependencies']]
     else:
         raise TypeError(f"cfg must be a FoamBOConfig or DictConfig, got {type(cfg).__name__}")
 
@@ -113,25 +166,7 @@ def optimize(cfg):
         client.configure_metrics(**opt_cfg.to_tracking_metrics_dict())
         # Apply explicit objective thresholds for multi-objective (prevents Ax inference crash)
         if opt_cfg.objective_thresholds:
-            from ax.core.outcome_constraint import ObjectiveThreshold
-            from ax.core.types import ComparisonOp
-            opt_config = client._experiment.optimization_config
-            if hasattr(opt_config, 'objective_thresholds'):
-                thresholds = []
-                for expr in opt_cfg.objective_thresholds:
-                    expr = expr.strip()
-                    if ">=" in expr:
-                        name, val = expr.split(">=")
-                        metric = opt_config.metrics[name.strip()]
-                        thresholds.append(ObjectiveThreshold(
-                            metric=metric, bound=float(val), op=ComparisonOp.GEQ))
-                    elif "<=" in expr:
-                        name, val = expr.split("<=")
-                        metric = opt_config.metrics[name.strip()]
-                        thresholds.append(ObjectiveThreshold(
-                            metric=metric, bound=float(val), op=ComparisonOp.LEQ))
-                opt_config._objective_thresholds = thresholds
-                log.info(f"Objective thresholds set: {opt_cfg.objective_thresholds}")
+            _apply_objective_thresholds(client, opt_cfg.objective_thresholds, log=log)
     log.info("=================================================")
     log.info(f"Objectives:\n%s", pprint.pformat(client._experiment.optimization_config._objective))
     if client._experiment._tracking_metrics:
@@ -404,6 +439,14 @@ def optimize(cfg):
         client._experiment.status_quo = assert_is_instance(
             client._experiment.trials[baseline_index], Trial
         ).arm
+        # Resolve baseline-relative objective thresholds now that baseline data exists
+        if opt_cfg.objective_thresholds and any("baseline" in e for e in opt_cfg.objective_thresholds):
+            data = client._experiment.fetch_data().df
+            sq_name = client._experiment.status_quo.name
+            bl_data = {row["metric_name"]: row["mean"]
+                       for _, row in data[data["arm_name"] == sq_name].iterrows()}
+            _apply_objective_thresholds(client, opt_cfg.objective_thresholds,
+                                       log=log, baseline_data=bl_data)
 
     scheduler = Orchestrator(
         experiment=client._experiment,

@@ -176,17 +176,19 @@ class FeatureReporter:
             for dep_name, info in deps_meta.items():
                 if dep_name.startswith("_"):
                     continue  # skip internal keys like _hook_env
+                source_index = info.get("source_trial_index", "?")
                 source_path = info.get("source_case_path", "?")
                 actions = info.get("actions_applied", [])
                 phased = info.get("phased_actions", [])
                 self._dep_resolutions.append({
                     "trial": idx,
                     "dependency": dep_name,
+                    "source_index": source_index,
                     "source_path": source_path,
                     "actions_applied": actions,
                     "phased_actions": phased,
                 })
-                self._event(f"Trial {idx}: dependency '{dep_name}' resolved from {os.path.basename(source_path)}")
+                self._event(f"Trial {idx}: dependency '{dep_name}' resolved from trial {source_index}")
 
     def _track_best(self, exp, client: Client) -> None:
         """Record the current best objective value(s)."""
@@ -412,12 +414,12 @@ class FeatureReporter:
         if has_resolutions:
             L.append("### Resolution Log")
             L.append("")
-            L.append("| Trial | Dependency | Source | Phase(s) |")
-            L.append("|------:|:-----------|:-------|:---------|")
+            L.append("| Trial | Dependency | Source Trial | Phase(s) |")
+            L.append("|------:|:-----------|:-------------|:---------|")
             for r in self._dep_resolutions[-20:]:
-                src = os.path.basename(r["source_path"])
+                src_idx = r.get("source_index", "?")
                 phases = ", ".join(r.get("phased_actions", [])) or "immediate"
-                L.append(f"| {r['trial']} | `{r['dependency']}` | `{src}` | `{phases}` |")
+                L.append(f"| {r['trial']} | `{r['dependency']}` | {src_idx} | `{phases}` |")
             if len(self._dep_resolutions) > 20:
                 L.append(f"| ... | *{len(self._dep_resolutions) - 20} earlier* | | |")
             L.append("")

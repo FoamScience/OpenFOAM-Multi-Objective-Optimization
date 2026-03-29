@@ -236,16 +236,19 @@ class FoamBO:
         Prevents Ax from inferring thresholds (which can crash with incomplete data).
 
         Args:
-            expr: Threshold expression, e.g. ``"efficiency >= 0.3"`` (maximized)
-                  or ``"torque <= 100"`` (minimized).
+            expr: Threshold expression.  Supports absolute values
+                  (``"efficiency >= 0.3"``) and baseline-relative values
+                  (``"efficiency >= 0.8*baseline"``).  Baseline expressions
+                  are resolved after the baseline trial completes.
 
         Example::
 
             FoamBO("Exp")
                 .maximize("efficiency", ...)
                 .minimize("torque", ...)
-                .objective_threshold("efficiency >= 0.3")
-                .objective_threshold("torque <= 100")
+                .baseline(efficiency=0.45, torque=30.0)
+                .objective_threshold("efficiency >= 0.8*baseline")
+                .objective_threshold("torque <= 1.2*baseline")
         """
         self._objective_thresholds.append(expr)
         return self

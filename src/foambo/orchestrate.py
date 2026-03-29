@@ -163,6 +163,9 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
             # Wrap to handle Ax crash when inferring objective thresholds
             # with incomplete data (e.g. failed trials with no metrics).
             # See: ax/service/utils/best_point.py:1378
+            # Wrap to handle Ax crash when inferring objective thresholds
+            # with incomplete data (e.g. failed trials with no metrics).
+            # See: ax/service/utils/best_point.py:1378
             _orig = gss._should_stop_optimization
             def _safe_should_stop(experiment, **kwargs):
                 try:

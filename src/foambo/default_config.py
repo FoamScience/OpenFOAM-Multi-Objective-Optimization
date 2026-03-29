@@ -358,22 +358,25 @@ def get_config_docs() -> Dict[str, Any]:
             If not set, Ax infers them from data (which can crash with incomplete data
             from failed trials).
 
+            Supports absolute values and baseline-relative expressions:
             ```yaml
             objective_thresholds:
                 - "efficiency >= 0.3"
-                - "pressureHead >= 0.01"
-                - "torque <= 100"
+                - "pressureHead >= 0.9*baseline"
+                - "torque <= 1.2*baseline"
             ```
 
             Use ``>=`` for maximized objectives, ``<=`` for minimized.
+            Baseline expressions are resolved after the baseline trial completes.
 
             **Library API:**
             ```python
             FoamBO("Exp")
                 .maximize("efficiency", ...)
                 .minimize("torque", ...)
-                .objective_threshold("efficiency >= 0.3")
-                .objective_threshold("torque <= 100")
+                .baseline(efficiency=0.45, torque=30.0)
+                .objective_threshold("efficiency >= 0.8*baseline")
+                .objective_threshold("torque <= 1.2*baseline")
             ```
 
             Strongly recommended for multi-objective optimization to avoid
@@ -456,6 +459,42 @@ def get_config_docs() -> Dict[str, Any]:
                     metric_threshold: 20
                     trial_indices_to_ignore: !range [0, 30]
             ```
+
+            **Why objectives don't stream (and how to work around it):**
+
+            Only non-objective (tracking) metrics are streamed during a trial's
+            execution. Objective metrics are fetched once at trial completion.
+            This is deliberate — streaming intermediate objective values would
+            create ``MapData`` (time-series) that could confuse the GP surrogate
+            and Pareto computation.
+
+            If you need to early-stop based on an objective's behavior mid-run
+            (e.g. detecting pressure divergence in a CFD solver), create a
+            **separate tracking metric** with the same command:
+
+            ```yaml
+            metrics:
+              - name: pressureHead               # objective (maximized)
+                command: ["scripts/metric.sh", "pressureHead"]
+              - name: inletPressure              # tracking (for early stopping)
+                command: ["scripts/metric.sh", "inletPressure"]
+                progress: ["scripts/metric.sh", "inletPressure"]
+                progression_source: "foam_time:log.simpleFoam"
+                lower_is_better: true             # important for threshold direction
+
+            early_stopping_strategy:
+              type: threshold
+              metric_signatures: ["inletPressure"]
+              metric_threshold: 10000             # stop if inlet pressure > 10k
+            ```
+
+            Note the ``lower_is_better`` setting matters for threshold direction:
+            - ``lower_is_better: true`` + ``threshold: X`` → stops when value **> X**
+            - ``lower_is_better: false`` + ``threshold: X`` → stops when value **< X**
+
+            Using the objective directly would invert the threshold logic because
+            the objective's maximize/minimize sense controls ``lower_is_better``.
+            The tracking metric lets you set the direction independently.
             """,
         "baseline.parameters": """
             Set to `null` to skip:

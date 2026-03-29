@@ -527,8 +527,11 @@ class FoamJobRunner(IRunner):
         """Only serialize cfg — runtime attributes are rebuilt on load."""
         return {"cfg": obj.cfg}
 
-    def _resolve_source_trial(self, selector, target_params: dict) -> str | None:
-        """Resolve a source trial case path from the registry using a TrialSelector."""
+    def _resolve_source_trial(self, selector, target_params: dict) -> tuple[int, str] | None:
+        """Resolve a source trial index and case path from the registry.
+
+        Returns ``(trial_index, case_path)`` or ``None``.
+        """
         completed = {k: v for k, v in self.trial_registry.items()
                      if v.get("status") == "COMPLETED" and v.get("case_path")}
         if not completed:
@@ -537,19 +540,17 @@ class FoamJobRunner(IRunner):
         strategy = selector.strategy
         if strategy == "baseline":
             entry = completed.get(0)
-            return entry["case_path"] if entry else None
+            return (0, entry["case_path"]) if entry else None
         if strategy == "by_index":
             entry = completed.get(selector.index)
-            return entry["case_path"] if entry else None
+            return (selector.index, entry["case_path"]) if entry else None
         if strategy == "latest":
-            latest_idx = max(completed.keys())
-            return completed[latest_idx]["case_path"]
+            idx = max(completed.keys())
+            return (idx, completed[idx]["case_path"])
         if strategy == "best":
-            # Pick the trial with the best objective value (lowest by convention)
-            best_idx = min(completed, key=lambda k: completed[k].get("objective_value", float("inf")))
-            return completed[best_idx]["case_path"]
+            idx = min(completed, key=lambda k: completed[k].get("objective_value", float("inf")))
+            return (idx, completed[idx]["case_path"])
         if strategy == "nearest":
-            # L2 distance in parameter space (unnormalized — good enough for most cases)
             import math
             def _dist(params_a, params_b):
                 total = 0.0
@@ -558,9 +559,9 @@ class FoamJobRunner(IRunner):
                     if isinstance(va, (int, float)) and isinstance(vb, (int, float)):
                         total += (va - vb) ** 2
                 return math.sqrt(total)
-            nearest_idx = min(completed, key=lambda k: _dist(
+            idx = min(completed, key=lambda k: _dist(
                 target_params, completed[k].get("parameters", {})))
-            return completed[nearest_idx]["case_path"]
+            return (idx, completed[idx]["case_path"])
         if strategy == "custom":
             cmd = selector.command
             if isinstance(cmd, str):
@@ -569,7 +570,7 @@ class FoamJobRunner(IRunner):
                 out = sb.check_output(cmd, timeout=PROGRESSION_CMD_TIMEOUT)
                 idx = int(out.decode("utf-8").strip())
                 entry = completed.get(idx)
-                return entry["case_path"] if entry else None
+                return (idx, entry["case_path"]) if entry else None
             except Exception as e:
                 log.warning(f"Custom trial selector failed: {e}")
                 return None
@@ -646,16 +647,17 @@ class FoamJobRunner(IRunner):
         for dep in self.trial_dependencies:
             if not dep.enabled:
                 continue
-            source_path = self._resolve_source_trial(dep.source, parameterization)
-            if source_path is None:
+            result = self._resolve_source_trial(dep.source, parameterization)
+            if result is None:
                 if dep.source.fallback == "error":
                     raise RuntimeError(
                         f"Dependency '{dep.name}': no source trial found and fallback is 'error'")
                 log.debug(f"Dependency '{dep.name}': no source trial found, skipping")
                 continue
 
+            source_index, source_path = result
             last_source_path = source_path
-            log.info(f"Trial {trial_index}: resolving dependency '{dep.name}' from {source_path}")
+            log.info(f"Trial {trial_index}: resolving dependency '{dep.name}' from trial {source_index} at {source_path}")
 
             # Execute immediate actions now
             applied = self._execute_dependency_actions(dep, source_path, target_path)
@@ -669,6 +671,7 @@ class FoamJobRunner(IRunner):
                     phased.append(action.phase)
 
             dep_meta[dep.name] = {
+                "source_trial_index": source_index,
                 "source_case_path": source_path,
                 "actions_applied": applied,
                 "phased_actions": phased,
