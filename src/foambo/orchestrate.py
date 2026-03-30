@@ -35,11 +35,23 @@ def create_from_map(cfg, map):
         return None
     if transition_type not in map:
         raise ValueError(f"Type {transition_type} not supported. Supported ones are:\n{list(map.keys())}")
+    # Backward compat: metric_names was renamed to metric_signatures in Ax 1.2+
+    if "metric_names" in cfg and "metric_signatures" not in cfg:
+        cfg["metric_signatures"] = cfg.pop("metric_names")
     # Recursively parse composite strategies (or/and) whose children are dicts
     for key in ("left", "right"):
         if key in cfg and isinstance(cfg[key], (dict, DictConfig)):
             cfg[key] = create_from_map(cfg[key], map)
-    return map[transition_type](**cfg)
+    # Filter out kwargs not accepted by the target class
+    cls = map[transition_type]
+    import inspect
+    valid_params = set(inspect.signature(cls.__init__).parameters.keys()) - {"self"}
+    unknown = set(cfg.keys()) - valid_params
+    if unknown:
+        from ax.utils.common.logger import get_logger
+        get_logger(__name__).debug(f"Ignoring unknown kwargs for {cls.__name__}: {unknown}")
+        cfg = {k: v for k, v in cfg.items() if k in valid_params}
+    return cls(**cfg)
 
 EARLY_STOPPER_MAP = {
     "none": None,
@@ -165,10 +177,7 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
                 inactive_when_pending_trials=True,
             )
             # Wrap to handle Ax crash when inferring objective thresholds
-            # with incomplete data (e.g. failed trials with no metrics).
-            # See: ax/service/utils/best_point.py:1378
-            # Wrap to handle Ax crash when inferring objective thresholds
-            # with incomplete data (e.g. failed trials with no metrics).
+            # with incomplete data (e.g. all trials infeasible).
             # See: ax/service/utils/best_point.py:1378
             _orig = gss._should_stop_optimization
             def _safe_should_stop(experiment, **kwargs):

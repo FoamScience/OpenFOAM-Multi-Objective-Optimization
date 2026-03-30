@@ -11,11 +11,9 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Any
-
 from ax.api.client import Client, MultiObjective
 from ax.core.base_trial import TrialStatus as AxTrialStatus
-from ax.core.parameter import FixedParameter, RangeParameter, ChoiceParameter
+from ax.core.parameter import FixedParameter, RangeParameter
 from ax.utils.common.logger import get_logger
 from omegaconf import DictConfig
 
@@ -87,8 +85,8 @@ class FeatureReporter:
             self._detect_dep_resolutions(exp)
             self._track_best(exp, client)
             self._write(client)
-        except Exception as e:
-            log.debug(f"Feature report update skipped: {e}")
+        except Exception:
+            log.debug("Feature report update skipped", exc_info=True)
 
     @property
     def path(self) -> str:
@@ -154,7 +152,7 @@ class FeatureReporter:
             for p in exp.search_space.parameters.values()
             if isinstance(p, FixedParameter) and p.name in self._original_param_names
         }
-        already_reported = {e.split("'")[1] for e in self._dim_reduction_events if "'" in e}
+        already_reported = {pname for pname in current_fixed if any(f"'{pname}'" in e for e in self._dim_reduction_events)}
         for pname, val in current_fixed.items():
             if pname not in already_reported:
                 msg = f"Parameter '{pname}' fixed to {val}"
@@ -196,10 +194,10 @@ class FeatureReporter:
             opt_config = exp.optimization_config
             if opt_config is None:
                 return
-            data = exp.fetch_data().df
+            data = exp.lookup_data().df
             if data.empty:
                 return
-            is_mo = isinstance(opt_config._objective, MultiObjective)
+            is_mo = isinstance(opt_config.objective, MultiObjective)
             objectives = (
                 opt_config.objective.objectives if is_mo
                 else [opt_config.objective]
@@ -207,7 +205,7 @@ class FeatureReporter:
             n_completed = sum(1 for t in exp.trials.values() if t.status == AxTrialStatus.COMPLETED)
             metrics: dict[str, float] = {}
             for obj in objectives:
-                mname = obj.metric_names[0] if hasattr(obj, "metric_names") else obj.metric.name
+                mname = obj.metric.name
                 vals = data.loc[data["metric_name"] == mname, "mean"]
                 if vals.empty:
                     continue
@@ -267,17 +265,38 @@ class FeatureReporter:
         n_stopped = len(self._seen_early_stopped)
         pct = n_stopped / n_total * 100 if n_total else 0
 
-        metric_sigs = _field(es_cfg, "metric_signatures", None) or _field(es_cfg, "metric_names", None)
+        metric_sigs = _collect_es_metrics(es_cfg)
         metrics_str = ", ".join(f"`{m}`" for m in metric_sigs) if metric_sigs else "all objectives"
-        min_prog = _field(es_cfg, "min_progression", None)
-        threshold = _field(es_cfg, "percentile_threshold", None)
-
         L.append(f"**Strategy:** `{strategy_type}`")
         L.append(f"**Metrics:** {metrics_str}")
-        if threshold is not None:
-            L.append(f"**Percentile threshold:** {threshold}")
-        if min_prog is not None:
-            L.append(f"**Min progression:** {min_prog} steps before stopping")
+        # For composite strategies, show per-child details
+        if strategy_type in ("or", "and"):
+            for child_key in ("left", "right"):
+                child = _field(es_cfg, child_key, None)
+                if child is None:
+                    continue
+                child_type = _field(child, "type", "?")
+                child_metrics = _field(child, "metric_signatures", None) or _field(child, "metric_names", [])
+                child_thresh = _field(child, "metric_threshold", None)
+                child_pct = _field(child, "percentile_threshold", None)
+                child_min = _field(child, "min_progression", None)
+                parts = [f"`{child_type}`"]
+                if child_metrics:
+                    parts.append(f"metrics: {', '.join(f'`{m}`' for m in child_metrics)}")
+                if child_thresh is not None:
+                    parts.append(f"threshold: {child_thresh}")
+                if child_pct is not None:
+                    parts.append(f"percentile: {child_pct}")
+                if child_min is not None:
+                    parts.append(f"min_progression: {child_min}")
+                L.append(f"- {child_key}: {' | '.join(parts)}")
+        else:
+            threshold = _field(es_cfg, "percentile_threshold", None)
+            min_prog = _field(es_cfg, "min_progression", None)
+            if threshold is not None:
+                L.append(f"**Percentile threshold:** {threshold}")
+            if min_prog is not None:
+                L.append(f"**Min progression:** {min_prog} steps before stopping")
         L.append(f"**Trials stopped:** {n_stopped} / {n_total} ({pct:.1f}%)")
         L.append("")
 
@@ -398,7 +417,7 @@ class FeatureReporter:
             strategy = _field(source_cfg, "strategy", "?") if source_cfg else "?"
             fallback = _field(source_cfg, "fallback", "skip") if source_cfg else "skip"
             actions = _field(d, "actions", [])
-            action_list = actions if isinstance(actions, list) else [actions]
+            action_list = list(actions) if actions else []
             for a in action_list:
                 cmd = _field(a, "command", "")
                 phase = _field(a, "phase", "immediate")
@@ -457,12 +476,12 @@ class FeatureReporter:
 
         try:
             opt_config = exp.optimization_config
-            is_mo = isinstance(opt_config._objective, MultiObjective)
+            is_mo = isinstance(opt_config.objective, MultiObjective)
             objectives = (
                 opt_config.objective.objectives if is_mo
                 else [opt_config.objective]
             )
-            data = exp.fetch_data().df
+            data = exp.lookup_data().df
             if data.empty:
                 L.append("No metric data yet.")
                 L.append("")
@@ -471,7 +490,7 @@ class FeatureReporter:
             L.append("| Metric | Baseline | Best | Improvement |")
             L.append("|:-------|:---------|:-----|:------------|")
             for obj in objectives:
-                mname = obj.metric_names[0] if hasattr(obj, "metric_names") else obj.metric.name
+                mname = obj.metric.name
                 minimize = obj.minimize
 
                 bl_rows = data[(data["metric_name"] == mname) & (data["arm_name"] == exp.status_quo.name)]
@@ -487,8 +506,8 @@ class FeatureReporter:
                     pct = float("inf") if best != bl_val else 0.0
                 direction = "reduction" if minimize else "increase"
                 L.append(f"| `{mname}` | {bl_val:.4g} | {best:.4g} | {pct:.1f}% {direction} |")
-        except Exception:
-            L.append("*(could not compute improvements)*")
+        except Exception as e:
+            L.append(f"*(could not compute improvements: {e})*")
 
         L.append("")
         return L
@@ -529,7 +548,7 @@ class FeatureReporter:
 
     def _section_existing_trials(self, exp) -> list[str]:
         et_cfg = _get(self._cfg, "existing_trials")
-        file_path = _field(et_cfg, "file", None) if et_cfg else None
+        file_path = (_field(et_cfg, "file_path", None) or _field(et_cfg, "file", None)) if et_cfg else None
         configured = file_path is not None and file_path != ""
 
         n_manual = 0
@@ -561,7 +580,7 @@ class FeatureReporter:
         start_times: list[float] = []
         for idx, trial in exp.trials.items():
             meta = trial.run_metadata or {}
-            start = meta.get("start_time") or (meta.get("job", {}) or {}).get("start_time")
+            start = meta.get("start_time") or (meta.get("job") or {}).get("start_time")
             if start is None:
                 continue
             start_times.append(start)
@@ -620,7 +639,9 @@ class FeatureReporter:
         L.append(header)
         L.append(sep)
         for entry in recent:
-            vals = " | ".join(f"{entry['metrics'].get(m, ''):,.4g}" for m in metric_names)
+            vals = " | ".join(
+                f"{entry['metrics'][m]:,.4g}" if m in entry["metrics"] else "-"
+                for m in metric_names)
             L.append(f"| {entry['trial']} | {vals} |")
         L.append("")
 
@@ -663,15 +684,24 @@ def _badge(configured: bool, triggered: bool) -> str:
     return "`[OFF]`"
 
 
+def _collect_es_metrics(es_cfg) -> list[str]:
+    """Recursively collect metric names from (possibly composite) ES config."""
+    if es_cfg is None:
+        return []
+    sigs = _field(es_cfg, "metric_signatures", None) or _field(es_cfg, "metric_names", None)
+    if sigs:
+        return list(sigs)
+    result = []
+    for child in ("left", "right"):
+        sub = _field(es_cfg, child, None)
+        if sub is not None:
+            result.extend(_collect_es_metrics(sub))
+    return result
+
+
 def _is_set(cfg, *keys) -> bool:
     val = _get(cfg, *keys)
     return val is not None and val != "none"
-
-
-def _short_params(params: dict, max_len: int = 60) -> str:
-    parts = [f"{k}={v:.4g}" if isinstance(v, float) else f"{k}={v}" for k, v in params.items()]
-    s = ", ".join(parts)
-    return s if len(s) <= max_len else s[:max_len - 3] + "..."
 
 
 def _get(cfg, *keys):
