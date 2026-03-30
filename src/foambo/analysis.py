@@ -246,3 +246,148 @@ def plot_pareto_frontier(cfg: DictConfig, client, front=None, open_html=False, e
             webbrowser.open(html_path)
     log.info("==================== End ========================")
     return figures
+
+
+def plot_streaming_metrics(cfg: DictConfig, client: Client):
+    """Plot streaming metric progressions per trial, with early-stopping thresholds.
+
+    Generates an interactive HTML report with Plotly figures in the artifacts
+    folder.  Designed to be called incrementally from the optimization callback.
+    """
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    import plotly.colors as pc
+
+    exp = client._experiment
+    artifacts_folder = cfg["optimization"]["case_runner"]["artifacts_folder"]
+    os.makedirs(artifacts_folder, exist_ok=True)
+
+    # Use lookup_data() to get attached streaming data (not fetch_data which re-evaluates metrics)
+    fetched = exp.lookup_data()
+    data = fetched.full_df if hasattr(fetched, 'full_df') else fetched.df
+    if data.empty:
+        log.debug("Streaming plot: no data yet")
+        return
+    if "step" not in data.columns:
+        log.debug(f"Streaming plot: no 'step' column (columns: {list(data.columns)})")
+        return
+
+    streaming_df = data[data["step"].notna() & (data["step"] > 0)]
+    if streaming_df.empty:
+        log.debug(f"Streaming plot: no rows with step > 0 (total rows: {len(data)}, "
+                  f"step values: {data['step'].unique()[:10].tolist() if 'step' in data.columns else 'N/A'})")
+        return
+
+    streaming_metrics = sorted(streaming_df["metric_name"].unique())
+    if not streaming_metrics:
+        return
+
+    thresholds = {}
+    es_cfg = cfg.get("orchestration_settings", {}).get("early_stopping_strategy")
+    if es_cfg:
+        _extract_es_thresholds(es_cfg, thresholds)
+
+    all_trials = sorted(streaming_df["trial_index"].unique())
+    n_trials = len(all_trials)
+    palette = pc.qualitative.Plotly * ((n_trials // len(pc.qualitative.Plotly)) + 1)
+    trial_colors = {t: palette[i] for i, t in enumerate(all_trials)}
+
+    trial_status = {idx: t.status.name for idx, t in exp.trials.items()}
+
+    n_metrics = len(streaming_metrics)
+    fig = make_subplots(
+        rows=n_metrics, cols=1,
+        subplot_titles=streaming_metrics,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+    )
+
+    for i, metric in enumerate(streaming_metrics, 1):
+        mdf = streaming_df[streaming_df["metric_name"] == metric]
+
+        for tidx in sorted(mdf["trial_index"].unique()):
+            tdf = mdf[mdf["trial_index"] == tidx].sort_values("step")
+            status = trial_status.get(tidx, "?")
+            fig.add_trace(go.Scatter(
+                x=tdf["step"], y=tdf["mean"],
+                mode="lines",
+                name=f"T{tidx} ({status})",
+                legendgroup=f"T{tidx}",
+                showlegend=(i == 1),
+                line=dict(color=trial_colors.get(tidx), width=1.5),
+                hovertemplate=f"T{tidx}<br>step=%{{x}}<br>{metric}=%{{y:.4g}}<extra></extra>",
+            ), row=i, col=1)
+
+        if metric in thresholds:
+            th = thresholds[metric]
+            if "value" in th:
+                fig.add_hline(
+                    y=th["value"], row=i, col=1,
+                    line=dict(color="red", width=2, dash="dash"),
+                    annotation_text=f"Threshold: {th['value']}",
+                    annotation_position="top left",
+                    annotation_font_color="red",
+                )
+            if th.get("min_prog", 0) > 0:
+                fig.add_vline(
+                    x=th["min_prog"], row=i, col=1,
+                    line=dict(color="orange", width=1.5, dash="dot"),
+                    annotation_text=f"Min prog: {th['min_prog']}",
+                    annotation_position="bottom right",
+                    annotation_font_color="orange",
+                )
+            if "percentile" in th:
+                fig.add_annotation(
+                    text=f"Percentile: {th['percentile']}th",
+                    xref=f"x{i} domain", yref=f"y{i} domain",
+                    x=0.98, y=0.95, showarrow=False,
+                    font=dict(size=11, color="brown"),
+                    bgcolor="wheat", bordercolor="brown", borderwidth=1,
+                    row=i, col=1,
+                )
+
+        fig.update_yaxes(title_text=metric, row=i, col=1)
+
+    fig.update_xaxes(title_text="Progression step", row=n_metrics, col=1)
+    fig.update_layout(
+        title=f"{exp.name} — Streaming Metrics ({n_trials} trials)",
+        height=350 * n_metrics,
+        legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5),
+        margin=dict(b=100),
+        hovermode="x unified",
+    )
+
+    out_path = f"{artifacts_folder}/{exp.name}_streaming_metrics.html"
+    html = f"""<!DOCTYPE html><html lang="en" data-theme="light"><head>
+    <title>{exp.name} - Streaming Metrics</title>
+    {HTML_CARD_HEADER}
+    </head><body>
+    {fig.to_html(full_html=False, include_plotlyjs='cdn')}
+    </body></html>"""
+    with open(out_path, "w") as f:
+        f.write(html)
+
+
+def _extract_es_thresholds(es_cfg, thresholds: dict):
+    """Recursively extract early-stopping thresholds from config."""
+    if not isinstance(es_cfg, dict):
+        try:
+            es_cfg = dict(es_cfg)
+        except (TypeError, ValueError):
+            return
+    t = es_cfg.get("type", "")
+    if t in ("or", "and"):
+        _extract_es_thresholds(es_cfg.get("left", {}), thresholds)
+        _extract_es_thresholds(es_cfg.get("right", {}), thresholds)
+    elif t == "threshold":
+        for sig in es_cfg.get("metric_signatures", []):
+            thresholds[sig] = {
+                "value": es_cfg.get("metric_threshold"),
+                "min_prog": es_cfg.get("min_progression", 0),
+            }
+    elif t == "percentile":
+        for sig in es_cfg.get("metric_signatures", []):
+            thresholds[sig] = {
+                "percentile": es_cfg.get("percentile_threshold"),
+                "min_prog": es_cfg.get("min_progression", 0),
+            }

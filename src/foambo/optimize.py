@@ -178,6 +178,9 @@ def optimize(cfg):
     if trial_deps:
         runner.trial_dependencies = trial_deps
     runner._metric_names = [m.name for m in opt_cfg.metrics]
+    # Enable streaming data attachment during poll_trial (for early stopping)
+    runner._streaming_client = client
+    runner._streaming_cfg = raw_cfg["optimization"]
     # Inject custom kernel surrogate spec if set via .kernel() API
     if hasattr(cfg, '_kernel_surrogate_spec') and cfg._kernel_surrogate_spec is not None:
         gs = client._generation_strategy
@@ -395,6 +398,8 @@ def optimize(cfg):
                 _log_trial_failure(tidx, case_path, log)
         _reporter.update(client)
         store_cfg._feature_reporter_state = _reporter.to_dict()
+        from .analysis import plot_streaming_metrics
+        plot_streaming_metrics(raw_cfg, client)
 
         data = client._experiment.fetch_data()
         if data.df.empty:

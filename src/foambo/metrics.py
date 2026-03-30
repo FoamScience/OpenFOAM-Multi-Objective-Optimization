@@ -244,6 +244,10 @@ class FoamJobMetric(IMetric):
     """
     cfg:  DictConfig
     lower_is_better: bool | None
+
+    @classmethod
+    def is_available_while_running(cls) -> bool:
+        return True
     dispatcher = {
         "local": FoamJob.local_metric,
     }
@@ -710,10 +714,21 @@ class FoamJobRunner(IRunner):
         if dep_meta:
             meta["dependencies"] = dep_meta
         return meta
+    # Stashed by optimize() so poll_trial can attach streaming data
+    _streaming_cfg: Dict | None = None
+    _streaming_client: Any = None
+
     def poll_trial(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> TrialStatus:
         if not trial_metadata or 'job_id' not in trial_metadata:
             return TrialStatus.COMPLETED
-        return self.status_query[self.mode](trial_metadata['job_id'], self.cfg, trial_metadata)
+        status = self.status_query[self.mode](trial_metadata['job_id'], self.cfg, trial_metadata)
+        # Attach streaming data during poll so it's visible to early stopping
+        if status == TrialStatus.RUNNING and self._streaming_client is not None and self._streaming_cfg is not None:
+            try:
+                streaming_metric(self._streaming_client, self._streaming_cfg)
+            except Exception:
+                pass
+        return status
     def stop_trial(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> dict[str, Any]:
         return self.kill_job[self.mode](trial_metadata['job_id'], self.cfg, trial_metadata)
 

@@ -35,6 +35,10 @@ def create_from_map(cfg, map):
         return None
     if transition_type not in map:
         raise ValueError(f"Type {transition_type} not supported. Supported ones are:\n{list(map.keys())}")
+    # Recursively parse composite strategies (or/and) whose children are dicts
+    for key in ("left", "right"):
+        if key in cfg and isinstance(cfg[key], (dict, DictConfig)):
+            cfg[key] = create_from_map(cfg[key], map)
     return map[transition_type](**cfg)
 
 EARLY_STOPPER_MAP = {
