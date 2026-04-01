@@ -556,12 +556,25 @@ class FoamJobRunner(IRunner):
             return (idx, completed[idx]["case_path"])
         if strategy == "nearest":
             import math
+            # Compute parameter ranges from completed trials for normalization
+            ranges: dict[str, float] = {}
+            for entry in completed.values():
+                for k, v in entry.get("parameters", {}).items():
+                    if isinstance(v, (int, float)):
+                        if k not in ranges:
+                            ranges[k] = [v, v]
+                        else:
+                            ranges[k][0] = min(ranges[k][0], v)
+                            ranges[k][1] = max(ranges[k][1], v)
+            bounds = {k: (hi - lo) if (hi - lo) > 0 else 1.0
+                      for k, (lo, hi) in ranges.items()}
             def _dist(params_a, params_b):
                 total = 0.0
                 for key in params_a:
                     va, vb = params_a.get(key), params_b.get(key)
                     if isinstance(va, (int, float)) and isinstance(vb, (int, float)):
-                        total += (va - vb) ** 2
+                        rng = bounds.get(key, 1.0)
+                        total += ((va - vb) / rng) ** 2
                 return math.sqrt(total)
             idx = min(completed, key=lambda k: _dist(
                 target_params, completed[k].get("parameters", {})))
