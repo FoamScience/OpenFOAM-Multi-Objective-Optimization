@@ -286,6 +286,15 @@ class ExperimentOptions(FoamBOBaseModel):
             "parameter_constraints": self.parameter_constraints,
         }
 
+    def get_parameter_groups(self) -> dict[str, list[str]]:
+        """Return {param_name: [group1, group2, ...]} mapping."""
+        return getattr(self.__class__, '_parameter_groups', {})
+
+    def get_group_params(self, group: str) -> list[str]:
+        """Return parameter names belonging to a given group."""
+        return [name for name, groups in self.get_parameter_groups().items()
+                if group in groups]
+
     @classmethod
     def generate_parameter_space(cls, params_cfg):
         """
@@ -304,6 +313,12 @@ class ExperimentOptions(FoamBOBaseModel):
                 "name": key,
                 **item
             }
+            # Extract and store groups (not an Ax parameter field)
+            groups = e.pop("groups", None)
+            if groups:
+                if not hasattr(cls, '_parameter_groups'):
+                    cls._parameter_groups = {}
+                cls._parameter_groups[e["name"]] = list(groups)
             if "values" in e.keys():
                 l.append(ChoiceParameterConfig(**e))
             elif "bounds" in e.keys():
@@ -839,7 +854,7 @@ class ExistingTrialsOptions(FoamBOBaseModel):
 
 class TrialSelector(FoamBOBaseModel):
     """How to pick the source trial for a dependency."""
-    strategy: Literal["best", "nearest", "latest", "baseline", "by_index", "custom"] = Field(
+    strategy: Literal["best", "nearest", "latest", "baseline", "by_index", "matching_group", "custom"] = Field(
         description=(
             "Selection strategy for the source trial.\n"
             "- `best`: completed trial with the best primary objective value\n"
@@ -847,12 +862,16 @@ class TrialSelector(FoamBOBaseModel):
             "- `latest`: most recently completed trial\n"
             "- `baseline`: the baseline trial (index 0)\n"
             "- `by_index`: a specific trial by index\n"
+            "- `matching_group`: latest trial where all parameters in the specified group have identical values\n"
             "- `custom`: run a command that prints a trial index to stdout"
         ), examples=["best"])
     index: int | None = Field(default=None,
         description="Trial index to use (only for `by_index` strategy)")
     command: str | List[str] | None = Field(default=None,
         description="Command that prints a trial index to stdout (only for `custom` strategy)")
+    group: str | None = Field(default=None,
+        description="Parameter group name for `matching_group` strategy. "
+        "Matches against the `groups` list defined on each parameter.")
     similarity_threshold: float | None = Field(default=None,
         description="Maximum normalized L2 distance for `nearest` strategy. "
         "If the nearest trial exceeds this threshold, the dependency is treated as unresolved (applies fallback). "

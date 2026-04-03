@@ -176,6 +176,7 @@ def optimize(cfg):
     runner = client._experiment.runner
     if trial_deps:
         runner.trial_dependencies = trial_deps
+    runner._parameter_groups = exp_cfg.get_parameter_groups()
     runner._metric_names = [m.name for m in opt_cfg.metrics]
     # Enable streaming data attachment during poll_trial (for early stopping)
     runner._streaming_client = client

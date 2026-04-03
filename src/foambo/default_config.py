@@ -154,6 +154,7 @@ def get_default_config() -> Dict[str, Any]:
             "step_size": None,
             "scaling": None,
             "parameter_type": "float",
+            "groups": ["geometry"],
         },
         {
             "name": "y",
@@ -196,7 +197,7 @@ def get_default_config() -> Dict[str, Any]:
         "trial_indices_to_ignore": RangeTag(0, 10, 1),
     }
 
-    # Trial dependencies: illustrative warm-start example
+    # Trial dependencies: illustrative examples
     default["trial_dependencies"] = [
         {
             "name": "warm_start",
@@ -210,6 +211,22 @@ def get_default_config() -> Dict[str, Any]:
                     "type": "run_command",
                     "command": "cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0",
                     "phase": "immediate",
+                },
+            ],
+        },
+        {
+            "name": "reuse_mesh",
+            "enabled": False,
+            "source": {
+                "strategy": "matching_group",
+                "group": "geometry",
+                "fallback": "skip",
+            },
+            "actions": [
+                {
+                    "type": "run_command",
+                    "command": "cp -rT $FOAMBO_SOURCE_TRIAL/constant/polyMesh $FOAMBO_TARGET_TRIAL/constant/polyMesh",
+                    "phase": "pre_mesh",
                 },
             ],
         },
@@ -580,11 +597,36 @@ def get_config_docs() -> Dict[str, Any]:
               written to a hook script (`.foambo_<phase>.sh`) in the case directory
               and exposed via `$FOAMBO_<PHASE>` environment variable
 
+            Reuse mesh when geometry parameters haven't changed (`matching_group`):
+            ```yaml
+            experiment:
+              parameters:
+                - name: angle1
+                  bounds: [20, 40]
+                  groups: ["geometry"]    # tag parameters with groups
+                - name: relaxation
+                  bounds: [0.1, 0.9]     # no group — changes freely
+
+            trial_dependencies:
+              - name: reuse_mesh
+                source:
+                  strategy: matching_group
+                  group: "geometry"       # match on all params tagged "geometry"
+                  fallback: skip          # mesh from scratch if no match
+                actions:
+                  - type: run_command
+                    command: "cp -rT $FOAMBO_SOURCE_TRIAL/constant/polyMesh $FOAMBO_TARGET_TRIAL/constant/polyMesh"
+                    phase: pre_mesh
+            ```
+            When the new trial's geometry parameters exactly match a completed trial,
+            the mesh is copied instead of regenerated. Parameters can belong to
+            multiple groups (e.g. `groups: ["geometry", "mesh"]`).
+
             All hooks default to no-op on the first trial (no source yet).
 
             **Additional env vars available to the runner:**
             - `$FOAMBO_CASE_PATH` / `$FOAMBO_CASE_NAME` — trial case directory
-            - `$FOAMBO_SOURCE_TRIAL` — resolved source path (empty on first trial)
+            - `$FOAMBO_SOURCE_TRIAL` — resolved source path (unset if no match)
             - `$FOAMBO_TARGET_TRIAL` — current trial path
 
             **Non-shell runners** (Python, binary) can execute hook scripts directly:
@@ -721,6 +763,36 @@ def get_config_docs() -> Dict[str, Any]:
 
         **Analysis tab** ("Generate Insights") refits the surrogate model on demand and provides:
         sensitivity analysis, parallel coordinates, cross-validation, contour plots, and healthchecks.
+    """).strip()
+
+    harvested["analysis.sensitivity_indices"] = textwrap.dedent("""
+        [Concept] Understanding Sobol sensitivity indices in the Analysis tab.
+
+        Ax uses a GP (Gaussian Process) surrogate model to estimate how much each
+        parameter contributes to the objective variance. There are three types:
+
+        **First-order index** (e.g. ``angle1: 0.35``):
+        - "35% of the objective variance is explained by ``angle1`` alone"
+        - Measures the direct effect of changing that parameter while averaging over all others
+
+        **Second-order index** (e.g. ``angle1 & angle2: 0.12``):
+        - "12% of the objective variance comes from the *interaction* between ``angle1`` and ``angle2``"
+        - This is variance that can't be attributed to either parameter alone — it only appears when both change together
+        - Example: ``angle1=30`` is great when ``angle2=25`` but terrible when ``angle2=40``. Neither parameter's individual effect captures this — it's a joint effect
+
+        **Total-order index** (e.g. ``angle1: 0.52``):
+        - First-order + all interactions involving ``angle1``
+        - "52% of variance involves ``angle1`` in some way"
+        - Always >= first-order. The gap tells you how much this parameter interacts with others
+
+        **Practical interpretation:**
+        - High first-order, low interactions → parameter has a clean, independent effect. Easy to optimize.
+        - Low first-order, high total-order → parameter mostly matters through interactions. Hard to optimize in isolation.
+        - ``param1 & param2`` being large → these two parameters should be tuned together, not independently.
+
+        **Parameter groups** amplify this analysis. When parameters have ``groups`` tags
+        (e.g. ``groups: ["geometry"]``), foamBO can aggregate sensitivity by group —
+        showing "geometry vs solver" importance rather than 15 individual parameter bars.
     """).strip()
 
     harvested["python.library_usage"] = {

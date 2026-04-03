@@ -584,6 +584,26 @@ class FoamJobRunner(IRunner):
                 log.info(f"Nearest trial T{idx} distance {best_dist:.4f} exceeds threshold {threshold} — skipping")
                 return None
             return (idx, completed[idx]["case_path"])
+        if strategy == "matching_group":
+            group = getattr(selector, "group", None)
+            if not group:
+                log.warning("matching_group strategy requires 'group' field")
+                return None
+            # Find param names belonging to this group
+            param_groups = getattr(self, "_parameter_groups", {})
+            group_params = [name for name, groups in param_groups.items()
+                            if group in groups]
+            if not group_params:
+                log.warning(f"No parameters found with group '{group}'")
+                return None
+            # Search completed trials (latest first) for exact match on group params
+            for idx in sorted(completed.keys(), reverse=True):
+                entry_params = completed[idx].get("parameters", {})
+                if all(target_params.get(p) == entry_params.get(p) for p in group_params):
+                    log.info(f"matching_group '{group}': T{idx} matches on {group_params}")
+                    return (idx, completed[idx]["case_path"])
+            log.info(f"matching_group '{group}': no completed trial matches {group_params}")
+            return None
         if strategy == "custom":
             cmd = selector.command
             if isinstance(cmd, str):
