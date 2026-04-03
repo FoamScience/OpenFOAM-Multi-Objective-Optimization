@@ -295,8 +295,11 @@ def _get_experiment_info() -> dict:
             elif isinstance(p, ChoiceParameter):
                 info["type"] = "choice"
                 info["values"] = list(p.values)
+            param_groups = getattr(exp.runner, '_parameter_groups', {})
+            info["groups"] = param_groups.get(pname, [])
             params.append(info)
 
+        param_groups = getattr(exp.runner, '_parameter_groups', {})
         objectives = []
         if hasattr(opt_config.objective, 'objectives'):
             for obj in opt_config.objective.objectives:
@@ -363,6 +366,7 @@ def _get_experiment_info() -> dict:
             "es_thresholds": es_thresholds,
             "dimensionality_reduction": dr_dict,
             "dependency_rules": dep_rules,
+            "parameter_groups": param_groups,
         }
 
 
@@ -1418,6 +1422,187 @@ def post_analysis_healthchecks(request_body: dict = {}):
             all_cards.append({"title": cls_path[1], "subtitle": "Error",
                               "blob": str(e), "level": "ERROR"})
     return SafeJSONResponse(content={"cards": all_cards})
+
+
+@app.post("/api/v1/analysis/group-sensitivity")
+def post_group_sensitivity(request_body: dict):
+    """Group-level sensitivity: sum first-order Sobol indices by parameter group."""
+    metric = request_body.get("metric")
+    try:
+        with _state.lock:
+            client = _state.client
+            if client is None:
+                raise HTTPException(503, "Not initialized")
+            _ensure_model_fitted()
+            gs = client._generation_strategy
+            exp = client._experiment
+
+            import torch
+            from ax.utils.sensitivity.sobol_measures import SobolSensitivityGPMean
+            surr = gs.adapter.generator.surrogate
+            model = surr.model
+            param_names = [p for p in exp.search_space.parameters
+                           if hasattr(exp.search_space.parameters[p], 'lower')]
+            n_params = len(param_names)
+            bounds = torch.zeros(2, n_params, dtype=torch.float64)
+            bounds[1] = 1.0
+            sobol = SobolSensitivityGPMean(model=model, bounds=bounds, num_mc_samples=1000)
+            first_order = sobol.first_order_indices().detach().cpu().numpy()
+            if first_order.ndim > 1:
+                first_order = first_order.mean(axis=0)
+
+            param_groups = getattr(exp.runner, '_parameter_groups', {})
+            group_scores = {}
+            for i, pname in enumerate(param_names):
+                groups = param_groups.get(pname, ["ungrouped"])
+                for g in groups:
+                    group_scores[g] = group_scores.get(g, 0.0) + float(first_order[i])
+
+        return SafeJSONResponse(content={"groups": group_scores, "metric": metric})
+    except HTTPException:
+        raise
+    except Exception as e:
+        return SafeJSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.post("/api/v1/analysis/group-conditional-best")
+def post_group_conditional_best(request_body: dict):
+    """Find the best trial among those matching fixed group parameter values."""
+    group = request_body.get("group")
+    values = request_body.get("values", {})
+    try:
+        with _state.lock:
+            client = _state.client
+            if client is None:
+                raise HTTPException(503, "Not initialized")
+            exp = client._experiment
+            param_groups = getattr(exp.runner, '_parameter_groups', {})
+            group_params = [n for n, gs in param_groups.items() if group in gs]
+
+            from ax.core.base_trial import TrialStatus
+            matches = []
+            for idx, trial in exp.trials.items():
+                if trial.status != TrialStatus.COMPLETED:
+                    continue
+                params = trial.arm.parameters
+                if all(params.get(p) == values.get(p) for p in group_params if p in values):
+                    matches.append((idx, params))
+
+            if not matches:
+                return SafeJSONResponse(content={"match_count": 0, "error": "No matching trials"})
+
+            opt_config = exp.optimization_config
+            obj_list = []
+            if hasattr(opt_config.objective, 'objectives'):
+                for obj in opt_config.objective.objectives:
+                    for mn in obj.metric_names:
+                        obj_list.append((mn, obj.minimize))
+            else:
+                for mn in opt_config.objective.metric_names:
+                    obj_list.append((mn, opt_config.objective.minimize))
+
+            data = exp.lookup_data()
+            df = data.df if hasattr(data, 'df') else data
+            import pandas as pd
+            if not df.empty and "step" in df.columns:
+                filtered = df[pd.isna(df["step"])]
+                if not filtered.empty:
+                    df = filtered
+
+            best_idx = None
+            best_val = None
+            primary_metric, primary_minimize = obj_list[0]
+            for idx, params in matches:
+                mdf = df[(df["trial_index"] == idx) & (df["metric_name"] == primary_metric)]
+                if mdf.empty:
+                    continue
+                val = float(mdf.iloc[-1]["mean"])
+                if best_val is None or (primary_minimize and val < best_val) or (not primary_minimize and val > best_val):
+                    best_val = val
+                    best_idx = idx
+
+            if best_idx is None:
+                return SafeJSONResponse(content={"match_count": len(matches), "error": "No metric data"})
+
+            best_params = dict(exp.trials[best_idx].arm.parameters)
+            non_group = {k: v for k, v in best_params.items() if k not in group_params}
+
+            best_objectives = {}
+            for mn, _ in obj_list:
+                mdf = df[(df["trial_index"] == best_idx) & (df["metric_name"] == mn)]
+                if not mdf.empty:
+                    best_objectives[mn] = float(mdf.iloc[-1]["mean"])
+
+        return SafeJSONResponse(content={
+            "match_count": len(matches),
+            "best_trial": best_idx,
+            "best_objectives": best_objectives,
+            "best_params": best_params,
+            "non_group_params": non_group,
+            "group": group,
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        return SafeJSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.post("/api/v1/analysis/group-interactions")
+def post_group_interactions(request_body: dict):
+    """Group interaction heatmap from second-order Sobol indices."""
+    metric = request_body.get("metric")
+    try:
+        with _state.lock:
+            client = _state.client
+            if client is None:
+                raise HTTPException(503, "Not initialized")
+            _ensure_model_fitted()
+            gs = client._generation_strategy
+            exp = client._experiment
+
+            import torch
+            import numpy as np
+            from ax.utils.sensitivity.sobol_measures import SobolSensitivityGPMean
+            surr = gs.adapter.generator.surrogate
+            model = surr.model
+            param_names = [p for p in exp.search_space.parameters
+                           if hasattr(exp.search_space.parameters[p], 'lower')]
+            n = len(param_names)
+            bounds = torch.zeros(2, n, dtype=torch.float64)
+            bounds[1] = 1.0
+            sobol = SobolSensitivityGPMean(model=model, bounds=bounds, num_mc_samples=1000)
+            second_order = sobol.second_order_indices().detach().cpu().numpy()
+            if second_order.ndim > 2:
+                second_order = second_order.mean(axis=0)
+
+            param_groups = getattr(exp.runner, '_parameter_groups', {})
+
+            def get_primary_group(pname):
+                gs = param_groups.get(pname, ["ungrouped"])
+                return gs[0]
+
+            group_names = sorted(set(get_primary_group(p) for p in param_names))
+            g_idx = {g: i for i, g in enumerate(group_names)}
+            ng = len(group_names)
+            matrix = np.zeros((ng, ng))
+
+            for i in range(n):
+                for j in range(n):
+                    gi = g_idx[get_primary_group(param_names[i])]
+                    gj = g_idx[get_primary_group(param_names[j])]
+                    matrix[gi][gj] += second_order[i][j]
+
+            matrix = (matrix + matrix.T) / 2
+
+        return SafeJSONResponse(content={
+            "groups": group_names,
+            "matrix": matrix.tolist(),
+            "metric": metric,
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        return SafeJSONResponse(content={"error": str(e)}, status_code=500)
 
 
 # Visualization endpoints

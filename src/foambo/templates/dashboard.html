@@ -503,8 +503,18 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
           </details>
         </article>
       </template>
+      <!-- Group Sensitivity -->
+      <div class="chart-card panel-6" x-show="anlGroupSens">
+        <h6>Group Sensitivity</h6>
+        <div id="anl-gsens" style="height:280px"></div>
+      </div>
+      <!-- Group Interactions -->
+      <div class="chart-card panel-6" x-show="anlGroupInt">
+        <h6>Group Interactions</h6>
+        <div id="anl-gint" style="height:280px"></div>
+      </div>
     </div>
-    <p x-show="!anlSens&&!anlCV&&!anlPC&&!anlContour&&!anlSearch&&!anlInsights&&!anlHealth&&!anlLoading" style="text-align:center;color:var(--pico-muted-color);padding:2rem">Click "Generate Insights" to compute model-based analyses. Requires a fitted model.</p>
+    <p x-show="!anlSens&&!anlCV&&!anlPC&&!anlContour&&!anlSearch&&!anlInsights&&!anlHealth&&!anlGroupSens&&!anlGroupInt&&!anlLoading" style="text-align:center;color:var(--pico-muted-color);padding:2rem">Click "Generate Insights" to compute model-based analyses. Requires a fitted model.</p>
   </div>
 
   <!-- STREAMING -->
@@ -545,9 +555,30 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
       <!-- Parameter input -->
       <article class="panel-8">
         <h6>Parameter Input</h6>
+        <!-- Freeze groups + fetch from trial -->
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.75rem;align-items:center">
+          <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+            <span style="font-size:0.75rem;color:var(--pico-secondary)">Freeze:</span>
+            <template x-for="g in getGroups()" :key="'fg-'+g">
+              <button class="btn" :class="frozenGroups[g]?'btn-accent':''" @click="toggleFreezeGroup(g)" x-text="g" style="font-size:0.7rem;padding:0.2rem 0.5rem"></button>
+            </template>
+            <template x-for="g in getGroups().filter(g => frozenGroups[g])" :key="'gb-'+g">
+              <button class="btn" @click="fetchGroupBest(g)" x-text="'Best for '+g" style="font-size:0.7rem;padding:0.2rem 0.5rem;border-color:#f59e0b;color:#f59e0b"></button>
+            </template>
+          </div>
+          <div style="display:flex;gap:0.5rem;align-items:center;margin-left:auto">
+            <input type="number" x-model="fetchTrialIdx" placeholder="Trial #" style="width:70px;font-size:0.75rem;padding:0.2rem 0.4rem">
+            <button class="btn" @click="fetchTrialParams()">Fetch params</button>
+          </div>
+        </div>
+        <template x-if="anlGroupBest?.best_trial!=null">
+          <div style="font-size:0.75rem;color:var(--accent);margin-bottom:0.5rem;padding:0.3rem 0.5rem;background:rgba(0,212,170,0.08);border-radius:4px">
+            Group "<span x-text="anlGroupBest.group"></span>": best = T<span x-text="anlGroupBest.best_trial"></span> (<span x-text="anlGroupBest.match_count"></span> matches) <template x-for="(v,k) in anlGroupBest.best_objectives||{}" :key="'gbo-'+k"><span x-text="' '+k+'='+v.toFixed(4)"></span></template>
+          </div>
+        </template>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem 1rem">
           <template x-for="p in (state.experiment?.parameters||[]).filter(p=>!p.fixed)" :key="'pi'+p.name">
-            <label style="font-size:0.8rem">
+            <label style="font-size:0.8rem" :style="isParamFrozen(p.name)?'border-left:3px solid var(--accent);padding-left:0.3rem':''">
               <span x-text="p.name"></span>
               <input type="number" :id="'pinp-'+p.name" :step="p.parameter_type==='int'?1:0.01" :min="p.bounds?.[0]" :max="p.bounds?.[1]"
                 :value="pp[p.name]??((p.bounds?.[0]+p.bounds?.[1])/2)"
@@ -624,7 +655,7 @@ function app(){return{
   tab:'overview',tabs:[{id:'overview',label:'Overview'},{id:'trials',label:'Trials'},{id:'objectives',label:'Objectives'},{id:'analysis',label:'Analysis'},{id:'streaming',label:'Streaming'},{id:'dependencies',label:'Dependencies'},{id:'predict',label:'Predict'},{id:'config',label:'Config'}],
   state:{status:null,experiment:null,trials:null,objectives:null,streaming:null,generation:null,pareto:null},
   lastUpdate:'',tf:'all',tsk:'index',tsd:1,xt:null,td:null,tdViz:null,tdVizLoading:false,tdVizErr:'',pvState:'',pp:{},predicting:false,pr:null,pe:null,cs:[],cv:{},cmp:[],
-  anlMetric:'',anlLoading:false,anlError:'',anlSens:null,anlCV:null,anlPC:null,anlContour:null,anlSearch:null,anlInsights:null,anlHealth:null,
+  anlMetric:'',anlLoading:false,anlError:'',anlSens:null,anlCV:null,anlPC:null,anlContour:null,anlSearch:null,anlInsights:null,anlHealth:null,anlGroupSens:null,anlGroupInt:null,anlGroupBest:null,frozenGroups:{},fetchTrialIdx:'',
   async init(){await this.r();setInterval(()=>this.r(),3000);this.$watch('tab',()=>this.r());document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const n=parseInt(e.key);if(n>=1&&n<=this.tabs.length)this.tab=this.tabs[n-1].id});this.$watch('xt',async(v)=>{this.td=null;this.tdViz=null;this.tdVizLoading=false;this.tdVizErr='';if(v!==null){const r=await this.f('trials/'+v);if(r&&!r._error)this.td=r}})},
   _etags:{},_fetching:false,
   _tabEps:{overview:['generation'],trials:[],objectives:['pareto'],analysis:[],streaming:['streaming'],dependencies:[],predict:[],config:['config']},
@@ -675,13 +706,41 @@ function app(){return{
   },
   resetParams(){
     for(const p of this.state.experiment?.parameters||[]){
-      if(!p.fixed&&p.bounds){
+      if(!p.fixed&&p.bounds&&!this.isParamFrozen(p.name)){
         const v=p.parameter_type==='int'?Math.round((p.bounds[0]+p.bounds[1])/2):(p.bounds[0]+p.bounds[1])/2;
         this.pp[p.name]=v;
         const el=document.getElementById('pinp-'+p.name);if(el)el.value=v;
       }
     }
     this.pr=null;this.pe=null;
+  },
+  getGroups(){
+    const pg=this.state.experiment?.parameter_groups||{};
+    const gs=new Set();
+    for(const groups of Object.values(pg))for(const g of groups)gs.add(g);
+    return[...gs].sort();
+  },
+  toggleFreezeGroup(group){this.frozenGroups={...this.frozenGroups,[group]:!this.frozenGroups[group]}},
+  isParamFrozen(pname){
+    const groups=this.state.experiment?.parameter_groups?.[pname]||[];
+    return groups.some(g=>this.frozenGroups[g]);
+  },
+  async fetchTrialParams(){
+    const idx=parseInt(this.fetchTrialIdx);
+    if(isNaN(idx))return;
+    const t=this.state.trials?.trials?.find(t=>t.index===idx);
+    if(t?.parameters){for(const[k,v]of Object.entries(t.parameters)){this.pp[k]=v;const el=document.getElementById('pinp-'+k);if(el)el.value=v}}
+  },
+  async fetchGroupBest(group){
+    const pg=this.state.experiment?.parameter_groups||{};
+    const groupParams=Object.entries(pg).filter(([_,gs])=>gs.includes(group)).map(([n])=>n);
+    const values={};
+    for(const p of groupParams)if(this.pp[p]!==undefined)values[p]=this.pp[p];
+    const r=await this.f('analysis/group-conditional-best','POST',{group,values});
+    if(r?.non_group_params){
+      for(const[k,v]of Object.entries(r.non_group_params)){this.pp[k]=v;const el=document.getElementById('pinp-'+k);if(el)el.value=v}
+      this.anlGroupBest=r;
+    }
   },
   uncertaintyBar(pred){
     if(!pred?.mean||!pred?.sem)return'0%';
@@ -693,7 +752,7 @@ function app(){return{
     this.anlLoading=true;this.anlError='';
     const m=this.anlMetric||(this.state.experiment?.objectives?.[0]?.name)||'';
     if(!m){this.anlError='No metric selected';this.anlLoading=false;return}
-    const [s,pc,cv,ct,ss,ins,hc]=await Promise.allSettled([
+    const [s,pc,cv,ct,ss,ins,hc,gs,gi]=await Promise.allSettled([
       this.f('analysis/sensitivity','POST',{metric:m}),
       this.f('analysis/parallel-coordinates','POST',{metric:m}),
       this.f('analysis/cross-validation','POST',{}),
@@ -701,6 +760,8 @@ function app(){return{
       this.f('analysis/search-space','POST',{}),
       this.f('analysis/insights','POST',{}),
       this.f('analysis/healthchecks','POST',{}),
+      this.f('analysis/group-sensitivity','POST',{metric:m}),
+      this.f('analysis/group-interactions','POST',{metric:m}),
     ]);
     const _r=(r)=>r.status==='fulfilled'&&r.value&&!r.value._error?r.value:null;
     const _e=(r)=>r.status==='fulfilled'&&r.value?._error?r.value._error:'';
@@ -711,6 +772,8 @@ function app(){return{
     this.anlSearch=_r(ss);
     this.anlInsights=_r(ins);
     this.anlHealth=_r(hc);
+    this.anlGroupSens=_r(gs)?.groups?_r(gs):null;
+    this.anlGroupInt=_r(gi)?.matrix?_r(gi):null;
     const errs=[_e(s),_e(pc),_e(cv),_e(ct),_e(ss)].filter(Boolean);
     if(errs.length)this.anlError=errs.join(' | ');
     this.anlLoading=false;
@@ -719,9 +782,36 @@ function app(){return{
       const rp=(id,fig)=>{const el=document.getElementById(id);if(el&&fig)Plotly.react(el,fig.data,{...DL,...fig.layout},PC)};
       rp('anl-sens',this.anlSens?.figure);
       rp('anl-cv',this.anlCV?.figure);
-      rp('anl-pc',this.anlPC?.figure);
+      // Parallel coordinates: reorder dimensions by group if available
+      if(this.anlPC?.figure){
+        const fig=this.anlPC.figure;
+        const pg=this.state.experiment?.parameter_groups||{};
+        if(fig.data?.[0]?.dimensions&&Object.keys(pg).length){
+          const dims=fig.data[0].dimensions;
+          dims.sort((a,b)=>{const ga=(pg[a.label]||['zzz'])[0];const gb=(pg[b.label]||['zzz'])[0];return ga<gb?-1:ga>gb?1:0});
+        }
+        rp('anl-pc',fig);
+      }
       if(this.anlContour?.cards){this.anlContour.cards.forEach((c,i)=>rp('anl-cont-'+i,c.figure))}
       else if(this.anlContour?.figure){rp('anl-cont-0',this.anlContour.figure)}
+      // Group sensitivity bar chart
+      if(this.anlGroupSens?.groups){
+        const el=document.getElementById('anl-gsens');
+        if(el){
+          const g=this.anlGroupSens.groups;
+          const names=Object.keys(g).sort((a,b)=>g[b]-g[a]);
+          const vals=names.map(n=>g[n]);
+          Plotly.react(el,[{y:names,x:vals,type:'bar',orientation:'h',marker:{color:names.map((_,i)=>CL[i%CL.length])}}],{...DL,margin:{...DL.margin,l:120}},PC);
+        }
+      }
+      // Group interaction heatmap
+      if(this.anlGroupInt?.matrix){
+        const el=document.getElementById('anl-gint');
+        if(el){
+          const d=this.anlGroupInt;
+          Plotly.react(el,[{z:d.matrix,x:d.groups,y:d.groups,type:'heatmap',colorscale:[[0,'#1a1a2e'],[0.5,'#3b82f6'],[1,'#ef4444']],showscale:true}],{...DL,margin:{...DL.margin,l:120,b:80}},PC);
+        }
+      }
     });
   },
   gcfg(){const g={};for(const f of this.cs){const s=f.path.split('.')[0];if(!g[s])g[s]=[];g[s].push(f)}
