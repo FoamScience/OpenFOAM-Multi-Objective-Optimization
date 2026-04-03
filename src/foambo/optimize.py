@@ -126,10 +126,10 @@ def optimize(cfg):
         raise TypeError(f"cfg must be a FoamBOConfig or DictConfig, got {type(cfg).__name__}")
 
     log.info("============= Running Configuration =============")
-    from pygments import highlight
-    from pygments.lexers import YamlLexer
-    from pygments.formatters import Terminal256Formatter
-    log.info("\n" + highlight(OmegaConf.to_yaml(raw_cfg), YamlLexer(), Terminal256Formatter(style="native")).rstrip())
+    #from pygments import highlight
+    #from pygments.lexers import YamlLexer
+    #from pygments.formatters import Terminal256Formatter
+    #log.info("\n" + highlight(OmegaConf.to_yaml(raw_cfg), YamlLexer(), Terminal256Formatter(style="native")).rstrip())
     log.info("=================================================")
 
     # Apply user-configurable subprocess timeouts
@@ -358,6 +358,20 @@ def optimize(cfg):
 
     _reported_failures: set[int] = set()
 
+    # API server update function — no-op until server starts
+    _update_api = lambda client, reporter: None
+    if orch_cfg.api_port != 0:
+        from .api_server import start_api_server, update_api_state
+        _api_thread = start_api_server(
+            client=client,
+            raw_cfg=raw_cfg,
+            orch_cfg=orch_cfg,
+            reporter=_reporter,
+            host=orch_cfg.api_host,
+            port=orch_cfg.api_port,
+        )
+        _update_api = update_api_state
+
     def _log_trial_failure(trial_index: int, case_path: str | None, log: Logger):
         """Log the tail of a failed trial's runner log."""
         if not case_path:
@@ -398,6 +412,9 @@ def optimize(cfg):
                 _log_trial_failure(tidx, case_path, log)
         _reporter.update(client)
         store_cfg._feature_reporter_state = _reporter.to_dict()
+        # Refresh API server state
+        if orch_cfg.api_port != 0:
+            _update_api(client, _reporter)
         from .analysis import plot_streaming_metrics
         plot_streaming_metrics(raw_cfg, client)
 
@@ -481,6 +498,9 @@ def optimize(cfg):
     except KeyboardInterrupt:
         log.warning("Interrupted — cleaning up running trials...")
         _stop_running_trials(scheduler)
+        if orch_cfg.api_port != 0:
+            from .api_server import stop_api_server
+            stop_api_server()
         log.info("State saved. Exiting.")
         return
     store_cfg.save(client)
@@ -512,6 +532,9 @@ def optimize(cfg):
     store_cfg.save(client, cards)
     log.info(f"Feature report: {_reporter.path}")
 
+    if orch_cfg.api_port != 0:
+        from .api_server import stop_api_server
+        stop_api_server()
     log.info("==================== End ========================")
     return client
 
@@ -603,11 +626,13 @@ def main():
     group.add_argument('--generate-config', action='store_true', help='Generate a default config file and exit')
     group.add_argument('--docs', action='store_true', help='Open Configuration Docs explorer')
     group.add_argument('--visualize', action='store_true', help='Run visualization UI for current experiment state')
+    group.add_argument('--no-opt', action='store_true', help='Load experiment and start web dashboard without running optimization')
     group.add_argument('--preflight-checks', action='store_true', help='Validate configuration before running')
     group.add_argument('-V', '--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('--config', type=str, default=DEFAULT_CONFIG, help=f'Path to config YAML file (optional, default={DEFAULT_CONFIG})')
     parser.add_argument('--json', action='store_true', help='Export Plotly figures as JSON (only valid with --analysis)')
     parser.add_argument('--dry-run', action='store_true', help='Include dry-run checks (only valid with --preflight-checks)')
+    parser.add_argument('--no-ui', action='store_true', help='Disable the web UI / REST API server')
     parser.add_argument('overrides', nargs=argparse.REMAINDER, help='Config overrides in ++key=value format')
     args = parser.parse_args()
 
@@ -615,6 +640,8 @@ def main():
         parser.error('--json can only be used with --analysis')
     if args.dry_run and not args.preflight_checks:
         parser.error('--dry-run can only be used with --preflight-checks')
+    if getattr(args, 'no_opt', False) and args.no_ui:
+        parser.error('--no-opt and --no-ui cannot be used together')
 
     if args.preflight_checks:
         from .config import load_config, override_config
@@ -690,10 +717,54 @@ def main():
         visualizer_ui(cfg)
         return
 
+    if args.no_opt:
+        import logging
+        log = logging.getLogger(__name__)
+        from .config import load_config, override_config
+        from .common import set_experiment_name
+        from .orchestrate import StoreOptions, ConfigOrchestratorOptions
+        from .feature_report import FeatureReporter
+        cfg = load_config(args.config)
+        if args.overrides:
+            overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
+            if overrides:
+                cfg = override_config(cfg, overrides)
+        if cfg['store']['read_from'] == "nowhere":
+            log.error("Cannot load experiment without client state\n"
+                      "Please set store.read_from option to either `json` or `sql`")
+            exit(1)
+        set_experiment_name(cfg["experiment"]["name"])
+        exp_name = cfg["experiment"]["name"]
+        artifacts = cfg["optimization"]["case_runner"]["artifacts_folder"]
+        client = StoreOptions.model_validate(dict(cfg['store'])).load()
+        orch_cfg = ConfigOrchestratorOptions.model_validate(dict(cfg['orchestration_settings']))
+        reporter = FeatureReporter(cfg, artifacts, exp_name)
+        saved = StoreOptions.load_feature_reporter_state(exp_name, artifacts)
+        if saved:
+            reporter.restore(saved)
+        from .api_server import start_api_server, stop_api_server
+        thread = start_api_server(
+            client=client, raw_cfg=cfg, orch_cfg=orch_cfg, reporter=reporter,
+            host=orch_cfg.api_host, port=orch_cfg.api_port,
+        )
+        if thread is None:
+            log.error("API server failed to start")
+            exit(1)
+        log.info("Dashboard running (no optimization). Press Ctrl+C to stop.")
+        try:
+            thread.join()
+        except KeyboardInterrupt:
+            stop_api_server()
+            log.info("Stopped.")
+        return
+
     from .config import load_config, override_config
     cfg = load_config(args.config)
     if args.overrides:
         overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
         if overrides:
             cfg = override_config(cfg, overrides)
+    if args.no_ui:
+        from omegaconf import OmegaConf
+        OmegaConf.update(cfg, "orchestration_settings.api_port", 0)
     optimize(cfg)

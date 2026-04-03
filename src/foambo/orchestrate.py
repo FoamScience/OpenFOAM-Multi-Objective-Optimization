@@ -153,6 +153,13 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
     process_reap_timeout: int = Field(default=5, description=(
         "Timeout in seconds to wait for a killed process to exit before giving up."
     ))
+    api_port: int = Field(default=8098, description=(
+        "Port for the live REST API server. Set to 0 to disable. "
+        "The API is served in a background thread for web UI access."
+    ))
+    api_host: str = Field(default="127.0.0.1", description=(
+        "Bind address for the live REST API server."
+    ))
     dimensionality_reduction: DimensionalityReductionOptions = Field(
         default_factory=lambda: DimensionalityReductionOptions(enabled=False),
         description="Automatic parameter fixing based on Sobol sensitivity analysis after an exploration phase"
@@ -768,8 +775,11 @@ class StoreOptions(FoamBOBaseModel):
         filepath = os.path.join(artifacts, f"{name}_client_state.json")
         if not os.path.isfile(filepath):
             return None
-        with open(filepath) as f:
-            state = json.load(f)
+        try:
+            with open(filepath) as f:
+                state = json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            return None
         return state.get("foambo_config")
 
     @staticmethod
@@ -779,8 +789,11 @@ class StoreOptions(FoamBOBaseModel):
         filepath = os.path.join(artifacts, f"{name}_client_state.json")
         if not os.path.isfile(filepath):
             return None
-        with open(filepath) as f:
-            state = json.load(f)
+        try:
+            with open(filepath) as f:
+                state = json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            return None
         return state.get("feature_reporter")
 
 
