@@ -438,6 +438,7 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
           <option :value="o.name" x-text="o.name"></option>
         </template>
       </select>
+      <label class="btn" style="gap:0.3rem;cursor:default"><span style="color:var(--pico-secondary)">top_k</span><input type="number" x-model.number="anlTopK" min="1" max="50" style="width:45px;padding:0.1rem 0.3rem;font-size:0.75rem;text-align:center;border:none;background:transparent;color:var(--pico-color)"></label>
       <span x-show="anlError" style="color:#ef4444;font-size:0.8rem" x-text="anlError"></span>
     </div>
     <div class="panel-grid">
@@ -655,7 +656,7 @@ function app(){return{
   tab:'overview',tabs:[{id:'overview',label:'Overview'},{id:'trials',label:'Trials'},{id:'objectives',label:'Objectives'},{id:'analysis',label:'Analysis'},{id:'streaming',label:'Streaming'},{id:'dependencies',label:'Dependencies'},{id:'predict',label:'Predict'},{id:'config',label:'Config'}],
   state:{status:null,experiment:null,trials:null,objectives:null,streaming:null,generation:null,pareto:null},
   lastUpdate:'',tf:'all',tsk:'index',tsd:1,xt:null,td:null,tdViz:null,tdVizLoading:false,tdVizErr:'',pvState:'',pp:{},predicting:false,pr:null,pe:null,cs:[],cv:{},cmp:[],
-  anlMetric:'',anlLoading:false,anlError:'',anlSens:null,anlCV:null,anlPC:null,anlContour:null,anlSearch:null,anlInsights:null,anlHealth:null,anlGroupSens:null,anlGroupInt:null,anlGroupBest:null,frozenGroups:{},fetchTrialIdx:'',
+  anlMetric:'',anlTopK:10,anlLoading:false,anlError:'',anlSens:null,anlCV:null,anlPC:null,anlContour:null,anlSearch:null,anlInsights:null,anlHealth:null,anlGroupSens:null,anlGroupInt:null,anlGroupBest:null,frozenGroups:{},fetchTrialIdx:'',
   async init(){await this.r();setInterval(()=>this.r(),3000);this.$watch('tab',()=>this.r());document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const n=parseInt(e.key);if(n>=1&&n<=this.tabs.length)this.tab=this.tabs[n-1].id});this.$watch('xt',async(v)=>{this.td=null;this.tdViz=null;this.tdVizLoading=false;this.tdVizErr='';if(v!==null){const r=await this.f('trials/'+v);if(r&&!r._error)this.td=r}})},
   _etags:{},_fetching:false,
   _tabEps:{overview:['generation'],trials:[],objectives:['pareto'],analysis:[],streaming:['streaming'],dependencies:[],predict:[],config:['config']},
@@ -753,7 +754,7 @@ function app(){return{
     const m=this.anlMetric||(this.state.experiment?.objectives?.[0]?.name)||'';
     if(!m){this.anlError='No metric selected';this.anlLoading=false;return}
     const [s,pc,cv,ct,ss,ins,hc,gs,gi]=await Promise.allSettled([
-      this.f('analysis/sensitivity','POST',{metric:m}),
+      this.f('analysis/sensitivity','POST',{metric:m,top_k:this.anlTopK}),
       this.f('analysis/parallel-coordinates','POST',{metric:m}),
       this.f('analysis/cross-validation','POST',{}),
       this.f('analysis/contour','POST',{metric:m}),

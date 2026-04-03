@@ -1310,10 +1310,11 @@ def _compute_ax_healthcheck(analysis_cls, **kwargs) -> dict:
 def post_analysis_sensitivity(request_body: dict):
     """Sobol sensitivity analysis via Ax."""
     metric = request_body.get("metric")
+    top_k = request_body.get("top_k", 10)
     try:
         from ax.analysis.plotly.sensitivity import SensitivityAnalysisPlot
         return SafeJSONResponse(content=_compute_ax_analysis(
-            SensitivityAnalysisPlot, metric_name=metric, top_k=10))
+            SensitivityAnalysisPlot, metric_name=metric, top_k=top_k))
     except HTTPException:
         raise
     except Exception as e:
