@@ -605,6 +605,7 @@ def main():
     group.add_argument('--generate-config', action='store_true', help='Generate a default config file and exit')
     group.add_argument('--docs', action='store_true', help='Open Configuration Docs explorer')
     group.add_argument('--no-opt', action='store_true', help='Load experiment and start web dashboard without running optimization')
+    group.add_argument('--upgrade-config', action='store_true', help='Check config YAML against current schema and show suggested changes')
     group.add_argument('--preflight-checks', action='store_true', help='Validate configuration before running')
     group.add_argument('-V', '--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('--config', type=str, default=DEFAULT_CONFIG, help=f'Path to config YAML file (optional, default={DEFAULT_CONFIG})')
@@ -620,6 +621,11 @@ def main():
         parser.error('--dry-run can only be used with --preflight-checks')
     if getattr(args, 'no_opt', False) and args.no_ui:
         parser.error('--no-opt and --no-ui cannot be used together')
+
+    if args.upgrade_config:
+        from .config_upgrade import run_upgrade_check
+        ok = run_upgrade_check(args.config)
+        sys.exit(0 if ok else 1)
 
     if args.preflight_checks:
         from .config import load_config, override_config

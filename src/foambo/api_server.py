@@ -1422,6 +1422,25 @@ def post_analysis_healthchecks(request_body: dict = {}):
 
 # Visualization endpoints
 
+_DANGEROUS_PATTERNS = [
+    "subprocess", "os.system", "os.popen", "os.remove", "os.unlink",
+    "shutil.rmtree", "shutil.move", "eval(", "exec(", "__import__",
+    "socket", "http.client", "urllib", "requests.",
+]
+
+
+def _validate_pvpython_script(source: str) -> str | None:
+    """Validate a pvpython script. Returns error message or None if OK."""
+    if "sys.argv[1]" not in source:
+        return "Script must use sys.argv[1] for case path"
+    if "sys.argv[2]" not in source:
+        return "Script must use sys.argv[2] for screenshot filename"
+    for pattern in _DANGEROUS_PATTERNS:
+        if pattern in source:
+            return f"Script contains disallowed pattern: '{pattern}'"
+    return None
+
+
 @app.post("/api/v1/paraview-state")
 async def upload_paraview_state(request: Request):
     """Upload a pvpython script for trial visualization.
@@ -1437,10 +1456,20 @@ async def upload_paraview_state(request: Request):
         # ... set up pipeline, coloring, camera ...
         pvs.SaveScreenshot(out, pvs.GetActiveView(), ImageResolution=[1200, 800])
     """
+    # Check if uploads are allowed
+    orch = _state.orch_cfg
+    if orch and not getattr(orch, "allow_pvpython_upload", True):
+        raise HTTPException(403, "pvpython script upload is disabled "
+                            "(set orchestration_settings.allow_pvpython_upload: true to enable)")
     import os, tempfile
     body = await request.body()
     if not body:
         raise HTTPException(400, "Empty request body")
+    # Validate script content
+    source = body.decode("utf-8", errors="replace")
+    err = _validate_pvpython_script(source)
+    if err:
+        raise HTTPException(400, f"Script rejected: {err}")
     state_dir = os.path.join(tempfile.gettempdir(), "foambo_pv_state")
     os.makedirs(state_dir, exist_ok=True)
     state_path = os.path.join(state_dir, "user_viz.py")
@@ -1488,12 +1517,26 @@ def _render_with_paraview_state(case_path: str, script_path: str) -> dict:
             "MESA_GL_VERSION_OVERRIDE": os.environ.get("MESA_GL_VERSION_OVERRIDE", ""),
             "TMPDIR": case_path,
         }
-        # Preserve ParaView/VTK-related env vars
+        # Preserve ParaView/VTK/Python-related env vars
         for k, v in os.environ.items():
-            if k.startswith(("PV_", "VTK_", "PARAVIEW_", "LD_LIBRARY")):
+            if k.startswith(("PV_", "VTK_", "PARAVIEW_", "LD_LIBRARY", "PYTHONPATH", "PYTHON")):
                 safe_env[k] = v
+        # Use bubblewrap for OS-level isolation when available
+        bwrap = shutil.which("bwrap")
+        if bwrap:
+            cmd = [
+                bwrap,
+                "--ro-bind", "/", "/",              # read-only root filesystem
+                "--bind", case_path, case_path,     # read-write case folder
+                "--bind", "/tmp", "/tmp",           # ParaView needs tmp
+                "--unshare-net",                    # no network access
+                "--die-with-parent",                # kill if server dies
+                pvpython, script_path, case_path, screenshot_name,
+            ]
+        else:
+            cmd = [pvpython, script_path, case_path, screenshot_name]
         result = subprocess.run(
-            [pvpython, script_path, case_path, screenshot_name],
+            cmd,
             capture_output=True, text=True, timeout=120,
             cwd=case_path,
             env=safe_env,
@@ -1631,6 +1674,15 @@ def start_api_server(client, raw_cfg, orch_cfg, host: str = "127.0.0.1",
     _state.orch_cfg = orch_cfg
     _state.start_time = time.time()
     _state.last_callback = time.time()
+
+    # Security checks at startup
+    import shutil
+    if getattr(orch_cfg, "allow_pvpython_upload", True):
+        if shutil.which("bwrap") is None:
+            log.warning(
+                "bubblewrap (bwrap) not found — pvpython scripts will run without OS-level sandboxing. "
+                "To disable script uploads entirely, set orchestration_settings.allow_pvpython_upload: false"
+            )
 
     import uvicorn
     import socket

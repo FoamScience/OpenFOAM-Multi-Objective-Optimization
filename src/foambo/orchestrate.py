@@ -160,6 +160,10 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
     api_host: str = Field(default="127.0.0.1", description=(
         "Bind address for the live REST API server."
     ))
+    allow_pvpython_upload: bool = Field(default=True, description=(
+        "Allow uploading and running pvpython visualization scripts from the web dashboard. "
+        "Set to false to disable script upload/execution for security."
+    ))
     dimensionality_reduction: DimensionalityReductionOptions = Field(
         default_factory=lambda: DimensionalityReductionOptions(enabled=False),
         description="Automatic parameter fixing based on Sobol sensitivity analysis after an exploration phase"
