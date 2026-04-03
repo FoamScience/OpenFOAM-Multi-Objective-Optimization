@@ -551,15 +551,17 @@ def _get_objectives() -> dict:
             raise HTTPException(503, "Optimizer not initialized")
         exp = client._experiment
         opt_config = exp.optimization_config
-        data = exp.lookup_data()
+        from ax.core.base_trial import TrialStatus
+        completed_indices = [idx for idx, t in exp.trials.items()
+                             if t.status in (TrialStatus.COMPLETED, TrialStatus.EARLY_STOPPED)]
+        data = exp.lookup_data(trial_indices=completed_indices) if completed_indices else exp.lookup_data()
         df = data.df if hasattr(data, 'df') else data
-        # Filter out streaming rows (keep only final metric values where step is NaN/missing)
-        if not df.empty and "step" in df.columns:
+        # Filter to only non-streaming rows (step is NaN) for objective metrics
+        if df is not None and not df.empty and "step" in df.columns:
             import pandas as pd
-            filtered = df[pd.isna(df["step"])]
-            if not filtered.empty:
-                df = filtered
-            # else: no non-streaming rows, keep all (take last per trial+metric below)
+            non_streaming = df[pd.isna(df["step"])]
+            if not non_streaming.empty:
+                df = non_streaming
 
         objectives_out = {}
         obj_list = []
@@ -834,7 +836,9 @@ def _do_predict(parameters: dict) -> dict:
             raise HTTPException(503, "Model not fitted yet")
 
         try:
-            prediction = gs.adapter.predict([parameters])
+            from ax.core.observation import ObservationFeatures
+            obs = [ObservationFeatures(parameters=parameters)]
+            prediction = gs.adapter.predict(obs)
             # prediction is (means_dict, covariances_dict)
             means = prediction[0]
             sems = prediction[1] if len(prediction) > 1 else {}
@@ -1256,7 +1260,7 @@ def _compute_ax_analysis(analysis_cls, **kwargs) -> dict:
         results = []
         for card in cards:
             if isinstance(card, AnalysisCardGroup):
-                for sub in card.cards:
+                for sub in card.flatten():
                     if isinstance(sub, PlotlyAnalysisCard):
                         results.append({
                             "figure": _json.loads(sub.blob),
@@ -1281,28 +1285,44 @@ def _compute_ax_healthcheck(analysis_cls, **kwargs) -> dict:
         if client is None:
             raise HTTPException(503, "Optimizer not initialized")
 
-        import logging
-        ax_logger = logging.getLogger("ax")
-        prev_level = ax_logger.level
-        ax_logger.setLevel(logging.CRITICAL)
+        import logging, warnings
+        ax_loggers = [logging.getLogger(n) for n in ("ax", "ax.analysis", "ax.analysis.analysis")]
+        prev_levels = {l.name: l.level for l in ax_loggers}
+        for l in ax_loggers:
+            l.setLevel(logging.CRITICAL)
         try:
-            cards = client.compute_analyses(
-                analyses=[analysis_cls(**kwargs)],
-                display=False,
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                cards = client.compute_analyses(
+                    analyses=[analysis_cls(**kwargs)],
+                    display=False,
+                )
         finally:
-            ax_logger.setLevel(prev_level)
+            for l in ax_loggers:
+                l.setLevel(prev_levels.get(l.name, logging.WARNING))
 
         from ax.core.analysis_card import AnalysisCardGroup
         results = []
         for card in cards:
-            if isinstance(card, AnalysisCardGroup):
-                for sub in card.cards:
-                    results.append({"title": sub.title, "subtitle": sub.subtitle,
-                                    "blob": sub.blob, "level": getattr(sub, "level", "INFO")})
-            else:
-                results.append({"title": card.title, "subtitle": card.subtitle,
-                                "blob": card.blob, "level": getattr(card, "level", "INFO")})
+            sub_cards = card.flatten() if isinstance(card, AnalysisCardGroup) else [card]
+            for sub in sub_cards:
+                level = str(getattr(sub, "level", "INFO"))
+                if "ERROR" in level:
+                    log.debug(f"Skipping failed card: {sub.title}")
+                    continue
+                blob = sub.blob
+                # Skip cards with non-meaningful content (raw JSON, status codes)
+                if not blob or len(blob.strip()) < 10:
+                    continue
+                try:
+                    import json as _j
+                    parsed = _j.loads(blob)
+                    if isinstance(parsed, dict) and "status" in parsed:
+                        continue  # skip raw status blobs
+                except (ValueError, TypeError):
+                    pass  # not JSON, keep it
+                results.append({"title": sub.title, "subtitle": sub.subtitle,
+                                "blob": blob, "level": level})
         return {"cards": results}
 
 
@@ -1420,8 +1440,7 @@ def post_analysis_healthchecks(request_body: dict = {}):
             result = _compute_ax_healthcheck(cls)
             all_cards.extend(result.get("cards", []))
         except Exception as e:
-            all_cards.append({"title": cls_path[1], "subtitle": "Error",
-                              "blob": str(e), "level": "ERROR"})
+            log.debug(f"{cls_path[1]} failed (skipped): {e}")
     return SafeJSONResponse(content={"cards": all_cards})
 
 

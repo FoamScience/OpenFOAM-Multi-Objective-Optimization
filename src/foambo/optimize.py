@@ -726,6 +726,14 @@ def main():
         set_experiment_name(cfg["experiment"]["name"])
         client = StoreOptions.model_validate(dict(cfg['store'])).load()
         orch_cfg = ConfigOrchestratorOptions.model_validate(dict(cfg['orchestration_settings']))
+        # Set parameter groups on the runner from raw config
+        runner = client._experiment.runner
+        if runner is not None:
+            param_groups = {}
+            for p in cfg.get("experiment", {}).get("parameters", []):
+                if isinstance(p, dict) and p.get("groups"):
+                    param_groups[p["name"]] = list(p["groups"])
+            runner._parameter_groups = param_groups
         from .api_server import start_api_server, stop_api_server
         thread = start_api_server(
             client=client, raw_cfg=cfg, orch_cfg=orch_cfg,
