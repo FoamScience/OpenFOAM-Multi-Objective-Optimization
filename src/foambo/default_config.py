@@ -215,9 +215,6 @@ def get_default_config() -> Dict[str, Any]:
         },
     ]
 
-    # Visualizer section (no model)
-    default["visualizer"] = {"sensitivity_callback": None}
-
     return default
 
 def harvest_docs(models_with_paths: list[tuple[type, str]]) -> Dict[str, Any]:
@@ -698,33 +695,32 @@ def get_config_docs() -> Dict[str, Any]:
 
     # Phase 3: Standalone entries not tied to model fields
     harvested["version"] = f"The foamBO version to run this configuration with (v{str(VERSION)})"
-    harvested["visualizer"] = "[Section] Settings for the web-based visualizer UI"
-    harvested["visualizer.sensitivity_callback"] = textwrap.dedent("""
-        Optional callback for custom parameter visualization in sensitivity analysis.
-        The callback receives a `dict` of parameters and must return a base64-encoded PNG string.
+    harvested["dashboard"] = textwrap.dedent("""
+        [Section] Web dashboard and REST API settings.
 
-        **YAML config (dotted import path):**
-        ```yaml
-        visualizer:
-          sensitivity_callback: "mymodule.plot_function"
+        foamBO starts a web dashboard automatically during optimization (unless ``--no-ui``).
+        The dashboard provides real-time monitoring of trials, objectives, streaming metrics,
+        generation strategy progress, and on-demand model analysis.
+
+        **Configuration** (via ``orchestration_settings``):
+        - ``api_host``: Bind address (default: ``127.0.0.1``)
+        - ``api_port``: Port number (default: ``8098``; auto-picks a free port if in use; ``0`` to disable)
+
+        **CLI flags:**
+        - ``--no-ui``: Disable the web dashboard entirely
+        - ``--no-opt``: Load a saved experiment and launch the dashboard without running optimization
+
+        **Post-optimization viewing:**
+        ```bash
+        foamBO --no-opt --config MyOpt.yaml ++store.read_from=json
         ```
 
-        **Library API (Python callable):**
-        ```python
-        def my_plot(parameters: dict) -> str:
-            import matplotlib.pyplot as plt, io, base64
-            fig, ax = plt.subplots()
-            # ... render parameters ...
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png")
-            return base64.b64encode(buf.getvalue()).decode()
+        **Trial visualization** supports uploading a ``pvpython`` script for custom rendering:
+        - ``sys.argv[1]`` → case folder path
+        - ``sys.argv[2]`` → screenshot filename (saved inside case folder)
 
-        FoamBO("Exp")
-            .visualizer(sensitivity_fn=my_plot)
-            .show()
-        ```
-
-        Set to `null` to disable.
+        **Analysis tab** ("Generate Insights") refits the surrogate model on demand and provides:
+        sensitivity analysis, parallel coordinates, cross-validation, contour plots, and healthchecks.
     """).strip()
 
     harvested["python.library_usage"] = {
@@ -961,25 +957,29 @@ def get_config_docs() -> Dict[str, Any]:
     harvested["python.loading_client_state"] = {
         "category": "Python snippet",
         "content": """
-            Load a saved experiment for analysis, predictions, or visualization:
+            Load a saved experiment for analysis or predictions:
             ```python
             from foambo import FoamBO
 
             result = FoamBO.load("MyExperiment")
             predictions = result.predict([{"x": 10}])
             cv = result.cross_validate()
-            result.show()  # launch visualizer
             ```
 
             The underlying Ax Client is available as ``result.client`` for
             advanced use (e.g. ``result.client.get_pareto_frontier()``).
+
+            To browse results in the web dashboard:
+            ```bash
+            foamBO --no-opt --config MyOpt.yaml ++store.read_from=json
+            ```
             """,
     }
 
     harvested["python.resume_from_library"] = {
         "category": "Python snippet",
         "content": """
-            Load a saved experiment for analysis, visualization, or predictions:
+            Load a saved experiment for analysis or predictions:
 
             ```python
             from foambo import FoamBO
@@ -987,12 +987,16 @@ def get_config_docs() -> Dict[str, Any]:
             result = FoamBO.load("MyExperiment")
             result.predict([{"x": 10}])
             result.cross_validate()
-            result.show()  # launch visualizer
             ```
 
-            To continue optimization with more trials, use the CLI:
+            To browse results in the web dashboard:
             ```bash
-            uvx foamBO --config MyOpt.yaml \\
+            foamBO --no-opt --config MyOpt.yaml ++store.read_from=json
+            ```
+
+            To continue optimization with more trials:
+            ```bash
+            foamBO --config MyOpt.yaml \\
                 ++store.read_from=json \\
                 ++orchestration_settings.max_trials=200
             ```
