@@ -1517,9 +1517,9 @@ def _render_with_paraview_state(case_path: str, script_path: str) -> dict:
             "MESA_GL_VERSION_OVERRIDE": os.environ.get("MESA_GL_VERSION_OVERRIDE", ""),
             "TMPDIR": case_path,
         }
-        # Preserve ParaView/VTK/Python-related env vars
+        # Preserve ParaView/VTK/Python/foamBO-related env vars
         for k, v in os.environ.items():
-            if k.startswith(("PV_", "VTK_", "PARAVIEW_", "LD_LIBRARY", "PYTHONPATH", "PYTHON")):
+            if k.startswith(("PV_", "VTK_", "PARAVIEW_", "LD_LIBRARY", "PYTHONPATH", "PYTHON", "FOAMBO_")):
                 safe_env[k] = v
         # Use bubblewrap for OS-level isolation when available
         bwrap = shutil.which("bwrap")
