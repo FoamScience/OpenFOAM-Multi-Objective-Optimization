@@ -124,10 +124,6 @@ class FoamBO:
         self._read_from: str = "nowhere"
         self._backend_url: str | None = None
 
-        # Visualizer
-        self._sensitivity_callback: str | None = None
-        self._sensitivity_fn = None
-
     # --- Parameters ---
 
     def parameter(
@@ -479,23 +475,6 @@ class FoamBO:
         self._trial_gen = {"method": method, **kwargs}
         return self
 
-    # --- Visualizer ---
-
-    def visualizer(self, sensitivity_callback: str | None = None,
-                   sensitivity_fn=None) -> FoamBO:
-        """Configure the web-based visualizer.
-
-        Args:
-            sensitivity_callback: Dotted import path to a Python function
-                (e.g. ``"mymodule.plot_function"``). Used in both CLI and library mode.
-            sensitivity_fn: A Python callable ``fn(parameters: dict) -> str``
-                that returns a base64-encoded PNG. Library mode only.
-                Takes priority over ``sensitivity_callback`` if both are set.
-        """
-        self._sensitivity_callback = sensitivity_callback
-        self._sensitivity_fn = sensitivity_fn
-        return self
-
     @staticmethod
     def cross_validate(client) -> list[dict]:
         """Run leave-one-out cross-validation on the fitted surrogate model.
@@ -546,19 +525,6 @@ class FoamBO:
                         pred_cov.get(metric_name, {}).get(metric_name, 0.0))),
                 })
         return rows
-
-    def show(self, host: str = "127.0.0.1", port: int = 8099, open_browser: bool = True):
-        """Launch the visualization UI for the current experiment.
-
-        Requires a completed or in-progress experiment with saved state.
-        """
-        from .visualize import visualizer_ui
-        # Register callable so the visualizer can use it directly
-        if hasattr(self, '_sensitivity_fn') and self._sensitivity_fn is not None:
-            from . import visualize as _viz
-            _viz._sensitivity_fn_override = self._sensitivity_fn
-        cfg = self.build().to_dictconfig()
-        visualizer_ui(cfg, host=host, port=port, open_browser=open_browser)
 
     # --- Build, Check & Run ---
 
@@ -776,9 +742,6 @@ class FoamBO:
                 "backend_options": {"url": self._backend_url},
             },
             "trial_dependencies": self._dependencies,
-            "visualizer": {
-                "sensitivity_callback": self._sensitivity_callback,
-            },
         }
 
 
@@ -814,56 +777,3 @@ class FoamBOClient:
         """
         return self.client.predict(parameterizations)
 
-    def feature_report(self) -> str:
-        """Generate a feature usage report for this experiment.
-
-        Analyses which optional features (early stopping, dimensionality
-        reduction, trial dependencies, etc.) were configured, whether they
-        triggered, and what gains they delivered.
-
-        The report is written to ``<artifacts>/<name>_feature_report.txt``.
-
-        Returns:
-            Path to the generated report file.
-        """
-        from .feature_report import FeatureReporter
-        from omegaconf import DictConfig
-
-        if self.saved_cfg is None:
-            raise RuntimeError(
-                "No saved config found — cannot generate feature report without config context."
-            )
-        cfg = DictConfig(dict(self.saved_cfg))
-        reporter = FeatureReporter(cfg, self.artifacts, self.name)
-        reporter.update(self.client)
-        return reporter.path
-
-    def show(self, sensitivity_fn=None,
-             host: str = "127.0.0.1", port: int = 8099, open_browser: bool = True):
-        """Launch the visualization UI for this experiment.
-
-        Args:
-            sensitivity_fn: Optional Python callable for custom visualization.
-            host: Server host.
-            port: Server port.
-            open_browser: Open browser automatically.
-        """
-        from .visualize import visualizer_ui
-        if sensitivity_fn is not None:
-            from . import visualize as _viz
-            _viz._sensitivity_fn_override = sensitivity_fn
-        from .common import set_experiment_name
-        from omegaconf import DictConfig, OmegaConf
-
-        set_experiment_name(self.name)
-
-        if self.saved_cfg is None:
-            raise RuntimeError(
-                f"No saved config found at {self.artifacts}/{self.name}_config.yaml. "
-                f"Re-run the optimization to generate it.")
-
-        saved = dict(self.saved_cfg)
-        # Ensure store reads from saved state (original may have "nowhere")
-        saved["store"] = {"save_to": "json", "read_from": "json", "backend_options": {"url": None}}
-        cfg = DictConfig(saved)
-        visualizer_ui(cfg, host=host, port=port, open_browser=open_browser)

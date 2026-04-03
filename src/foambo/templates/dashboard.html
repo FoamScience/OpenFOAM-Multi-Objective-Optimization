@@ -291,31 +291,11 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
         <div class="stat-card"><div class="value" :style="{color: state.status?.model_fitted ? '#22c55e' : 'var(--pico-muted-color)'}" x-text="state.status?.model_fitted ? 'Yes' : 'No'"></div><div class="label">Model Fitted</div></div>
       </div>
 
-      <!-- Feasibility + DR side by side -->
-      <div class="chart-card panel-6" x-show="state.features?.feasibility?.length">
-        <h6>Outcome Constraint Feasibility</h6>
-        <div id="c-feas" style="height:180px"></div>
-      </div>
+      <!-- DR + Compute Efficiency side by side -->
       <div class="chart-card panel-6" x-show="state.experiment?.dimensionality_reduction?.enabled">
         <h6>Dimensionality Reduction</h6>
         <p style="font-size:0.75rem;color:var(--pico-secondary)" x-text="'after_trials=' + (state.experiment?.dimensionality_reduction?.after_trials||'?') + '  min_importance=' + (state.experiment?.dimensionality_reduction?.min_importance||'?')"></p>
-        <template x-if="state.features?.dimensionality_reduction?.fixed_params?.length">
-          <p style="font-size:0.8rem"><strong style="color:#22c55e">Fixed:</strong> <span x-text="state.features.dimensionality_reduction.fixed_params.join(', ')"></span></p>
-        </template>
-        <template x-if="!state.features?.dimensionality_reduction?.fixed_params?.length">
-          <p style="font-size:0.8rem;color:var(--pico-muted-color)">Waiting for enough trials...</p>
-      </template>
-      </div>
-
-      <!-- Event Log + Compute Efficiency -->
-      <div class="chart-card panel-6">
-        <h6>Event Log</h6>
-        <div style="max-height:200px;overflow-y:auto;font-size:0.75rem">
-          <template x-for="ev in ([...(state.features?.events||[])]).reverse()" :key="ev.timestamp+ev.message">
-            <div style="padding:0.2rem 0;border-bottom:1px solid var(--pico-muted-border-color)"><span style="color:var(--pico-muted-color);margin-right:0.5rem" x-text="ev.timestamp?.split('T')[1]?.substring(0,8)||ev.timestamp"></span><span x-text="ev.message"></span></div>
-          </template>
-          <p x-show="!state.features?.events?.length" style="color:var(--pico-muted-color)">No events yet</p>
-        </div>
+        <p style="font-size:0.8rem;color:var(--pico-muted-color)">Monitored via generation strategy</p>
       </div>
       <div class="chart-card panel-6">
         <h6>Compute Efficiency</h6>
@@ -642,12 +622,12 @@ const GC = {CenterOfSearchSpace:'#64748b',Sobol:'#3b82f6',MBM:'#00d4aa',bo:'#00d
 
 function app(){return{
   tab:'overview',tabs:[{id:'overview',label:'Overview'},{id:'trials',label:'Trials'},{id:'objectives',label:'Objectives'},{id:'analysis',label:'Analysis'},{id:'streaming',label:'Streaming'},{id:'dependencies',label:'Dependencies'},{id:'predict',label:'Predict'},{id:'config',label:'Config'}],
-  state:{status:null,experiment:null,trials:null,objectives:null,streaming:null,generation:null,features:null,pareto:null},
+  state:{status:null,experiment:null,trials:null,objectives:null,streaming:null,generation:null,pareto:null},
   lastUpdate:'',tf:'all',tsk:'index',tsd:1,xt:null,td:null,tdViz:null,tdVizLoading:false,tdVizErr:'',pvState:'',pp:{},predicting:false,pr:null,pe:null,cs:[],cv:{},cmp:[],
   anlMetric:'',anlLoading:false,anlError:'',anlSens:null,anlCV:null,anlPC:null,anlContour:null,anlSearch:null,anlInsights:null,anlHealth:null,
   async init(){await this.r();setInterval(()=>this.r(),3000);this.$watch('tab',()=>this.r());document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const n=parseInt(e.key);if(n>=1&&n<=this.tabs.length)this.tab=this.tabs[n-1].id});this.$watch('xt',async(v)=>{this.td=null;this.tdViz=null;this.tdVizLoading=false;this.tdVizErr='';if(v!==null){const r=await this.f('trials/'+v);if(r&&!r._error)this.td=r}})},
   _etags:{},_fetching:false,
-  _tabEps:{overview:['generation','features'],trials:[],objectives:['pareto'],analysis:[],streaming:['streaming'],dependencies:[],predict:[],config:['config']},
+  _tabEps:{overview:['generation'],trials:[],objectives:['pareto'],analysis:[],streaming:['streaming'],dependencies:[],predict:[],config:['config']},
   async r(){
     this._fetching=true;
     // Always fetch core data; add tab-specific endpoints
@@ -670,7 +650,7 @@ function app(){return{
   async uploadPvState(ev){const file=ev.target.files?.[0];if(!file)return;try{const body=await file.arrayBuffer();const r=await fetch(API+'/paraview-state',{method:'POST',body});const j=await r.json();if(j?.status==='ok')this.pvState=file.name;else this.tdVizErr=j?.error||'Upload failed'}catch(e){this.tdVizErr=e.message}},
   async removePvState(){await fetch(API+'/paraview-state',{method:'DELETE'});this.pvState=''},
   isBest(t,oName){const obj=this.state.objectives?.objectives?.[oName];if(!obj?.best)return false;return t.index===obj.best.trial},
-  avgDuration(){const tc=this.state.features?.trial_completions;if(!tc||!tc.length)return'-';const avg=tc.reduce((a,b)=>a+b.duration_s,0)/tc.length;const m=Math.floor(avg/60),s=Math.round(avg%60);return m+'m '+s+'s'},
+  avgDuration(){return'-'},
   toggleCmp(idx){const i=this.cmp.indexOf(idx);if(i>=0)this.cmp.splice(i,1);else if(this.cmp.length<3)this.cmp.push(idx)},
   cmpDiffers(key){const vals=this.cmp.map(i=>{const t=this.state.trials?.trials?.find(x=>x.index===i);return t?.parameters?.[key]});return vals.some(v=>v!==vals[0])},
   bv(n){return this.state.objectives?.objectives?.[n]?.best?.value?.toFixed(4)??'-'},
@@ -800,7 +780,6 @@ function app(){return{
     const hv=document.getElementById('c-hv');if(hv&&this.state.pareto?.hypervolume_trace?.length>1){const h=this.state.pareto.hypervolume_trace;Plotly.react(hv,[{x:h.map(v=>v.trial),y:h.map(v=>v.value),mode:'lines+markers',line:{color:'#00d4aa'},marker:{size:4}}],{...PL,xaxis:{...PL.xaxis,title:'Trial'}},PC)}
     for(const p of this.opairs()){const el=document.getElementById('cp-'+p[0]+'-'+p[1]);if(!el)continue;const d0=this.state.objectives?.objectives?.[p[0]]?.values||[],d1=this.state.objectives?.objectives?.[p[1]]?.values||[];if(d0.length<2)continue;const m0={},m1={};d0.forEach(v=>m0[v.trial]=v.value);d1.forEach(v=>m1[v.trial]=v.value);const cm=Object.keys(m0).filter(t=>t in m1).map(Number);const tr=[{x:cm.map(t=>m0[t]),y:cm.map(t=>m1[t]),mode:'markers',name:'trials',marker:{color:'#3b82f6',size:5},text:cm.map(t=>'T'+t)}];const fr=this.state.pareto?.frontier||[];if(fr.length)tr.push({x:fr.map(f=>f.metrics[p[0]]).filter(v=>v!=null),y:fr.map(f=>f.metrics[p[1]]).filter(v=>v!=null),mode:'markers',name:'pareto',marker:{color:'#00d4aa',size:9,symbol:'diamond'}});Plotly.react(el,tr,{...PL,xaxis:{...PL.xaxis,title:p[0]},yaxis:{...PL.yaxis,title:p[1]}},PC)}
     for(const[mn,pt]of Object.entries(this.state.streaming?.metrics||{})){const el=document.getElementById('cs-'+mn);if(!el)continue;const tr=[];let i=0;for(const[ti,td]of Object.entries(pt)){if(td.steps?.length<2)continue;tr.push({x:td.steps,y:td.values,mode:'lines',name:'T'+ti,line:{color:CL[i%CL.length],width:1.5}});i++}const sh=[];const esTrials=this.state.trials?.trials?.filter(t=>t.status==='EARLY_STOPPED')||[];for(const est of esTrials){const td=pt[est.index];if(td?.steps?.length){const lastStep=td.steps[td.steps.length-1];sh.push({type:'line',x0:lastStep,x1:lastStep,y0:0,y1:1,yref:'paper',line:{color:'#f59e0b',width:2,dash:'dashdot'}})}}const th=this.state.streaming?.thresholds?.[mn];if(th){if(th.type==='threshold'&&th.value!=null){sh.push({type:'line',y0:th.value,y1:th.value,x0:0,x1:1,xref:'paper',line:{color:'#ef4444',dash:'dash',width:2}});tr.push({x:[],y:[],mode:'lines',name:'threshold: '+th.value,line:{color:'#ef4444',dash:'dash'},showlegend:true,hoverinfo:'skip'})}if(th.type==='percentile'&&th.resolved_steps?.length){tr.push({x:th.resolved_steps,y:th.resolved_values,mode:'lines',name:'P'+th.percentile+' threshold',line:{color:'#ef4444',dash:'dash',width:2}})}if(th.min_progression)sh.push({type:'line',x0:th.min_progression,x1:th.min_progression,y0:0,y1:1,yref:'paper',line:{color:'#f59e0b',dash:'dot',width:1.5}})}Plotly.react(el,tr,{...PL,shapes:sh,xaxis:{...PL.xaxis,title:'Step'},yaxis:{...PL.yaxis,title:mn}},PC)}
-    const fe=document.getElementById('c-feas');if(fe&&this.state.features?.feasibility?.length){const f=this.state.features.feasibility;const cp=[];let s=0;f.forEach((v,i)=>{s+=v.feasible?1:0;cp.push(s/(i+1)*100)});Plotly.react(fe,[{x:f.map(v=>v.trial),y:cp,mode:'lines+markers',line:{color:'#00d4aa'},marker:{size:3}}],{...PL,yaxis:{...PL.yaxis,title:'Feasible %',range:[0,105]}},PC)}
   }
 }}
 </script>

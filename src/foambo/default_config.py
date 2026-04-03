@@ -999,59 +999,6 @@ def get_config_docs() -> Dict[str, Any]:
             """,
     }
 
-    harvested["python.feature_report"] = {
-        "category": "Python snippet",
-        "content": """
-            foamBO generates a feature usage report (`<artifacts>/<name>_feature_report.md`)
-            that tracks which optional features are active and their impact on the optimization.
-            The report updates incrementally after each trial and persists across resumes.
-
-            **Sections:**
-            - Early stopping: monitored metrics, trials stopped, compute savings
-            - Global stopping: budget consumption, convergence detection
-            - Dimensionality reduction: fixed parameters, search space reduction %
-            - Trial dependencies: rules, phases, per-trial resolution log
-            - Baseline comparison: per-objective improvement over baseline
-            - Compute efficiency: ideal vs actual wall time, idle fraction
-            - Best objective progress: trace of when best values improved
-            - Event log: timestamped feature triggers
-
-            **Use cases:**
-            - Diagnosing slow runs (high idle fraction -> increase parallelism or reduce poll interval)
-            - Validating that early stopping, dependencies, and dim reduction trigger as expected
-            - Comparing runs by diffing reports across experiments
-
-            Generate post-optimization:
-            ```python
-            from foambo import FoamBO
-            path = FoamBO.load("MyExperiment").feature_report()
-            ```
-            """,
-    }
-
-    harvested["visualizer_ui"] = {
-        "category": "Visualizer API",
-        "content": """
-            Launch an interactive web UI to explore optimization results and run manual trials.
-
-            ```python
-            from foambo.visualize import visualizer_ui
-            from foambo.config import load_config
-
-            cfg = load_config("config.yaml")
-            visualizer_ui(cfg, host="127.0.0.1", port=8099, open_browser=True)
-            ```
-
-            **Features:** Experiment overview, Pareto frontier, sensitivity analysis,
-            manual trials, OpenFOAM visualization (PyVista), diagnostics & insights.
-
-            **Endpoints:** `/api/experiment`, `/api/trials`, `/api/pareto`,
-            `/api/sensitivity`, `/api/run_trial`, `/api/trial_status/{index}`,
-            `/api/fit_model`, `/api/viz_settings`, `/api/trial_visualization/{index}`,
-            `/api/insights`, `/api/pareto_html`
-            """,
-    }
-
     # Phase 4: Load tutorials from docs/*.md
     tutorials = load_tutorial_docs()
     harvested.update(tutorials)

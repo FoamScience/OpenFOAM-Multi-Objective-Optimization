@@ -82,7 +82,6 @@ def optimize(cfg):
     from .common import VERSION, set_experiment_name, get_experiment_name
     from .metrics import streaming_metric
     from .analysis import compute_analysis_cards, plot_pareto_frontier
-    from .feature_report import FeatureReporter
     from .orchestrate import (
         ExistingTrialsOptions, ExperimentOptions, OptimizationOptions,
         ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
@@ -228,19 +227,6 @@ def optimize(cfg):
     _dim_reduction_done = False
     _dim_reduction_attempts = 0
 
-    _reporter = FeatureReporter(
-        raw_cfg,
-        raw_cfg["optimization"]["case_runner"]["artifacts_folder"],
-        raw_cfg["experiment"]["name"],
-    )
-    # Restore reporter state from a previous run (resume support)
-    _saved_reporter = StoreOptions.load_feature_reporter_state(
-        raw_cfg["experiment"]["name"],
-        raw_cfg["optimization"]["case_runner"]["artifacts_folder"],
-    )
-    if _saved_reporter:
-        _reporter.restore(_saved_reporter)
-
     def _maybe_reduce_dimensions():
         nonlocal _dim_reduction_done, _dim_reduction_attempts
         if _dim_reduction_done:
@@ -359,14 +345,13 @@ def optimize(cfg):
     _reported_failures: set[int] = set()
 
     # API server update function — no-op until server starts
-    _update_api = lambda client, reporter: None
+    _update_api = lambda client: None
     if orch_cfg.api_port != 0:
         from .api_server import start_api_server, update_api_state
         _api_thread = start_api_server(
             client=client,
             raw_cfg=raw_cfg,
             orch_cfg=orch_cfg,
-            reporter=_reporter,
             host=orch_cfg.api_host,
             port=orch_cfg.api_port,
         )
@@ -410,11 +395,9 @@ def optimize(cfg):
             if trial.status == _TS.FAILED and tidx not in _reported_failures:
                 _reported_failures.add(tidx)
                 _log_trial_failure(tidx, case_path, log)
-        _reporter.update(client)
-        store_cfg._feature_reporter_state = _reporter.to_dict()
         # Refresh API server state
         if orch_cfg.api_port != 0:
-            _update_api(client, _reporter)
+            _update_api(client)
         from .analysis import plot_streaming_metrics
         plot_streaming_metrics(raw_cfg, client)
 
@@ -527,10 +510,7 @@ def optimize(cfg):
     log.info("=================================================")
     cards = compute_analysis_cards(raw_cfg, client, open_html=False)
 
-    _reporter.update(client)
-    store_cfg._feature_reporter_state = _reporter.to_dict()
     store_cfg.save(client, cards)
-    log.info(f"Feature report: {_reporter.path}")
 
     if orch_cfg.api_port != 0:
         from .api_server import stop_api_server
@@ -618,14 +598,12 @@ def main():
     uvx foamBO --config My.yaml ++experiment.name=Test2  # Runs optimization from My.yaml with different experiment name
     uvx foamBO --analysis ++store.read_from=json         # Generates reports for optimization from foamBO.yaml configuration
     uvx foamBO --analysis --json                         # Generates reports and exports Plotly figures as JSON
-    uvx foamBO --docs                                    # Browse the documentation
-    uvx foamBO --visualize                               # Run visualization UI for current experiment state""",
+    uvx foamBO --docs                                    # Browse the documentation""",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--analysis', action='store_true', help='Generate optimization reports')
     group.add_argument('--generate-config', action='store_true', help='Generate a default config file and exit')
     group.add_argument('--docs', action='store_true', help='Open Configuration Docs explorer')
-    group.add_argument('--visualize', action='store_true', help='Run visualization UI for current experiment state')
     group.add_argument('--no-opt', action='store_true', help='Load experiment and start web dashboard without running optimization')
     group.add_argument('--preflight-checks', action='store_true', help='Validate configuration before running')
     group.add_argument('-V', '--version', action='version', version='%(prog)s ' + VERSION)
@@ -700,30 +678,12 @@ def main():
         _ = plot_pareto_frontier(cfg, client=StoreOptions.model_validate(dict(cfg['store'])).load(), open_html=False, export_json=args.json)
         return
 
-    if args.visualize:
-        import logging
-        log = logging.getLogger(__name__)
-        from .config import load_config, override_config
-        from .visualize import visualizer_ui
-        cfg = load_config(args.config)
-        if args.overrides:
-            overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
-            if overrides:
-                cfg = override_config(cfg, overrides)
-        if cfg['store']['read_from'] == "nowhere":
-            log.error(f"Cannot perform analysis without reading in client state\n"
-                      f"Please set store.read_from option to either `json` or `sql`")
-            exit(1)
-        visualizer_ui(cfg)
-        return
-
     if args.no_opt:
         import logging
         log = logging.getLogger(__name__)
         from .config import load_config, override_config
         from .common import set_experiment_name
         from .orchestrate import StoreOptions, ConfigOrchestratorOptions
-        from .feature_report import FeatureReporter
         cfg = load_config(args.config)
         if args.overrides:
             overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
@@ -734,17 +694,11 @@ def main():
                       "Please set store.read_from option to either `json` or `sql`")
             exit(1)
         set_experiment_name(cfg["experiment"]["name"])
-        exp_name = cfg["experiment"]["name"]
-        artifacts = cfg["optimization"]["case_runner"]["artifacts_folder"]
         client = StoreOptions.model_validate(dict(cfg['store'])).load()
         orch_cfg = ConfigOrchestratorOptions.model_validate(dict(cfg['orchestration_settings']))
-        reporter = FeatureReporter(cfg, artifacts, exp_name)
-        saved = StoreOptions.load_feature_reporter_state(exp_name, artifacts)
-        if saved:
-            reporter.restore(saved)
         from .api_server import start_api_server, stop_api_server
         thread = start_api_server(
-            client=client, raw_cfg=cfg, orch_cfg=orch_cfg, reporter=reporter,
+            client=client, raw_cfg=cfg, orch_cfg=orch_cfg,
             host=orch_cfg.api_host, port=orch_cfg.api_port,
         )
         if thread is None:

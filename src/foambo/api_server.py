@@ -185,7 +185,6 @@ class _ApiState:
         self.client = None
         self.raw_cfg = None
         self.orch_cfg = None
-        self.reporter = None
         self.lock = threading.Lock()
         self.start_time: float = time.time()
         self.last_callback: float = time.time()
@@ -197,7 +196,6 @@ class _ApiState:
             "trials": 0,
             "objectives": 0,
             "streaming": 0,
-            "features": 0,
             "generation": 0,
             "pareto": 0,
             "config": 0,
@@ -210,17 +208,16 @@ class _ApiState:
     def etag(self, endpoint: str) -> str:
         return f'"{endpoint}-{self._versions.get(endpoint, 0)}"'
 
-    def update(self, client, reporter):
+    def update(self, client):
         """Called from the optimizer callback to refresh state."""
         with self.lock:
             self.client = client
-            self.reporter = reporter
             self.last_callback = time.time()
             self.callback_seq += 1
             # Bump all poll-driven endpoints
             self.bump(
                 "trials", "objectives", "streaming",
-                "features", "generation", "pareto", "config",
+                "generation", "pareto", "config",
             )
 
 
@@ -620,79 +617,6 @@ def _get_streaming() -> dict:
             "metrics": metrics_out,
             "thresholds": data.get("thresholds", {}),
         }
-
-
-def _get_features() -> dict:
-    """Return feature reporter state with server-computed feasibility."""
-    with _state.lock:
-        reporter = _state.reporter
-        client = _state.client
-        base = reporter.to_dict() if reporter else {}
-
-        # Compute feasibility server-side
-        if client is not None:
-            exp = client._experiment
-            opt_config = exp.optimization_config
-            from ax.core.base_trial import TrialStatus as AxTrialStatus
-            import re
-
-            # Gather outcome constraints
-            constraints = []
-            if opt_config.outcome_constraints:
-                for c in opt_config.outcome_constraints:
-                    constraints.append(str(c))
-
-            # Gather per-trial final metric values
-            trial_metrics: dict[int, dict[str, float]] = {}
-            try:
-                df = exp.lookup_data().df
-                if not df.empty:
-                    for _, row in df.iterrows():
-                        tidx = int(row["trial_index"])
-                        trial_metrics.setdefault(tidx, {})[row["metric_name"]] = float(row["mean"])
-            except Exception:
-                pass
-
-            # Gather baseline values from the reporter
-            baseline_vals: dict[str, float] = {}
-            baseline_feat = base.get("baseline", {})
-            if baseline_feat:
-                for mname, info in baseline_feat.get("metrics", {}).items():
-                    if isinstance(info, dict) and "baseline" in info:
-                        baseline_vals[mname] = float(info["baseline"])
-
-            # Evaluate constraints for each completed trial
-            feasibility = []
-            for tidx, trial in list(exp.trials.items()):
-                if trial.status != AxTrialStatus.COMPLETED or tidx not in trial_metrics:
-                    continue
-                tm = trial_metrics[tidx]
-                feasible = True
-                for c_str in constraints:
-                    m = re.match(r"(\w+)\s*(>=|<=)\s*(.+)", c_str.strip())
-                    if not m:
-                        continue
-                    mname, op, rhs_str = m.group(1), m.group(2), m.group(3).strip()
-                    if mname not in tm:
-                        continue
-                    try:
-                        rhs = float(rhs_str)
-                    except ValueError:
-                        if "baseline" in rhs_str and mname in baseline_vals:
-                            try:
-                                rhs = float(eval(rhs_str.replace("baseline", str(baseline_vals[mname]))))  # noqa: S307
-                            except Exception:
-                                continue
-                        else:
-                            continue
-                    if (op == ">=" and tm[mname] < rhs) or (op == "<=" and tm[mname] > rhs):
-                        feasible = False
-                        break
-                feasibility.append({"trial": tidx, "feasible": feasible})
-            feasibility.sort(key=lambda x: x["trial"])
-            base["feasibility"] = feasibility
-
-        return base
 
 
 def _get_generation() -> dict:
@@ -1127,15 +1051,6 @@ def get_streaming(if_none_match: Optional[str] = Header(None)):
         return cached
     data = _get_streaming()
     return SafeJSONResponse(content=data, headers=_headers("streaming"))
-
-
-@app.get("/api/v1/features")
-def get_features(if_none_match: Optional[str] = Header(None)):
-    cached = _check_etag("features", if_none_match)
-    if cached:
-        return cached
-    data = _get_features()
-    return SafeJSONResponse(content=data, headers=_headers("features"))
 
 
 @app.get("/api/v1/generation")
@@ -1693,7 +1608,7 @@ def get_trial_visualization(trial_index: int):
 
 # Server lifecycle
 
-def start_api_server(client, raw_cfg, orch_cfg, reporter, host: str = "127.0.0.1",
+def start_api_server(client, raw_cfg, orch_cfg, host: str = "127.0.0.1",
                      port: int = 8098) -> threading.Thread | None:
     """Start the API server in a background daemon thread.
 
@@ -1701,7 +1616,6 @@ def start_api_server(client, raw_cfg, orch_cfg, reporter, host: str = "127.0.0.1
         client: The Ax Client instance (shared, not copied).
         raw_cfg: The OmegaConf DictConfig.
         orch_cfg: The typed ConfigOrchestratorOptions.
-        reporter: The FeatureReporter instance.
         host: Bind address.
         port: Bind port. 0 to disable.
 
@@ -1715,7 +1629,6 @@ def start_api_server(client, raw_cfg, orch_cfg, reporter, host: str = "127.0.0.1
     _state.client = client
     _state.raw_cfg = raw_cfg
     _state.orch_cfg = orch_cfg
-    _state.reporter = reporter
     _state.start_time = time.time()
     _state.last_callback = time.time()
 
@@ -1751,9 +1664,9 @@ def stop_api_server():
         log.info("API server shutdown requested")
 
 
-def update_api_state(client, reporter):
+def update_api_state(client):
     """Called from the optimizer callback to refresh cached data.
 
     Bumps version counters so ETag-based caching works correctly.
     """
-    _state.update(client, reporter)
+    _state.update(client)

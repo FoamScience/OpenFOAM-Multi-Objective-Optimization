@@ -743,9 +743,6 @@ class StoreOptions(FoamBOBaseModel):
         return client
     # Attached foamBO config to embed in the JSON state file
     _foambo_config: dict | None = None
-    # Feature reporter incremental state (serialized alongside foambo_config)
-    _feature_reporter_state: dict | None = None
-
     def save(self, client: Client, cards: Iterable[AnalysisCardBase] | None = None):
         filepath = f"artifacts/{get_experiment_name()}_client_state.json"
         if self.save_to == "json":
@@ -754,8 +751,6 @@ class StoreOptions(FoamBOBaseModel):
             extras = {}
             if self._foambo_config is not None:
                 extras["foambo_config"] = self._foambo_config
-            if self._feature_reporter_state is not None:
-                extras["feature_reporter"] = self._feature_reporter_state
             if extras:
                 import json
                 with open(filepath, "r") as f:
@@ -781,20 +776,6 @@ class StoreOptions(FoamBOBaseModel):
         except (json.JSONDecodeError, ValueError):
             return None
         return state.get("foambo_config")
-
-    @staticmethod
-    def load_feature_reporter_state(name: str, artifacts: str = "./artifacts") -> dict | None:
-        """Read the embedded feature reporter state from a saved JSON state file."""
-        import json, os
-        filepath = os.path.join(artifacts, f"{name}_client_state.json")
-        if not os.path.isfile(filepath):
-            return None
-        try:
-            with open(filepath) as f:
-                state = json.load(f)
-        except (json.JSONDecodeError, ValueError):
-            return None
-        return state.get("feature_reporter")
 
 
 class ExistingTrialsOptions(FoamBOBaseModel):
