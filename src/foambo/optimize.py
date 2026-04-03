@@ -278,10 +278,10 @@ def optimize(cfg):
             bounds = torch.zeros(2, n_params, dtype=torch.float64)
             bounds[1] = 1.0  # model operates in normalized space
             sobol = SobolSensitivityGPMean(model=model, bounds=bounds, num_mc_samples=1000)
-            first_order = sobol.first_order_indices()  # shape: (n_params,) aggregated across outputs
+            total_order = sobol.total_order_indices()  # includes interactions with other params
             # Map to param names
             sensitivities = {"_aggregated": {
-                pname: float(first_order[i].abs()) for i, pname in enumerate(param_names)
+                pname: float(total_order[i].abs()) for i, pname in enumerate(param_names)
             }}
         except Exception as e:
             _dim_reduction_attempts += 1
