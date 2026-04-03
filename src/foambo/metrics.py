@@ -578,6 +578,11 @@ class FoamJobRunner(IRunner):
                 return math.sqrt(total)
             idx = min(completed, key=lambda k: _dist(
                 target_params, completed[k].get("parameters", {})))
+            best_dist = _dist(target_params, completed[idx].get("parameters", {}))
+            threshold = getattr(selector, "similarity_threshold", None)
+            if threshold is not None and best_dist > threshold:
+                log.info(f"Nearest trial T{idx} distance {best_dist:.4f} exceeds threshold {threshold} — skipping")
+                return None
             return (idx, completed[idx]["case_path"])
         if strategy == "custom":
             cmd = selector.command
@@ -696,9 +701,10 @@ class FoamJobRunner(IRunner):
 
         # Always write hook scripts (no-op when empty) so env vars are always set
         hook_env = self._write_hook_scripts(target_path, phase_commands)
-        # Expose source/target as env vars for the runner (empty string if no source found)
-        hook_env["FOAMBO_SOURCE_TRIAL"] = last_source_path or ""
         hook_env["FOAMBO_TARGET_TRIAL"] = target_path
+        # Only set FOAMBO_SOURCE_TRIAL if a source was actually resolved
+        if last_source_path is not None:
+            hook_env["FOAMBO_SOURCE_TRIAL"] = last_source_path
         dep_meta["_hook_env"] = hook_env
 
         return dep_meta

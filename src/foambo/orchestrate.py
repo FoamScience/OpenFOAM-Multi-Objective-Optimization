@@ -855,6 +855,10 @@ class TrialSelector(FoamBOBaseModel):
         description="Trial index to use (only for `by_index` strategy)")
     command: str | List[str] | None = Field(default=None,
         description="Command that prints a trial index to stdout (only for `custom` strategy)")
+    similarity_threshold: float | None = Field(default=None,
+        description="Maximum normalized L2 distance for `nearest` strategy. "
+        "If the nearest trial exceeds this threshold, the dependency is treated as unresolved (applies fallback). "
+        "Range: 0.0 (exact match) to 1.0+ (no restriction). Default: no threshold.")
     fallback: Literal["skip", "error"] = Field(default="skip",
         description="What to do when no suitable source trial exists. 'skip' proceeds without the dependency, 'error' fails the trial")
 
