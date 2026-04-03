@@ -648,9 +648,11 @@ def main():
         if cache_file.exists():
             try:
                 docs = json.loads(cache_file.read_text())
+                print(f"Loading cached docs (v{VERSION})")
             except Exception:
                 pass
         if docs is None:
+            print(f"Generating docs (v{VERSION})...")
             from .default_config import get_config_docs
             docs = get_config_docs()
             try:
