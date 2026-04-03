@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>foamBO Dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2/css/pico.min.css">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --pico-font-family: 'JetBrains Mono', monospace;
+  --pico-font-size: 14px;
+  --accent: #00d4aa;
+}
+[data-theme="dark"] {
+  --pico-primary: #00d4aa;
+  --pico-primary-hover: #00eebb;
+  --pico-color: #f0f2f5;
+  --pico-muted-color: #7a8494;
+  --pico-secondary: #d0d6de;
+  --pico-h6-color: #f0f2f5;
+}
+body { margin: 0; }
+article h6, .config-section-title { color: var(--pico-color) !important; }
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1.5rem;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--pico-background-color);
+}
+.app-header h1 { margin: 0; font-size: 1rem; color: var(--accent); }
+.app-header .status {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  font-size: 0.75rem;
+  color: var(--pico-secondary);
+}
+.dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+.dot-live { background: var(--pico-ins-color); }
+.dot-off { background: var(--pico-del-color); }
+@keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.3} }
+
+/* Tabs */
+nav[role="tablist"] {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  padding: 0 1rem;
+  overflow-x: auto;
+  background: var(--pico-background-color);
+  position: sticky;
+  top: 44px;
+  z-index: 9;
+}
+nav[role="tablist"] button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.6rem 1rem;
+  font-size: 0.8rem;
+  color: var(--pico-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+nav[role="tablist"] button:hover { color: var(--pico-color); }
+nav[role="tablist"] button.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+nav[role="tablist"] .tab-key {
+  font-size: 0.6rem;
+  opacity: 0.4;
+  margin-left: 4px;
+}
+.fetch-bar { position:absolute;bottom:0;left:0;height:2px;width:0;background:var(--accent);transition:none }
+.fetch-bar.active { width:100%;transition:width 1.5s ease-out }
+/* Consistent action buttons across all tabs */
+.btn { font-size:0.75rem;padding:0.3rem 0.8rem;cursor:pointer;border-radius:4px;border:1px solid var(--pico-muted-border-color);background:transparent;color:var(--pico-color);transition:all 0.15s;display:inline-flex;align-items:center;width:auto;margin:0 }
+.btn:hover { border-color:var(--accent);color:var(--accent) }
+.btn:disabled { opacity:0.4;cursor:not-allowed }
+.btn-accent { border-color:var(--accent);color:var(--accent) }
+.btn-danger { border-color:#ef4444;color:#ef4444 }
+.btn-danger:hover { background:rgba(239,68,68,0.1) }
+tr.trial-selected { background:rgba(0,212,170,0.1) !important }
+tr.trial-selected td { border-bottom-color:transparent }
+tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
+
+.page { padding: 1rem; margin: 0 auto; }
+.page[hidden] { display: none; }
+
+/* Grafana-like panel grid */
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 0.75rem;
+}
+.panel { grid-column: span 12; }
+.panel-6 { grid-column: span 6; }
+.panel-4 { grid-column: span 4; }
+.panel-3 { grid-column: span 3; }
+.panel-8 { grid-column: span 8; }
+@media (max-width: 900px) {
+  .panel-6, .panel-4, .panel-3, .panel-8 { grid-column: span 12; }
+}
+
+/* Stat grid */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.stat-card {
+  padding: 0.75rem;
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-card-background-color);
+  border: 1px solid var(--pico-muted-border-color);
+}
+.stat-card .value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--accent);
+  line-height: 1.2;
+}
+.stat-card .label {
+  font-size: 0.7rem;
+  color: var(--pico-secondary);
+  margin-top: 0.15rem;
+}
+
+/* Badge */
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 1rem;
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+.badge-COMPLETED { background: rgba(34,197,94,0.15); color: #22c55e; }
+.badge-RUNNING { background: rgba(59,130,246,0.15); color: #3b82f6; }
+.badge-FAILED { background: rgba(239,68,68,0.15); color: #ef4444; }
+.badge-EARLY_STOPPED { background: rgba(245,158,11,0.15); color: #f59e0b; }
+.badge-ABANDONED { background: rgba(100,116,139,0.15); color: #94a3b8; }
+
+/* Gen bar */
+.gen-bar { display: flex; height: 1.5rem; border-radius: 4px; overflow: hidden; }
+.gen-bar > div {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6rem;
+  color: #0f1117;
+  font-weight: 600;
+  transition: width 0.5s;
+}
+
+/* Chart / Panel */
+.chart-card {
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  padding: 0.75rem;
+  background: var(--pico-card-background-color);
+  overflow: hidden;
+  min-width: 0;
+}
+.chart-card .js-plotly-plot, .chart-card .plotly { width:100% !important; }
+.chart-card h6 {
+  margin: 0 0 0.5rem;
+  font-size: 0.75rem;
+  color: var(--pico-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  padding-bottom: 0.4rem;
+}
+
+/* Dep tree */
+.dep-tree { font-size: 0.8rem; line-height: 1.8; white-space: pre; }
+.node-COMPLETED { color: #22c55e; }
+.node-RUNNING { color: #3b82f6; }
+.node-FAILED { color: #ef4444; }
+.node-EARLY_STOPPED { color: #f59e0b; }
+
+/* Config cards */
+.config-card { margin-bottom: 1rem; }
+.config-field {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  font-size: 0.8rem;
+}
+.config-field:last-child { border-bottom: none; }
+.config-desc { font-size: 0.7rem; color: var(--pico-muted-color); font-style: italic; margin-bottom: 0.2rem; }
+.config-key { color: var(--pico-color); }
+.config-key .lock { font-size: 0.65rem; }
+
+/* Predict */
+.predict-result {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--pico-card-background-color);
+  border-radius: var(--pico-border-radius);
+  border: 1px solid var(--pico-muted-border-color);
+  margin-bottom: 0.5rem;
+}
+.predict-result .mean { font-size: 1rem; color: var(--accent); font-weight: 600; }
+.predict-result .sem { font-size: 0.8rem; color: var(--pico-secondary); }
+
+/* Filter pills */
+.filters { display: flex; gap: 0.4rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.filters button {
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: 1rem;
+  background: transparent;
+  font-size: 0.75rem;
+  color: var(--pico-muted-color);
+  cursor: pointer;
+}
+.filters button:hover { border-color: var(--pico-color); color: var(--pico-color); }
+.filters button.active { border-color: var(--accent); color: var(--accent); background: rgba(0,212,170,0.1); }
+
+/* Plotly */
+.js-plotly-plot .plotly .modebar { opacity: 0.2; }
+.js-plotly-plot .plotly .modebar:hover { opacity: 0.7; }
+</style>
+</head>
+<body>
+<div x-data="app()" x-init="init()">
+  <!-- Header -->
+  <header class="app-header">
+    <h1>foamBO <small style="font-weight:300;color:var(--pico-secondary)" x-text="'— ' + (state.experiment?.name || '')"></small></h1>
+    <div class="status">
+      <span><span class="dot" :class="state.status===null?'':state.status?.running?'dot-live':'dot-off'"></span> <span x-text="state.status===null?'Connecting...':state.status?.running?'Live':'Offline'"></span> <span style="color:var(--pico-muted-color);font-size:0.7rem" x-text="'(3s)'"></span></span>
+      <span x-text="(state.status?.trials_total || 0) + ' trials'"></span>
+      <span x-text="lastUpdate"></span>
+    </div>
+  </header>
+
+  <!-- Tabs -->
+  <nav role="tablist">
+    <template x-for="(t,i) in tabs" :key="t.id">
+      <button :class="{ active: tab === t.id }" @click="tab = t.id">
+        <span x-text="t.label"></span><span class="tab-key" x-text="i+1"></span>
+      </button>
+    </template>
+    <div class="fetch-bar" :class="_fetching?'active':''"></div>
+  </nav>
+
+  <!-- OVERVIEW -->
+  <div class="page" :hidden="tab !== 'overview'">
+    <div class="panel-grid">
+      <!-- Stat cards row -->
+      <div class="stat-card panel-3"><div class="value" x-text="state.status?.trials_completed || 0"></div><div class="label">Completed</div><div class="label" style="color:var(--accent)" x-text="pct('trials_completed')"></div></div>
+      <div class="stat-card panel-3"><div class="value" style="color:#3b82f6" x-text="state.status?.trials_running || 0"></div><div class="label">Running</div><div class="label" x-text="pct('trials_running')"></div></div>
+      <div class="stat-card panel-3"><div class="value" style="color:#ef4444" x-text="state.trials?.counts?.FAILED || 0"></div><div class="label">Failed</div><div class="label" x-text="pctc('FAILED')"></div></div>
+      <div class="stat-card panel-3"><div class="value" style="color:#f59e0b" x-text="state.trials?.counts?.EARLY_STOPPED || 0"></div><div class="label">Early Stopped</div><div class="label" x-text="pctc('EARLY_STOPPED')"></div></div>
+
+      <!-- Gen Strategy + Budget side by side -->
+      <div class="chart-card panel-8" x-show="state.generation?.node_counts">
+        <h6>Generation Strategy</h6>
+        <template x-for="(c,n) in state.generation?.node_counts||{}" :key="'gp'+n">
+          <div style="margin-bottom:0.5rem">
+            <div style="display:flex;justify-content:space-between;font-size:0.75rem;margin-bottom:0.2rem">
+              <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;vertical-align:middle;margin-right:5px" :style="{background:genC(n)}"></span><span x-text="n"></span><span x-show="state.generation?.current_node===n" style="color:var(--accent);margin-left:4px;font-size:0.65rem">●</span></span>
+              <span x-text="genLabel(n)"></span>
+            </div>
+            <div style="height:6px;background:var(--pico-muted-border-color);border-radius:3px;overflow:hidden">
+              <div style="height:100%;border-radius:3px;transition:width 0.5s" :style="{width:genW(n),background:genC(n)}"></div>
+            </div>
+          </div>
+        </template>
+      </div>
+      <div class="panel-4">
+        <div class="stat-card" style="margin-bottom:0.75rem"><div class="value" x-text="(state.status?.trials_total||0)+' / '+(state.experiment?.max_trials||'?')"></div><div class="label">Budget</div><div class="label" x-text="budgetPct()"></div></div>
+        <div class="stat-card"><div class="value" :style="{color: state.status?.model_fitted ? '#22c55e' : 'var(--pico-muted-color)'}" x-text="state.status?.model_fitted ? 'Yes' : 'No'"></div><div class="label">Model Fitted</div></div>
+      </div>
+
+      <!-- Feasibility + DR side by side -->
+      <div class="chart-card panel-6" x-show="state.features?.feasibility?.length">
+        <h6>Outcome Constraint Feasibility</h6>
+        <div id="c-feas" style="height:180px"></div>
+      </div>
+      <div class="chart-card panel-6" x-show="state.experiment?.dimensionality_reduction?.enabled">
+        <h6>Dimensionality Reduction</h6>
+        <p style="font-size:0.75rem;color:var(--pico-secondary)" x-text="'after_trials=' + (state.experiment?.dimensionality_reduction?.after_trials||'?') + '  min_importance=' + (state.experiment?.dimensionality_reduction?.min_importance||'?')"></p>
+        <template x-if="state.features?.dimensionality_reduction?.fixed_params?.length">
+          <p style="font-size:0.8rem"><strong style="color:#22c55e">Fixed:</strong> <span x-text="state.features.dimensionality_reduction.fixed_params.join(', ')"></span></p>
+        </template>
+        <template x-if="!state.features?.dimensionality_reduction?.fixed_params?.length">
+          <p style="font-size:0.8rem;color:var(--pico-muted-color)">Waiting for enough trials...</p>
+      </template>
+      </div>
+
+      <!-- Event Log + Compute Efficiency -->
+      <div class="chart-card panel-6">
+        <h6>Event Log</h6>
+        <div style="max-height:200px;overflow-y:auto;font-size:0.75rem">
+          <template x-for="ev in ([...(state.features?.events||[])]).reverse()" :key="ev.timestamp+ev.message">
+            <div style="padding:0.2rem 0;border-bottom:1px solid var(--pico-muted-border-color)"><span style="color:var(--pico-muted-color);margin-right:0.5rem" x-text="ev.timestamp?.split('T')[1]?.substring(0,8)||ev.timestamp"></span><span x-text="ev.message"></span></div>
+          </template>
+          <p x-show="!state.features?.events?.length" style="color:var(--pico-muted-color)">No events yet</p>
+        </div>
+      </div>
+      <div class="chart-card panel-6">
+        <h6>Compute Efficiency</h6>
+        <div class="stat-grid">
+          <div class="stat-card"><div class="value" x-text="avgDuration()"></div><div class="label">Avg Trial Duration</div></div>
+          <div class="stat-card"><div class="value" x-text="state.experiment?.parallelism || 1"></div><div class="label">Parallelism</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TRIALS -->
+  <div class="page" :hidden="tab !== 'trials'">
+    <div class="filters">
+      <button :class="{active:tf==='all'}" @click="tf='all'">All</button>
+      <template x-for="s in ['RUNNING','COMPLETED','FAILED','EARLY_STOPPED']"><button :class="{active:tf===s}" @click="tf=s" x-text="s"></button></template>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th style="width:30px"></th>
+          <th @click="tsort('index')" style="cursor:pointer">Trial</th>
+          <th @click="tsort('status')" style="cursor:pointer">Status</th>
+          <th @click="tsort('gen_node')" style="cursor:pointer">Gen Node</th>
+          <th>Source</th>
+          <th>Case</th>
+          <template x-for="o in state.experiment?.objectives||[]" :key="'th-'+o.name"><th @click="tsort(o.name)" style="cursor:pointer" x-text="o.name"></th></template>
+        </tr></thead>
+        <template x-for="t in fTrials()" :key="t.index">
+          <tbody>
+            <tr style="cursor:pointer" @click="xt = xt===t.index?null:t.index" :class="xt===t.index?'trial-selected':''">
+              <td @click.stop><input type="checkbox" :checked="cmp.includes(t.index)" :disabled="!cmp.includes(t.index)&&cmp.length>=3" @change="toggleCmp(t.index)" style="margin:0;width:16px;height:16px"></td>
+              <td x-text="'T'+t.index"></td>
+              <td><span class="badge" :class="'badge-'+t.status" x-text="t.status"></span></td>
+              <td x-text="t.gen_node||'-'" style="font-size:0.75rem"></td>
+              <td x-text="t.dependencies?.length ? 'T'+t.dependencies[0].source_index : '-'" style="font-size:0.75rem"></td>
+              <td style="font-size:0.7rem;color:var(--pico-secondary)" x-text="t.case_path?.split('/').pop()||'-'"></td>
+              <template x-for="o in state.experiment?.objectives||[]" :key="'tv-'+o.name+'-'+t.index"><td :style="{color:isBest(t,o.name)?'var(--accent)':'inherit',fontWeight:isBest(t,o.name)?'600':'normal'}" x-text="t.metrics?.[o.name]!=null?Number(t.metrics[o.name]).toFixed(4):'-'"></td></template>
+            </tr>
+            <tr x-show="xt===t.index" class="trial-detail">
+              <td :colspan="7+(state.experiment?.objectives?.length||0)" style="padding:0.75rem 1rem;border-left:3px solid var(--accent)">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+                  <!-- Left: Parameters + Log -->
+                  <div>
+                    <div style="margin-bottom:0.75rem">
+                      <div style="font-size:0.7rem;color:var(--pico-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:0.3rem;border-bottom:1px solid var(--pico-muted-border-color);padding-bottom:0.2rem">Parameters</div>
+                      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:0.3rem;font-size:0.8rem">
+                        <template x-for="(v,k) in gtp(t.index)" :key="'p-'+t.index+'-'+k">
+                          <div><span style="color:var(--pico-secondary)" x-text="k+': '"></span><span style="color:var(--accent)" x-text="typeof v==='number'?v.toFixed(4):v"></span></div>
+                        </template>
+                      </div>
+                    </div>
+                    <template x-if="xt===t.index && td?.log_tail">
+                      <div>
+                        <div style="font-size:0.7rem;color:var(--pico-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:0.3rem;border-bottom:1px solid var(--pico-muted-border-color);padding-bottom:0.2rem">Log <span x-show="td?.log_file" x-text="'('+td.log_file+')'" style="text-transform:none"></span></div>
+                        <pre style="max-height:300px;overflow-y:auto;font-size:0.7rem;background:#111;padding:0.5rem;border-radius:4px;margin:0;white-space:pre-wrap;word-break:break-all" x-text="td.log_tail"></pre>
+                      </div>
+                    </template>
+                  </div>
+                  <!-- Right: Visualize -->
+                  <div>
+                    <div style="font-size:0.7rem;color:var(--pico-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:0.3rem;border-bottom:1px solid var(--pico-muted-border-color);padding-bottom:0.2rem">Visualize</div>
+                    <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
+                      <button class="btn" @click.stop="fetchViz()" :disabled="tdVizLoading" x-text="tdVizLoading?'Loading...':'View Case'"></button>
+                      <label class="btn" style="cursor:pointer;display:inline-flex;align-items:center;gap:0.3rem" @click.stop>
+                        <span x-text="pvState?'Script: '+pvState:'Upload pvpython script'"></span>
+                        <input type="file" accept=".py" style="display:none" @change="uploadPvState($event)">
+                      </label>
+                      <button x-show="pvState" class="btn btn-danger" @click.stop="removePvState()">Remove</button>
+                    </div>
+                    <div style="font-size:0.65rem;color:var(--pico-muted-color);margin-top:0.3rem">sys.argv[1] → case path, sys.argv[2] → screenshot filename (saved in case folder)</div>
+                    <span x-show="tdVizErr" style="display:block;margin-top:0.3rem;font-size:0.75rem;color:#f59e0b" x-text="tdVizErr"></span>
+                    <template x-if="xt===t.index && tdViz">
+                      <img :src="'data:image/png;base64,'+tdViz" style="width:100%;height:auto;margin-top:0.5rem;border-radius:var(--pico-border-radius);border:1px solid var(--pico-muted-border-color);object-fit:contain">
+                    </template>
+                  </div>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </template>
+      </table>
+    </div>
+    <!-- P0-5: Comparison Panel -->
+    <template x-if="cmp.length>=2">
+      <article style="border:2px solid var(--accent);border-radius:var(--pico-border-radius);margin-top:1rem">
+        <h6 style="color:var(--accent)">Trial Comparison</h6>
+        <div style="display:grid;gap:0.75rem" :style="'grid-template-columns:repeat('+cmp.length+',1fr)'">
+          <template x-for="ci in cmp" :key="'cmp-'+ci">
+            <div class="chart-card">
+              <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem">
+                <strong x-text="'T'+ci"></strong>
+                <span class="badge" :class="'badge-'+(state.trials?.trials?.find(x=>x.index===ci)?.status||'')" x-text="state.trials?.trials?.find(x=>x.index===ci)?.status||'-'"></span>
+              </div>
+              <div style="font-size:0.7rem;color:var(--pico-secondary);text-transform:uppercase;margin-bottom:0.2rem">Parameters</div>
+              <template x-for="(v,k) in gtp(ci)" :key="'cp-'+ci+'-'+k">
+                <div style="font-size:0.75rem;padding:0.1rem 0"><span style="color:var(--pico-secondary)" x-text="k+': '"></span><span :style="{color:cmpDiffers(k)?'#ef4444':'var(--accent)'}" x-text="typeof v==='number'?v.toFixed(4):v"></span></div>
+              </template>
+              <div style="font-size:0.7rem;color:var(--pico-secondary);text-transform:uppercase;margin-top:0.5rem;margin-bottom:0.2rem">Metrics</div>
+              <template x-for="o in state.experiment?.objectives||[]" :key="'cm-'+ci+'-'+o.name">
+                <div style="font-size:0.75rem;padding:0.1rem 0"><span style="color:var(--pico-secondary)" x-text="o.name+': '"></span><span style="color:var(--accent)" x-text="state.trials?.trials?.find(x=>x.index===ci)?.metrics?.[o.name]!=null?state.trials.trials.find(x=>x.index===ci).metrics[o.name].toFixed(4):'-'"></span></div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </article>
+    </template>
+  </div>
+
+  <!-- OBJECTIVES -->
+  <div class="page" :hidden="tab !== 'objectives'">
+    <div class="panel-grid">
+      <!-- Best value cards -->
+      <template x-for="o in state.experiment?.objectives||[]" :key="'s'+o.name">
+        <div class="stat-card panel-4">
+          <div class="value" x-text="bv(o.name)"></div>
+          <div class="label" x-text="o.name"></div>
+          <div class="label" x-text="(o.minimize?'minimize':'maximize')+' — T'+bt(o.name)"></div>
+        </div>
+      </template>
+      <!-- Per-objective charts -->
+      <template x-for="o in state.experiment?.objectives||[]" :key="'co'+o.name">
+        <div class="chart-card panel-6"><h6 x-text="o.name+' ('+(o.minimize?'min':'max')+')'"></h6><div :id="'co-'+o.name" style="height:220px"></div></div>
+      </template>
+      <!-- Hypervolume -->
+      <div class="chart-card panel-6" x-show="state.pareto?.hypervolume_trace?.length>1"><h6>Hypervolume Trace</h6><div id="c-hv" style="height:220px"></div></div>
+      <!-- Pareto scatter -->
+      <template x-for="p in opairs()" :key="'cp'+p[0]+p[1]">
+        <div class="chart-card panel-6"><h6 x-text="'Pareto: '+p[0]+' vs '+p[1]"></h6><div :id="'cp-'+p[0]+'-'+p[1]" style="height:280px"></div></div>
+      </template>
+    </div>
+  </div>
+
+  <!-- ANALYSIS -->
+  <div class="page" :hidden="tab !== 'analysis'">
+    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem">
+      <button class="btn btn-accent" @click="generateInsights()" :disabled="anlLoading" x-text="anlLoading?'Generating...':'Generate Insights'"></button>
+      <select class="btn" x-model="anlMetric" style="width:auto">
+        <template x-for="o in state.experiment?.objectives||[]" :key="'am'+o.name">
+          <option :value="o.name" x-text="o.name"></option>
+        </template>
+      </select>
+      <span x-show="anlError" style="color:#ef4444;font-size:0.8rem" x-text="anlError"></span>
+    </div>
+    <div class="panel-grid">
+      <!-- Sensitivity -->
+      <div class="chart-card panel-6" x-show="anlSens">
+        <h6 x-text="anlSens?.title||'Sensitivity Analysis'"></h6>
+        <p style="font-size:0.7rem;color:var(--pico-muted-color)" x-text="anlSens?.subtitle||''"></p>
+        <div id="anl-sens" style="height:320px"></div>
+      </div>
+      <!-- Cross-Validation -->
+      <div class="chart-card panel-6" x-show="anlCV">
+        <h6 x-text="anlCV?.title||'Cross-Validation'"></h6>
+        <p style="font-size:0.7rem;color:var(--pico-muted-color)" x-text="anlCV?.subtitle||''"></p>
+        <div id="anl-cv" style="height:320px"></div>
+      </div>
+      <!-- Parallel Coordinates -->
+      <div class="chart-card panel-12" x-show="anlPC">
+        <h6 x-text="anlPC?.title||'Parallel Coordinates'"></h6>
+        <p style="font-size:0.7rem;color:var(--pico-muted-color)" x-text="anlPC?.subtitle||''"></p>
+        <div id="anl-pc" style="height:400px"></div>
+      </div>
+      <!-- Contour / Top Surfaces -->
+      <template x-if="anlContour?.cards?.length">
+        <template x-for="(c,ci) in anlContour.cards" :key="'ac'+ci">
+          <div class="chart-card panel-6">
+            <h6 x-text="c.title||'Response Surface'"></h6>
+            <p style="font-size:0.7rem;color:var(--pico-muted-color)" x-text="c.subtitle||''"></p>
+            <div :id="'anl-cont-'+ci" style="height:300px"></div>
+          </div>
+        </template>
+      </template>
+      <template x-if="anlContour?.figure">
+        <div class="chart-card panel-6">
+          <h6 x-text="anlContour.title||'Response Surface'"></h6>
+          <div id="anl-cont-0" style="height:300px"></div>
+        </div>
+      </template>
+      <!-- Search Space -->
+      <template x-for="(c,si) in anlSearch?.cards||[]" :key="'as'+si">
+        <div class="chart-card panel-6">
+          <h6 x-text="c.title||'Search Space'"></h6>
+          <div style="font-size:0.8rem;color:var(--pico-secondary);max-height:200px;overflow-y:auto" x-html="c.blob"></div>
+        </div>
+      </template>
+      <!-- Insights -->
+      <template x-for="(c,ii) in anlInsights?.cards||[]" :key="'ai'+ii">
+        <article class="panel-6" style="font-size:0.8rem">
+          <details>
+            <summary style="cursor:pointer"><strong x-text="c.title"></strong> <span style="font-size:0.7rem;color:var(--pico-muted-color)" x-text="c.subtitle||''"></span></summary>
+            <div style="margin-top:0.5rem;color:var(--pico-secondary)" x-html="c.blob"></div>
+          </details>
+        </article>
+      </template>
+      <!-- Healthchecks -->
+      <template x-for="(c,hi) in anlHealth?.cards||[]" :key="'ah'+hi">
+        <article class="panel-6" style="font-size:0.8rem">
+          <details>
+            <summary style="cursor:pointer">
+              <span :style="{color: c.level==='ERROR'?'#ef4444':c.level==='WARNING'?'#f59e0b':'#22c55e'}" x-text="c.level==='ERROR'?'✗':c.level==='WARNING'?'⚠':'✓'"></span>
+              <strong x-text="c.title"></strong>
+            </summary>
+            <div style="margin-top:0.5rem;color:var(--pico-secondary)" x-html="c.blob"></div>
+          </details>
+        </article>
+      </template>
+    </div>
+    <p x-show="!anlSens&&!anlCV&&!anlPC&&!anlContour&&!anlSearch&&!anlInsights&&!anlHealth&&!anlLoading" style="text-align:center;color:var(--pico-muted-color);padding:2rem">Click "Generate Insights" to compute model-based analyses. Requires a fitted model.</p>
+  </div>
+
+  <!-- STREAMING -->
+  <div class="page" :hidden="tab !== 'streaming'">
+    <!-- Early Stopped summary -->
+    <template x-if="(state.trials?.trials?.filter(t=>t.status==='EARLY_STOPPED')||[]).length">
+      <div style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:var(--pico-border-radius);font-size:0.75rem;color:#f59e0b">
+        <strong>Early Stopped:</strong>
+        <span x-text="(state.trials?.trials?.filter(t=>t.status==='EARLY_STOPPED')||[]).map(t=>{const sm=state.streaming?.metrics||{};const mn=Object.keys(sm)[0];const pt=mn?sm[mn]?.[t.index]:null;const lastStep=pt?.steps?.length?pt.steps[pt.steps.length-1]:'?';return'T'+t.index+' (step '+lastStep+')'}).join(', ')"></span>
+      </div>
+    </template>
+    <div class="panel-grid">
+      <template x-for="(pt,mn) in state.streaming?.metrics||{}" :key="'cs'+mn">
+        <div class="chart-card panel-6"><h6 x-text="mn"></h6><div :id="'cs-'+mn" style="height:250px"></div></div>
+      </template>
+    </div>
+    <p x-show="!state.streaming?.metrics||!Object.keys(state.streaming?.metrics||{}).length" style="text-align:center;color:var(--pico-muted-color);padding:2rem">No streaming data yet</p>
+  </div>
+
+  <!-- DEPENDENCIES -->
+  <div class="page" :hidden="tab !== 'dependencies'">
+    <article><h6>Dependency Tree</h6><div class="dep-tree" x-html="depTree()"></div></article>
+  </div>
+
+  <!-- PREDICT -->
+  <div class="page" :hidden="tab !== 'predict'">
+    <div class="panel-grid">
+      <!-- Pick from Pareto -->
+      <article class="panel" x-show="(state.experiment?.objectives||[]).length >= 2">
+        <h6>Pick Interesting Point</h6>
+        <p style="font-size:0.8rem;margin-bottom:0.5rem">Select the best Pareto point for a given objective (best value + lowest uncertainty):</p>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+          <template x-for="o in state.experiment?.objectives||[]" :key="'pick'+o.name">
+            <button class="btn" @click="pickPoint(o.name)" x-text="'Best ' + o.name"></button>
+          </template>
+        </div>
+      </article>
+      <!-- Parameter input -->
+      <article class="panel-8">
+        <h6>Parameter Input</h6>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem 1rem">
+          <template x-for="p in (state.experiment?.parameters||[]).filter(p=>!p.fixed)" :key="'pi'+p.name">
+            <label style="font-size:0.8rem">
+              <span x-text="p.name"></span>
+              <input type="number" :id="'pinp-'+p.name" :step="p.parameter_type==='int'?1:0.01" :min="p.bounds?.[0]" :max="p.bounds?.[1]"
+                :value="pp[p.name]??((p.bounds?.[0]+p.bounds?.[1])/2)"
+                @input="pp[p.name]=p.parameter_type==='int'?parseInt($el.value):parseFloat($el.value)"
+                style="font-size:0.8rem;padding:0.3rem 0.5rem">
+              <small x-text="p.bounds?'['+p.bounds[0]+', '+p.bounds[1]+']':''" style="color:var(--pico-muted-color)"></small>
+            </label>
+          </template>
+        </div>
+        <div style="display:flex;gap:0.5rem;margin-top:1rem">
+          <button class="btn btn-accent" @click="predict()" :disabled="predicting" x-text="predicting?'Predicting...':'Predict'"></button>
+          <button class="btn" @click="resetParams()">Reset to Center</button>
+        </div>
+      </article>
+      <!-- Predictions with uncertainty -->
+      <template x-if="pr">
+        <article class="panel-4">
+          <h6>Predictions</h6>
+          <template x-for="(p,m) in pr.predictions||{}" :key="'pr'+m">
+            <div class="predict-result">
+              <span style="min-width:140px;font-weight:500" x-text="m"></span>
+              <span class="mean" x-text="p.mean?.toFixed(4)"></span>
+              <span class="sem" x-text="'± '+p.sem?.toFixed(4)"></span>
+              <div style="flex:1;max-width:200px;height:4px;background:var(--pico-muted-border-color);border-radius:2px;overflow:hidden">
+                <div style="height:100%;background:var(--accent);border-radius:2px" :style="{width: uncertaintyBar(p)}"></div>
+              </div>
+            </div>
+          </template>
+        </article>
+      </template>
+      <p class="panel" x-show="pe" style="color:#f59e0b" x-text="pe"></p>
+    </div>
+  </div>
+
+  <!-- CONFIG -->
+  <div class="page" :hidden="tab !== 'config'">
+    <div class="panel-grid">
+    <template x-for="(fields,section) in gcfg()" :key="section">
+      <article class="config-card panel-6">
+        <h6 x-text="section" style="text-transform:capitalize"></h6>
+        <template x-for="f in fields" :key="f.path">
+          <div class="config-field">
+            <div class="config-desc" x-show="f.description" x-text="f.description"></div>
+            <div style="display:flex;align-items:flex-start;gap:0.5rem">
+              <span class="config-key"><span x-text="f.path.split('.').slice(1).join('.')||f.path"></span> <span class="lock" x-show="!f.mutable">🔒</span></span>
+              <template x-if="f.mutable && !isComplex(cv[f.path]??f.default)">
+                <span>= <input :value="cv[f.path]??f.default" @change="cv[f.path]=$el.value" style="width:180px;padding:0.2rem 0.5rem;font-size:0.8rem;display:inline"></span>
+              </template>
+              <template x-if="!f.mutable && !isComplex(cv[f.path]??f.default)">
+                <span style="color:var(--pico-secondary);font-size:0.8rem" x-text="'= ' + (cv[f.path]??f.default)"></span>
+              </template>
+              <template x-if="isComplex(cv[f.path]??f.default)">
+                <div style="font-size:0.8rem" x-html="renderYaml(cv[f.path]??f.default, f.mutable)"></div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </article>
+    </template>
+    </div>
+    <button class="btn btn-accent" @click="applyCfg()" style="margin-top:1rem">Apply Changes</button>
+    <span x-show="cfgMsg" x-text="cfgMsg" style="margin-left:1rem;font-size:0.8rem" :style="{color:cfgOk?'#22c55e':'#ef4444'}"></span>
+  </div>
+</div>
+
+<script>
+const API = window.location.origin + '/api/v1';
+const PL = {paper_bgcolor:'transparent',plot_bgcolor:'rgba(26,29,39,0.5)',font:{family:'JetBrains Mono',size:10,color:'#94a3b8'},margin:{l:50,r:16,t:24,b:36},xaxis:{gridcolor:'#2a2d3a',zerolinecolor:'#2a2d3a'},yaxis:{gridcolor:'#2a2d3a',zerolinecolor:'#2a2d3a'},legend:{orientation:'h',y:-0.15,font:{size:9}},modebar:{bgcolor:'transparent'}};
+const PC = {responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d']};
+const CL = ['#00d4aa','#3b82f6','#f59e0b','#ef4444','#a78bfa','#ec4899','#06b6d4','#84cc16'];
+const GC = {CenterOfSearchSpace:'#64748b',Sobol:'#3b82f6',MBM:'#00d4aa',bo:'#00d4aa',sobol:'#3b82f6'};
+
+function app(){return{
+  tab:'overview',tabs:[{id:'overview',label:'Overview'},{id:'trials',label:'Trials'},{id:'objectives',label:'Objectives'},{id:'analysis',label:'Analysis'},{id:'streaming',label:'Streaming'},{id:'dependencies',label:'Dependencies'},{id:'predict',label:'Predict'},{id:'config',label:'Config'}],
+  state:{status:null,experiment:null,trials:null,objectives:null,streaming:null,generation:null,features:null,pareto:null},
+  lastUpdate:'',tf:'all',tsk:'index',tsd:1,xt:null,td:null,tdViz:null,tdVizLoading:false,tdVizErr:'',pvState:'',pp:{},predicting:false,pr:null,pe:null,cs:[],cv:{},cmp:[],
+  anlMetric:'',anlLoading:false,anlError:'',anlSens:null,anlCV:null,anlPC:null,anlContour:null,anlSearch:null,anlInsights:null,anlHealth:null,
+  async init(){await this.r();setInterval(()=>this.r(),3000);this.$watch('tab',()=>this.r());document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const n=parseInt(e.key);if(n>=1&&n<=this.tabs.length)this.tab=this.tabs[n-1].id});this.$watch('xt',async(v)=>{this.td=null;this.tdViz=null;this.tdVizLoading=false;this.tdVizErr='';if(v!==null){const r=await this.f('trials/'+v);if(r&&!r._error)this.td=r}})},
+  _etags:{},_fetching:false,
+  _tabEps:{overview:['generation','features'],trials:[],objectives:['pareto'],analysis:[],streaming:['streaming'],dependencies:[],predict:[],config:['config']},
+  async r(){
+    this._fetching=true;
+    // Always fetch core data; add tab-specific endpoints
+    const base=['status','experiment','trials','objectives'];
+    const te=this._tabEps[this.tab]||[];
+    const ep=[...new Set([...base,...te])];
+    const rs=await Promise.allSettled(ep.map(e=>this.f(e)));
+    ep.forEach((e,i)=>{const v=rs[i].status==='fulfilled'?rs[i].value:null;if(v&&!v._error&&!v._304)this.state[e]=v});
+    this.lastUpdate=new Date().toLocaleTimeString();
+    if(this.state.experiment?.parameters&&!Object.keys(this.pp).length)for(const p of this.state.experiment.parameters)if(!p.fixed&&p.bounds)this.pp[p.name]=p.parameter_type==='int'?Math.round((p.bounds[0]+p.bounds[1])/2):(p.bounds[0]+p.bounds[1])/2;
+    if(!this.anlMetric&&this.state.experiment?.objectives?.length)this.anlMetric=this.state.experiment.objectives[0].name;
+    if(!this.cs.length){const s=await this.f('config/schema');if(s?.fields&&!s._error)this.cs=s.fields;const c=await this.f('config');if(c&&!c._error&&!c._304)this.cv=c}
+    this._fetching=false;this.$nextTick(()=>this.charts())
+  },
+  async f(p,m='GET',b=null){try{const o={method:m,headers:{Accept:'application/json'}};if(m==='GET'&&this._etags[p])o.headers['If-None-Match']=this._etags[p];if(b){o.headers['Content-Type']='application/json';o.body=JSON.stringify(b)}const r=await fetch(API+'/'+p,o);if(r.status===304)return{_304:true};const etag=r.headers.get('etag');if(etag)this._etags[p]=etag;const j=await r.json().catch(()=>null);if(!r.ok)return{_error:j?.detail||j?.error||r.statusText,_status:r.status};return j}catch(e){return{_error:e.message}}},
+  fTrials(){let t=this.state.trials?.trials||[];if(this.tf!=='all')t=t.filter(x=>x.status===this.tf);return t.sort((a,b)=>(a[this.tsk]>b[this.tsk]?1:-1)*this.tsd)},
+  tsort(k){if(this.tsk===k)this.tsd*=-1;else{this.tsk=k;this.tsd=1}},
+  gtp(i){return this.state.trials?.trials?.find(t=>t.index===i)?.parameters||{}},
+  async fetchViz(){if(!this.xt||this.tdVizLoading)return;this.tdVizLoading=true;this.tdVizErr='';const r=await this.f('trials/'+this.xt+'/visualization');if(r?.image)this.tdViz=r.image;else{this.tdViz=null;this.tdVizErr=r?._error||r?.error||'Visualization unavailable'}this.tdVizLoading=false},
+  async uploadPvState(ev){const file=ev.target.files?.[0];if(!file)return;try{const body=await file.arrayBuffer();const r=await fetch(API+'/paraview-state',{method:'POST',body});const j=await r.json();if(j?.status==='ok')this.pvState=file.name;else this.tdVizErr=j?.error||'Upload failed'}catch(e){this.tdVizErr=e.message}},
+  async removePvState(){await fetch(API+'/paraview-state',{method:'DELETE'});this.pvState=''},
+  isBest(t,oName){const obj=this.state.objectives?.objectives?.[oName];if(!obj?.best)return false;return t.index===obj.best.trial},
+  avgDuration(){const tc=this.state.features?.trial_completions;if(!tc||!tc.length)return'-';const avg=tc.reduce((a,b)=>a+b.duration_s,0)/tc.length;const m=Math.floor(avg/60),s=Math.round(avg%60);return m+'m '+s+'s'},
+  toggleCmp(idx){const i=this.cmp.indexOf(idx);if(i>=0)this.cmp.splice(i,1);else if(this.cmp.length<3)this.cmp.push(idx)},
+  cmpDiffers(key){const vals=this.cmp.map(i=>{const t=this.state.trials?.trials?.find(x=>x.index===i);return t?.parameters?.[key]});return vals.some(v=>v!==vals[0])},
+  bv(n){return this.state.objectives?.objectives?.[n]?.best?.value?.toFixed(4)??'-'},
+  bt(n){return this.state.objectives?.objectives?.[n]?.best?.trial??'-'},
+  opairs(){const n=(this.state.experiment?.objectives||[]).map(o=>o.name);const p=[];for(let i=0;i<n.length;i++)for(let j=i+1;j<n.length;j++)p.push([n[i],n[j]]);return p},
+  genW(n){const c=this.state.generation?.node_counts||{};const tg=this.state.generation?.node_targets||{};const cur=c[n]||0;const max=tg[n];if(max!=null&&max>0)return Math.min(100,cur/max*100)+'%';const t=Object.values(c).reduce((a,b)=>a+b,0);return t?(cur/t*100)+'%':'0%'},
+  genC(n){return GC[n]||CL[Object.keys(this.state.generation?.node_counts||{}).indexOf(n)%CL.length]},
+  genLabel(n){const c=this.state.generation?.node_counts||{};const tg=this.state.generation?.node_targets||{};const cur=c[n]||0;const max=tg[n];return max!=null?cur+' / '+max:cur+' trials'},
+  pct(k){const t=this.state.status?.trials_total||0;const v=this.state.status?.[k]||0;return t?Math.round(v/t*100)+'%':''},
+  pctc(s){const t=this.state.status?.trials_total||0;const v=this.state.trials?.counts?.[s]||0;return t?Math.round(v/t*100)+'%':''},
+  budgetPct(){const t=this.state.status?.trials_total||0;const m=this.state.experiment?.max_trials||0;return m?Math.round(t/m*100)+'% used':''},
+  depTree(){const ts=this.state.trials?.trials||[];const wd=ts.filter(t=>t.dependencies?.length);if(!wd.length)return'<span style="color:var(--pico-muted-color)">No dependencies</span>';const ch={};for(const t of wd)for(const d of t.dependencies){if(!ch[d.source_index])ch[d.source_index]=[];ch[d.source_index].push(t.index)}const ac=new Set(wd.map(t=>t.index));const roots=[...new Set(Object.keys(ch).map(Number))].filter(r=>!ac.has(r)).sort();const sm={};ts.forEach(t=>sm[t.index]=t.status);const rn=(n,pr,il)=>{const c='node-'+(sm[n]||'');let h=pr+(il?'└── ':'├── ')+'<span class="'+c+'">T'+n+'</span>\n';(ch[n]||[]).sort().forEach((k,i,a)=>{h+=rn(k,pr+(il?'    ':'│   '),i===a.length-1)});return h};let h='';for(const r of roots){h+='<span class="node-'+(sm[r]||'')+'">T'+r+'</span>\n';(ch[r]||[]).sort().forEach((k,i,a)=>{h+=rn(k,'',i===a.length-1)})}return h||'<span style="color:var(--pico-muted-color)">No chains</span>'},
+  async pickPoint(objective){
+    const r=await this.f('pareto/pick?objective='+encodeURIComponent(objective));
+    if(r?.parameters){
+      this.pp={...this.pp,...r.parameters};
+      // Update input fields
+      for(const[k,v]of Object.entries(r.parameters)){const el=document.getElementById('pinp-'+k);if(el)el.value=v}
+      // Show predictions from the pick response
+      if(r.predictions)this.pr={predictions:r.predictions};
+    }
+  },
+  resetParams(){
+    for(const p of this.state.experiment?.parameters||[]){
+      if(!p.fixed&&p.bounds){
+        const v=p.parameter_type==='int'?Math.round((p.bounds[0]+p.bounds[1])/2):(p.bounds[0]+p.bounds[1])/2;
+        this.pp[p.name]=v;
+        const el=document.getElementById('pinp-'+p.name);if(el)el.value=v;
+      }
+    }
+    this.pr=null;this.pe=null;
+  },
+  uncertaintyBar(pred){
+    if(!pred?.mean||!pred?.sem)return'0%';
+    const ratio=Math.min(Math.abs(pred.sem/pred.mean)*10,1);
+    return(100-ratio*100)+'%';
+  },
+  async predict(){this.predicting=true;this.pe=null;this.pr=null;try{const r=await this.f('predict','POST',{parameters:this.pp});if(r?._error)this.pe=r._error;else if(r?.predictions)this.pr=r;else this.pe='No predictions returned'}catch(e){this.pe=e.message}this.predicting=false},
+  async generateInsights(){
+    this.anlLoading=true;this.anlError='';
+    const m=this.anlMetric||(this.state.experiment?.objectives?.[0]?.name)||'';
+    if(!m){this.anlError='No metric selected';this.anlLoading=false;return}
+    const [s,pc,cv,ct,ss,ins,hc]=await Promise.allSettled([
+      this.f('analysis/sensitivity','POST',{metric:m}),
+      this.f('analysis/parallel-coordinates','POST',{metric:m}),
+      this.f('analysis/cross-validation','POST',{}),
+      this.f('analysis/contour','POST',{metric:m}),
+      this.f('analysis/search-space','POST',{}),
+      this.f('analysis/insights','POST',{}),
+      this.f('analysis/healthchecks','POST',{}),
+    ]);
+    const _r=(r)=>r.status==='fulfilled'&&r.value&&!r.value._error?r.value:null;
+    const _e=(r)=>r.status==='fulfilled'&&r.value?._error?r.value._error:'';
+    this.anlSens=_r(s)?.figure?_r(s):null;
+    this.anlPC=_r(pc)?.figure?_r(pc):null;
+    this.anlCV=_r(cv)?.figure?_r(cv):null;
+    this.anlContour=_r(ct);
+    this.anlSearch=_r(ss);
+    this.anlInsights=_r(ins);
+    this.anlHealth=_r(hc);
+    const errs=[_e(s),_e(pc),_e(cv),_e(ct),_e(ss)].filter(Boolean);
+    if(errs.length)this.anlError=errs.join(' | ');
+    this.anlLoading=false;
+    this.$nextTick(()=>{
+      const DL={...PL,paper_bgcolor:'transparent',plot_bgcolor:'rgba(26,29,39,0.5)'};
+      const rp=(id,fig)=>{const el=document.getElementById(id);if(el&&fig)Plotly.react(el,fig.data,{...DL,...fig.layout},PC)};
+      rp('anl-sens',this.anlSens?.figure);
+      rp('anl-cv',this.anlCV?.figure);
+      rp('anl-pc',this.anlPC?.figure);
+      if(this.anlContour?.cards){this.anlContour.cards.forEach((c,i)=>rp('anl-cont-'+i,c.figure))}
+      else if(this.anlContour?.figure){rp('anl-cont-0',this.anlContour.figure)}
+    });
+  },
+  gcfg(){const g={};for(const f of this.cs){const s=f.path.split('.')[0];if(!g[s])g[s]=[];g[s].push(f)}
+    const order=['experiment','optimization','trial_generation','orchestration_settings','store','baseline','trial_dependencies','existing_trials'];
+    const sorted={};for(const k of order){if(g[k])sorted[k]=g[k]}for(const k in g){if(!sorted[k])sorted[k]=g[k]}return sorted},
+  isComplex(v){return v!==null&&typeof v==='object'},
+  _rv(v,mutable,indent){
+    const c=mutable?'color:var(--accent)':'color:var(--pico-secondary)';
+    const ml=indent+'rem';
+    if(v===null||v===undefined)return'<span style="'+c+'">null</span>';
+    if(typeof v!=='object')return'<span style="'+c+'">'+v+'</span>';
+    if(Array.isArray(v)){
+      if(!v.length)return'<span style="'+c+'">[]</span>';
+      let h='';
+      v.forEach((item)=>{
+        if(typeof item==='object'&&item!==null){
+          h+='<div style="margin-left:'+ml+';'+c+'">-</div>';
+          Object.entries(item).forEach(([k,iv])=>{
+            const nested=typeof iv==='object'&&iv!==null;
+            if(nested){
+              h+='<div style="margin-left:'+(indent+0.8)+'rem;'+c+'">'+k+':</div>';
+              h+=this._rv(iv,mutable,indent+1.6);
+            }else{
+              h+='<div style="margin-left:'+(indent+0.8)+'rem;padding-left:'+(k.length+2)+'ch;text-indent:-'+(k.length+2)+'ch;'+c+'">'+k+': '+iv+'</div>';
+            }
+          });
+        }else{h+='<div style="margin-left:'+ml+';'+c+'">- '+item+'</div>'}
+      });
+      return h;
+    }
+    let h='';
+    Object.entries(v).forEach(([k,dv])=>{
+      const nested=typeof dv==='object'&&dv!==null;
+      if(nested){
+        h+='<div style="margin-left:'+ml+';'+c+'">'+k+':</div>';
+        h+=this._rv(dv,mutable,indent+0.8);
+      }else{
+        h+='<div style="margin-left:'+ml+';padding-left:'+(k.length+2)+'ch;text-indent:-'+(k.length+2)+'ch;'+c+'">'+k+': '+dv+'</div>';
+      }
+    });
+    return h;
+  },
+  renderYaml(v,mutable,indent=1){
+    if(typeof v!=='object'||v===null)return this._rv(v,mutable,0);
+    return':<br>'+this._rv(v,mutable,indent);
+  },
+  cfgMsg:'',cfgOk:false,
+  async applyCfg(){const p={};for(const f of this.cs)if(f.mutable&&this.cv[f.path]!==undefined)p[f.path]=this.cv[f.path];if(!Object.keys(p).length){this.cfgMsg='No mutable fields to update';this.cfgOk=false;return}const r=await this.f('config','PATCH',p);if(!r){this.cfgMsg='Failed to reach server';this.cfgOk=false}else if(r.rejected?.length&&!r.updated?.length){this.cfgMsg='Rejected: '+r.rejected.map(x=>x.path+' ('+x.reason+')').join(', ');this.cfgOk=false}else{this.cfgMsg='Updated: '+r.updated.join(', ')+(r.rejected?.length?' | Rejected: '+r.rejected.map(x=>x.path).join(', '):'');this.cfgOk=!r.rejected?.length}setTimeout(()=>this.cfgMsg='',5000)},
+  charts(){
+    const tmap={};(this.state.trials?.trials||[]).forEach(t=>tmap[t.index]=t.gen_node||'');
+    for(const o of this.state.experiment?.objectives||[]){const el=document.getElementById('co-'+o.name);if(!el)continue;const d=this.state.objectives?.objectives?.[o.name];if(!d?.values?.length)continue;const x=d.values.map(v=>v.trial),y=d.values.map(v=>v.value),bs=d.best_so_far||[];
+      const colors=x.map(t=>GC[tmap[t]]||'#3b82f6');
+      const tr=[{x,y,mode:'markers',name:'observed',marker:{color:colors,size:6},text:x.map(t=>tmap[t]||'')}];
+      if(bs.length===y.length)tr.push({x,y:bs,mode:'lines',name:'best-so-far',line:{color:'#00d4aa',width:2}});
+      Plotly.react(el,tr,{...PL,xaxis:{...PL.xaxis,title:'Trial',dtick:1}},PC)}
+    const hv=document.getElementById('c-hv');if(hv&&this.state.pareto?.hypervolume_trace?.length>1){const h=this.state.pareto.hypervolume_trace;Plotly.react(hv,[{x:h.map(v=>v.trial),y:h.map(v=>v.value),mode:'lines+markers',line:{color:'#00d4aa'},marker:{size:4}}],{...PL,xaxis:{...PL.xaxis,title:'Trial'}},PC)}
+    for(const p of this.opairs()){const el=document.getElementById('cp-'+p[0]+'-'+p[1]);if(!el)continue;const d0=this.state.objectives?.objectives?.[p[0]]?.values||[],d1=this.state.objectives?.objectives?.[p[1]]?.values||[];if(d0.length<2)continue;const m0={},m1={};d0.forEach(v=>m0[v.trial]=v.value);d1.forEach(v=>m1[v.trial]=v.value);const cm=Object.keys(m0).filter(t=>t in m1).map(Number);const tr=[{x:cm.map(t=>m0[t]),y:cm.map(t=>m1[t]),mode:'markers',name:'trials',marker:{color:'#3b82f6',size:5},text:cm.map(t=>'T'+t)}];const fr=this.state.pareto?.frontier||[];if(fr.length)tr.push({x:fr.map(f=>f.metrics[p[0]]).filter(v=>v!=null),y:fr.map(f=>f.metrics[p[1]]).filter(v=>v!=null),mode:'markers',name:'pareto',marker:{color:'#00d4aa',size:9,symbol:'diamond'}});Plotly.react(el,tr,{...PL,xaxis:{...PL.xaxis,title:p[0]},yaxis:{...PL.yaxis,title:p[1]}},PC)}
+    for(const[mn,pt]of Object.entries(this.state.streaming?.metrics||{})){const el=document.getElementById('cs-'+mn);if(!el)continue;const tr=[];let i=0;for(const[ti,td]of Object.entries(pt)){if(td.steps?.length<2)continue;tr.push({x:td.steps,y:td.values,mode:'lines',name:'T'+ti,line:{color:CL[i%CL.length],width:1.5}});i++}const sh=[];const esTrials=this.state.trials?.trials?.filter(t=>t.status==='EARLY_STOPPED')||[];for(const est of esTrials){const td=pt[est.index];if(td?.steps?.length){const lastStep=td.steps[td.steps.length-1];sh.push({type:'line',x0:lastStep,x1:lastStep,y0:0,y1:1,yref:'paper',line:{color:'#f59e0b',width:2,dash:'dashdot'}})}}const th=this.state.streaming?.thresholds?.[mn];if(th){if(th.type==='threshold'&&th.value!=null){sh.push({type:'line',y0:th.value,y1:th.value,x0:0,x1:1,xref:'paper',line:{color:'#ef4444',dash:'dash',width:2}});tr.push({x:[],y:[],mode:'lines',name:'threshold: '+th.value,line:{color:'#ef4444',dash:'dash'},showlegend:true,hoverinfo:'skip'})}if(th.type==='percentile'&&th.resolved_steps?.length){tr.push({x:th.resolved_steps,y:th.resolved_values,mode:'lines',name:'P'+th.percentile+' threshold',line:{color:'#ef4444',dash:'dash',width:2}})}if(th.min_progression)sh.push({type:'line',x0:th.min_progression,x1:th.min_progression,y0:0,y1:1,yref:'paper',line:{color:'#f59e0b',dash:'dot',width:1.5}})}Plotly.react(el,tr,{...PL,shapes:sh,xaxis:{...PL.xaxis,title:'Step'},yaxis:{...PL.yaxis,title:mn}},PC)}
+    const fe=document.getElementById('c-feas');if(fe&&this.state.features?.feasibility?.length){const f=this.state.features.feasibility;const cp=[];let s=0;f.forEach((v,i)=>{s+=v.feasible?1:0;cp.push(s/(i+1)*100)});Plotly.react(fe,[{x:f.map(v=>v.trial),y:cp,mode:'lines+markers',line:{color:'#00d4aa'},marker:{size:3}}],{...PL,yaxis:{...PL.yaxis,title:'Feasible %',range:[0,105]}},PC)}
+  }
+}}
+</script>
+</body>
+</html>
