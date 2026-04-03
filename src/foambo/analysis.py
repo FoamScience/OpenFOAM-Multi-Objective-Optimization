@@ -7,7 +7,7 @@ Separated into data computation and plotting layers:
   - plot_*() functions take those structures and produce Plotly figures
   - save/render functions handle HTML file I/O
 
-The dashboard can import compute_* functions without Plotly.
+The web UI and API server can use compute_* functions directly.
 """
 
 import webbrowser
@@ -163,6 +163,7 @@ def compute_streaming_data(client: Client, cfg: DictConfig):
     es_cfg = cfg.get("orchestration_settings", {}).get("early_stopping_strategy")
     if es_cfg:
         _extract_es_thresholds(es_cfg, result["thresholds"])
+        _resolve_percentile_thresholds(result["metrics"], result["thresholds"])
 
     return result
 
@@ -551,14 +552,54 @@ def _extract_es_thresholds(es_cfg, thresholds: dict):
         _extract_es_thresholds(es_cfg.get("left", {}), thresholds)
         _extract_es_thresholds(es_cfg.get("right", {}), thresholds)
     elif t == "threshold":
-        for sig in es_cfg.get("metric_signatures", []):
+        # metric_signatures / metric_names (backward compat)
+        sigs = es_cfg.get("metric_signatures") or es_cfg.get("metric_names") or []
+        for sig in sigs:
             thresholds[sig] = {
+                "type": "threshold",
                 "value": es_cfg.get("metric_threshold"),
-                "min_prog": es_cfg.get("min_progression", 0),
+                "min_progression": es_cfg.get("min_progression", 0),
             }
     elif t == "percentile":
-        for sig in es_cfg.get("metric_signatures", []):
+        sigs = es_cfg.get("metric_signatures") or es_cfg.get("metric_names") or []
+        for sig in sigs:
             thresholds[sig] = {
+                "type": "percentile",
                 "percentile": es_cfg.get("percentile_threshold"),
-                "min_prog": es_cfg.get("min_progression", 0),
+                "min_progression": es_cfg.get("min_progression", 0),
             }
+
+
+def _resolve_percentile_thresholds(metrics: dict, thresholds: dict):
+    """For percentile-type thresholds, compute the actual percentile curve
+    from completed trial data so the dashboard can draw it."""
+    import numpy as np
+    for metric_name, th in thresholds.items():
+        if th.get("type") != "percentile":
+            continue
+        per_trial = metrics.get(metric_name, {})
+        if not per_trial:
+            continue
+        pct = th["percentile"]
+        # Collect all completed trials' final-step values to build a reference,
+        # then compute per-step percentile across all trials
+        # Gather values at each step across all trials
+        step_vals: dict[float, list] = {}
+        for td in per_trial.values():
+            steps = td.get("steps", [])
+            values = td.get("values", [])
+            for s, v in zip(steps, values):
+                step_vals.setdefault(s, []).append(v)
+        if not step_vals:
+            continue
+        sorted_steps = sorted(step_vals.keys())
+        pct_steps = []
+        pct_values = []
+        for s in sorted_steps:
+            vals = step_vals[s]
+            if len(vals) >= 2:  # need at least 2 trials for a meaningful percentile
+                pct_steps.append(s)
+                pct_values.append(float(np.percentile(vals, pct)))
+        if pct_steps:
+            th["resolved_steps"] = pct_steps
+            th["resolved_values"] = pct_values
