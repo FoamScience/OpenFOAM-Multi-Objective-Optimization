@@ -607,12 +607,18 @@ def main():
     group.add_argument('--docs', action='store_true', help='Open Configuration Docs explorer')
     group.add_argument('--no-opt', action='store_true', help='Load experiment and start web dashboard without running optimization')
     group.add_argument('--upgrade-config', action='store_true', help='Check config YAML against current schema and show suggested changes')
+    group.add_argument('--pack', action='store_true', help='Pack experiment into a .foambo archive')
+    group.add_argument('--unpack', type=str, metavar='ARCHIVE', help='Unpack a .foambo archive')
     group.add_argument('--preflight-checks', action='store_true', help='Validate configuration before running')
     group.add_argument('-V', '--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('--config', type=str, default=DEFAULT_CONFIG, help=f'Path to config YAML file (optional, default={DEFAULT_CONFIG})')
     parser.add_argument('--json', action='store_true', help='Export Plotly figures as JSON (only valid with --analysis)')
     parser.add_argument('--dry-run', action='store_true', help='Include dry-run checks (only valid with --preflight-checks)')
     parser.add_argument('--no-ui', action='store_true', help='Disable the web UI / REST API server')
+    parser.add_argument('--include-trials', type=str, default=None,
+        help='Trials to include in --pack: best, pareto, all, or comma-separated indices')
+    parser.add_argument('--skip-patterns', type=str, default=None,
+        help='Comma-separated glob patterns to exclude from --pack (e.g. "processor*/,postProcessing/")')
     parser.add_argument('overrides', nargs=argparse.REMAINDER, help='Config overrides in ++key=value format')
     args = parser.parse_args()
 
@@ -622,11 +628,26 @@ def main():
         parser.error('--dry-run can only be used with --preflight-checks')
     if getattr(args, 'no_opt', False) and args.no_ui:
         parser.error('--no-opt and --no-ui cannot be used together')
+    if args.include_trials and not getattr(args, 'pack', False):
+        parser.error('--include-trials can only be used with --pack')
+    if args.skip_patterns and not getattr(args, 'pack', False):
+        parser.error('--skip-patterns can only be used with --pack')
 
     if args.upgrade_config:
         from .config_upgrade import run_upgrade_check
         ok = run_upgrade_check(args.config)
         sys.exit(0 if ok else 1)
+
+    if args.pack:
+        from .archive import pack
+        skip = args.skip_patterns.split(",") if args.skip_patterns else None
+        pack(args.config, include_trials=args.include_trials, skip_patterns=skip)
+        return
+
+    if args.unpack:
+        from .archive import unpack
+        unpack(args.unpack)
+        return
 
     if args.preflight_checks:
         from .config import load_config, override_config
