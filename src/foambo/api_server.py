@@ -50,8 +50,20 @@ class _SafeEncoder(json.JSONEncoder):
             return f"<unserializable: {type(o).__name__}>"
 
 
+def _sanitize(obj):
+    """Recursively replace NaN/Inf floats with None before JSON encoding."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(v) for v in obj]
+    return obj
+
 def _safe_json(data: Any) -> str:
-    return json.dumps(data, cls=_SafeEncoder)
+    return json.dumps(_sanitize(data), cls=_SafeEncoder)
 
 
 from starlette.responses import Response
@@ -190,6 +202,8 @@ class _ApiState:
         self.last_callback: float = time.time()
         self.callback_seq: int = 0
 
+        # Unique session ID so ETags never match across server restarts
+        self._session_id = hex(int(time.time() * 1000))[-8:]
         # Per-endpoint version counters for ETag caching
         self._versions: Dict[str, int] = {
             "experiment": 0,
@@ -206,7 +220,7 @@ class _ApiState:
             self._versions[ep] = self._versions.get(ep, 0) + 1
 
     def etag(self, endpoint: str) -> str:
-        return f'"{endpoint}-{self._versions.get(endpoint, 0)}"'
+        return f'"{self._session_id}-{endpoint}-{self._versions.get(endpoint, 0)}"'
 
     def update(self, client):
         """Called from the optimizer callback to refresh state."""
@@ -407,6 +421,37 @@ def _serialize_early_stopping(strategy) -> dict | None:
     return {"type": type(strategy).__name__}
 
 
+def _parse_trial_deps(runner, trial_index: int, trial) -> list:
+    """Parse dependency info from trial_registry (live) or run_metadata (persisted)."""
+    raw_deps = None
+    # Try live trial_registry first
+    if hasattr(runner, 'trial_registry') and trial_index in runner.trial_registry:
+        reg = runner.trial_registry[trial_index]
+        if "dependencies" in reg:
+            raw_deps = reg["dependencies"]
+    # Fallback to persisted run_metadata
+    if raw_deps is None and trial.run_metadata:
+        raw_deps = trial.run_metadata.get("dependencies")
+    if not raw_deps:
+        return []
+    if isinstance(raw_deps, list):
+        return raw_deps
+    # Convert dict format to list
+    deps = []
+    for name, info in raw_deps.items():
+        if name.startswith("_"):
+            continue
+        if isinstance(info, dict) and "source_trial_index" in info:
+            deps.append({
+                "name": name,
+                "source_index": info["source_trial_index"],
+                "source_path": info.get("source_case_path", ""),
+                "actions_applied": info.get("actions_applied", 0),
+                "phased_actions": info.get("phased_actions", []),
+            })
+    return deps
+
+
 def _get_trials() -> dict:
     """Extract all trial data under lock."""
     with _state.lock:
@@ -415,6 +460,50 @@ def _get_trials() -> dict:
             raise HTTPException(503, "Optimizer not initialized")
         exp = client._experiment
         from ax.core.base_trial import TrialStatus as AxTrialStatus
+
+        # Single bulk data lookup for all completed trials
+        completed_indices = [idx for idx, t in exp.trials.items()
+                             if t.status in (AxTrialStatus.COMPLETED, AxTrialStatus.EARLY_STOPPED)]
+        all_metrics: Dict[int, Dict[str, float]] = {}
+        if completed_indices:
+            try:
+                import pandas as pd
+                data = exp.lookup_data(trial_indices=completed_indices)
+                full_df = data.full_df if hasattr(data, 'full_df') else (data.df if hasattr(data, 'df') else data)
+                if full_df is not None and not full_df.empty:
+                    # First pass: non-streaming rows (final metric values)
+                    if "step" in full_df.columns:
+                        non_stream = full_df[pd.isna(full_df["step"])]
+                        if not non_stream.empty:
+                            for _, row in non_stream.iterrows():
+                                tidx_r = int(row["trial_index"])
+                                val = row["mean"]
+                                if val is not None and not (isinstance(val, float) and math.isnan(val)):
+                                    all_metrics.setdefault(tidx_r, {})[row["metric_name"]] = float(val)
+                    # Second pass: for trials with missing metrics, use last streaming value
+                    if "step" in full_df.columns:
+                        streaming = full_df[pd.notna(full_df["step"])].sort_values("step")
+                        for _, row in streaming.drop_duplicates(
+                                subset=["trial_index", "metric_name"], keep="last").iterrows():
+                            tidx_r = int(row["trial_index"])
+                            mname = row["metric_name"]
+                            if tidx_r not in all_metrics or mname not in all_metrics.get(tidx_r, {}):
+                                val = row["mean"]
+                                if val is not None and not (isinstance(val, float) and math.isnan(val)):
+                                    all_metrics.setdefault(tidx_r, {})[mname] = float(val)
+            except Exception as e:
+                log.debug(f"Bulk metric lookup failed: {e}")
+
+        # Ensure all completed/ES trials have entries for all known metric names (null if missing)
+        all_metric_names = set()
+        for m in all_metrics.values():
+            all_metric_names.update(m.keys())
+        for tidx in completed_indices:
+            trial_m = all_metrics.get(tidx, {})
+            for mname in all_metric_names:
+                if mname not in trial_m:
+                    trial_m[mname] = None
+            all_metrics[tidx] = trial_m
 
         trials = []
         counts: Dict[str, int] = {}
@@ -431,33 +520,8 @@ def _get_trials() -> dict:
             case_path = (trial.run_metadata.get("case_path")
                          or trial.run_metadata.get("job", {}).get("case_path"))
 
-            deps = []
-            runner = exp.runner
-            if hasattr(runner, 'trial_registry') and tidx in runner.trial_registry:
-                reg = runner.trial_registry[tidx]
-                if "dependencies" in reg:
-                    deps = reg["dependencies"]
-
-            metrics = {}
-            if trial.status in (AxTrialStatus.COMPLETED, AxTrialStatus.EARLY_STOPPED):
-                try:
-                    data = exp.lookup_data(trial_indices=[tidx])
-                    df = data.df if hasattr(data, 'df') else data
-                    if not df.empty:
-                        # Keep only non-streaming rows (step is NaN or missing)
-                        import math
-                        for _, row in df.iterrows():
-                            step = row.get("step", None)
-                            if step is None or (isinstance(step, float) and math.isnan(step)):
-                                metrics[row["metric_name"]] = row["mean"]
-                        # If no non-streaming rows, take the last value per metric
-                        if not metrics and "step" in df.columns:
-                            for mname in df["metric_name"].unique():
-                                mdf = df[df["metric_name"] == mname].sort_values("step" if "step" in df.columns else "trial_index")
-                                if not mdf.empty:
-                                    metrics[mname] = float(mdf.iloc[-1]["mean"])
-                except Exception:
-                    pass
+            deps = _parse_trial_deps(exp.runner, tidx, trial)
+            metrics = all_metrics.get(tidx, {})
 
             trials.append({
                 "index": tidx,
@@ -491,12 +555,7 @@ def _get_single_trial(index: int) -> dict:
         case_path = (trial.run_metadata.get("case_path")
                      or trial.run_metadata.get("job", {}).get("case_path"))
 
-        deps = []
-        runner = exp.runner
-        if hasattr(runner, 'trial_registry') and index in runner.trial_registry:
-            reg = runner.trial_registry[index]
-            if "dependencies" in reg:
-                deps = reg["dependencies"]
+        deps = _parse_trial_deps(exp.runner, index, trial)
 
         metrics = {}
         if trial.status == AxTrialStatus.COMPLETED:
@@ -507,8 +566,8 @@ def _get_single_trial(index: int) -> dict:
                     for _, row in df.iterrows():
                         if row.get("step") is None or (hasattr(row["step"], '__float__') and row["step"] != row["step"]):
                             metrics[row["metric_name"]] = row["mean"]
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f"Metric lookup failed for trial {index}: {e}")
 
         run_metadata = dict(trial.run_metadata) if trial.run_metadata else {}
         # Try reading log tail — find most recently modified log.* or *.log file
@@ -653,14 +712,27 @@ def _get_generation() -> dict:
         node_targets: Dict[str, int | None] = {}
 
         # Initialize all strategy nodes with 0 counts and extract targets
+        max_trials = _state.orch_cfg.max_trials if _state.orch_cfg else 0
+        allocated = 0
         for node in gs._nodes:
             node_counts[node.name] = 0
             target = None
             for tc in node.transition_criteria:
-                if hasattr(tc, "threshold") and hasattr(tc, "block_transition_if_unmet"):
+                # MinTrials has .threshold (int)
+                if hasattr(tc, "threshold") and isinstance(getattr(tc, "threshold", None), (int, float)):
                     target = int(tc.threshold)
                     break
+                # AutoTransitionAfterGen = 1 trial (e.g. CenterOfSearchSpace)
+                if tc.criterion_class == "AutoTransitionAfterGen":
+                    target = 1
+                    break
+            if target is not None:
+                allocated += target
             node_targets[node.name] = target
+        # Last node (usually MBM) gets remaining budget
+        last_node = gs._nodes[-1].name if gs._nodes else None
+        if last_node and node_targets.get(last_node) is None and max_trials > 0:
+            node_targets[last_node] = max_trials - allocated
 
         # Count by inspecting each trial's generator_run node name
         for trial in list(exp.trials.values()):
@@ -1145,23 +1217,23 @@ def get_pareto(use_model: bool = Query(True),
 def get_status():
     with _state.lock:
         client = _state.client
-    if client is None:
-        return SafeJSONResponse(content={
-            "running": False, "uptime_s": 0, "last_callback_s_ago": 0,
-            "trials_completed": 0, "trials_running": 0, "trials_total": 0,
-            "model_fitted": False,
-        })
-
-    with _state.lock:
+        if client is None:
+            return SafeJSONResponse(content={
+                "running": False, "uptime_s": 0, "last_callback_s_ago": 0,
+                "trials_completed": 0, "trials_running": 0, "trials_total": 0,
+                "model_fitted": False,
+            })
         exp = client._experiment
         from ax.core.base_trial import TrialStatus as AxTrialStatus
-        completed = sum(1 for t in exp.trials.values() if t.status == AxTrialStatus.COMPLETED)
-        running = sum(1 for t in exp.trials.values() if t.status == AxTrialStatus.RUNNING)
+        completed = sum(1 for t in list(exp.trials.values()) if t.status == AxTrialStatus.COMPLETED)
+        running = sum(1 for t in list(exp.trials.values()) if t.status == AxTrialStatus.RUNNING)
         total = len(exp.trials)
         has_model = False
         try:
-            gs = client._generation_strategy
-            has_model = gs is not None and gs.adapter is not None
+            adapter = client._generation_strategy.adapter
+            if adapter is not None:
+                surr = getattr(adapter.generator, "surrogate", None)
+                has_model = surr is not None and getattr(surr, "model", None) is not None
         except Exception:
             pass
 
@@ -1909,7 +1981,7 @@ def start_api_server(client, raw_cfg, orch_cfg, host: str = "127.0.0.1",
 
     thread = threading.Thread(target=server.run, daemon=True, name="foambo-api")
     thread.start()
-    log.info(f"API server started at http://{host}:{actual_port}/api/v1/")
+    log.info(f"Dashboard: http://{host}:{actual_port}/  API docs: http://{host}:{actual_port}/api/docs")
     return thread
 
 

@@ -79,8 +79,6 @@ nav[role="tablist"] .tab-key {
   opacity: 0.4;
   margin-left: 4px;
 }
-.fetch-bar { position:absolute;bottom:0;left:0;height:2px;width:0;background:var(--accent);transition:none }
-.fetch-bar.active { width:100%;transition:width 1.5s ease-out }
 /* Consistent action buttons across all tabs */
 .btn { font-size:0.75rem;padding:0.3rem 0.8rem;cursor:pointer;border-radius:4px;border:1px solid var(--pico-muted-border-color);background:transparent;color:var(--pico-color);transition:all 0.15s;display:inline-flex;align-items:center;width:auto;margin:0 }
 .btn:hover { border-color:var(--accent);color:var(--accent) }
@@ -261,7 +259,6 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
         <span x-text="t.label"></span><span class="tab-key" x-text="i+1"></span>
       </button>
     </template>
-    <div class="fetch-bar" :class="_fetching?'active':''"></div>
   </nav>
   </div>
 
@@ -314,7 +311,7 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
   <div class="page" :hidden="tab !== 'trials'">
     <div class="filters">
       <button :class="{active:tf==='all'}" @click="tf='all'">All</button>
-      <template x-for="s in ['RUNNING','COMPLETED','FAILED','EARLY_STOPPED']"><button :class="{active:tf===s}" @click="tf=s" x-text="s"></button></template>
+      <template x-for="s in ['RUNNING','COMPLETED','FAILED','EARLY_STOPPED']" :key="s"><button :class="{active:tf===s}" @click="tf=s" x-text="s"></button></template>
     </div>
     <div style="overflow-x:auto">
       <table>
@@ -325,7 +322,7 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
           <th @click="tsort('gen_node')" style="cursor:pointer">Gen Node</th>
           <th>Source</th>
           <th>Case</th>
-          <template x-for="o in state.experiment?.objectives||[]" :key="'th-'+o.name"><th @click="tsort(o.name)" style="cursor:pointer" x-text="o.name"></th></template>
+          <template x-for="m in allMetricNames()" :key="'th-'+m"><th @click="tsort(m)" style="cursor:pointer" :style="isObjective(m)?'color:var(--accent)':''" x-text="m"></th></template>
         </tr></thead>
         <template x-for="t in fTrials()" :key="t.index">
           <tbody>
@@ -336,10 +333,10 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
               <td x-text="t.gen_node||'-'" style="font-size:0.75rem"></td>
               <td x-text="t.dependencies?.length ? 'T'+t.dependencies[0].source_index : '-'" style="font-size:0.75rem"></td>
               <td style="font-size:0.7rem;color:var(--pico-secondary)" x-text="t.case_path?.split('/').pop()||'-'"></td>
-              <template x-for="o in state.experiment?.objectives||[]" :key="'tv-'+o.name+'-'+t.index"><td :style="{color:isBest(t,o.name)?'var(--accent)':'inherit',fontWeight:isBest(t,o.name)?'600':'normal'}" x-text="t.metrics?.[o.name]!=null?fmtN(t.metrics[o.name]):'-'"></td></template>
+              <template x-for="m in allMetricNames()" :key="'tv-'+m+'-'+t.index"><td :style="{color:isBest(t,m)?'var(--accent)':'inherit',fontWeight:isBest(t,m)?'600':'normal'}" x-text="t.metrics?.[m]!=null?fmtN(t.metrics[m]):'-'"></td></template>
             </tr>
             <tr x-show="xt===t.index" class="trial-detail">
-              <td :colspan="7+(state.experiment?.objectives?.length||0)" style="padding:0.75rem 1rem;border-left:3px solid var(--accent)">
+              <td :colspan="7+allMetricNames().length" style="padding:0.75rem 1rem;border-left:3px solid var(--accent)">
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
                   <!-- Left: Parameters + Log -->
                   <div>
@@ -540,13 +537,14 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
 
   <!-- DEPENDENCIES -->
   <div class="page" :hidden="tab !== 'dependencies'">
-    <div class="panel-grid">
-      <div class="chart-card panel-12">
-        <h6>Dependency Graph</h6>
-        <div id="dep-graph" style="height:500px"></div>
+    <template x-for="dn in getDepNames()" :key="'dg-'+dn">
+      <div style="margin-bottom:1rem">
+        <h6 style="margin:0 0 0.3rem;font-size:0.8rem;color:var(--pico-secondary)" x-text="dn"></h6>
+        <div :id="'dep-graph-'+dn" style="width:100%;height:400px"></div>
       </div>
-    </div>
-    <p x-show="!state.trials?.trials?.some(t=>t.dependencies?.length)" style="text-align:center;color:var(--pico-muted-color);padding:2rem">No trial dependencies configured</p>
+    </template>
+    <p x-show="!state.trials?.trials?.some(t=>t.dependencies?.length)&&!state.experiment?.dependency_rules?.length" style="text-align:center;color:var(--pico-muted-color);padding:2rem">No trial dependencies configured</p>
+    <p x-show="state.experiment?.dependency_rules?.length&&!state.trials?.trials?.some(t=>t.dependencies?.length)" style="text-align:center;color:var(--pico-muted-color);padding:2rem">Dependencies configured but none triggered yet (all skipped)</p>
   </div>
 
   <!-- PREDICT -->
@@ -661,8 +659,8 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
 
 <script>
 const API = window.location.origin + '/api/v1';
-function fmtN(v,d=4){if(v==null||typeof v!=='number'||isNaN(v))return'-';const a=Math.abs(v);if(a===0)return'0';if(a>=1e6||a<1e-3)return v.toExponential(2);if(a>=100)return v.toFixed(1);if(a>=1)return v.toFixed(d>3?3:d);return v.toFixed(d)}
-const PL = {paper_bgcolor:'transparent',plot_bgcolor:'rgba(26,29,39,0.5)',font:{family:'JetBrains Mono',size:10,color:'#94a3b8'},margin:{l:50,r:16,t:24,b:36},xaxis:{gridcolor:'#2a2d3a',zerolinecolor:'#2a2d3a'},yaxis:{gridcolor:'#2a2d3a',zerolinecolor:'#2a2d3a'},legend:{orientation:'h',y:-0.15,font:{size:9}},modebar:{bgcolor:'transparent'}};
+function fmtN(v,d=4){if(v==null||typeof v!=='number'||isNaN(v)||!isFinite(v))return'-';const a=Math.abs(v);if(a===0)return'0';if(a>=1e6||a<1e-3)return v.toExponential(2);if(a>=100)return v.toFixed(1);if(a>=1)return v.toFixed(d>3?3:d);return v.toFixed(d)}
+const PL = {paper_bgcolor:'transparent',plot_bgcolor:'rgba(26,29,39,0.5)',font:{family:'JetBrains Mono',size:10,color:'#94a3b8'},margin:{l:50,r:16,t:24,b:56},xaxis:{gridcolor:'#2a2d3a',zerolinecolor:'#2a2d3a'},yaxis:{gridcolor:'#2a2d3a',zerolinecolor:'#2a2d3a'},legend:{orientation:'h',y:-0.3,yanchor:'top',font:{size:9}},modebar:{bgcolor:'transparent'}};
 const PC = {responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d']};
 const CL = ['#00d4aa','#3b82f6','#f59e0b','#ef4444','#a78bfa','#ec4899','#06b6d4','#84cc16'];
 const GC = {CenterOfSearchSpace:'#64748b',Sobol:'#3b82f6',MBM:'#00d4aa',bo:'#00d4aa',sobol:'#3b82f6'};
@@ -673,11 +671,11 @@ function app(){return{
   lastUpdate:'',tf:'all',tsk:'index',tsd:1,xt:null,td:null,tdViz:null,tdVizLoading:false,tdVizErr:'',pvState:'',pp:{},predicting:false,pr:null,pe:null,cs:[],cv:{},cmp:[],
   enlargedEl:null,
   anlMetric:'',anlTopK:10,anlLoading:false,anlError:'',anlSens:null,anlCV:null,anlPC:null,anlContour:null,anlSearch:null,anlInsights:null,anlHealth:null,anlGroupSens:null,anlGroupInt:null,anlGroupBest:null,frozenGroups:{},fetchTrialIdx:'',
-  async init(){await this.r();setInterval(()=>this.r(),3000);this.$watch('tab',()=>this.r());document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const n=parseInt(e.key);if(n>=1&&n<=this.tabs.length)this.tab=this.tabs[n-1].id;if(e.key==='v'&&!e.ctrlKey&&!e.metaKey){const hovered=document.querySelector('.chart-card:hover');if(hovered){const plotDiv=hovered.querySelector('.js-plotly-plot');if(plotDiv&&plotDiv.data){this.enlargedEl=true;this.$nextTick(()=>{const target=document.getElementById('enlarge-target');if(target)Plotly.react(target,plotDiv.data,{...plotDiv.layout,width:null,height:null},PC)})}}}if(e.key==='Escape')this.enlargedEl=null});this.$watch('xt',async(v)=>{this.td=null;this.tdViz=null;this.tdVizLoading=false;this.tdVizErr='';if(v!==null){const r=await this.f('trials/'+v);if(r&&!r._error)this.td=r}})},
-  _etags:{},_fetching:false,
+  _schedPoll(){setTimeout(async()=>{await this.r();this._schedPoll()},3000)},
+  async init(){await this.r();this._schedPoll();this.$watch('tab',()=>this.r());document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const n=parseInt(e.key);if(n>=1&&n<=this.tabs.length)this.tab=this.tabs[n-1].id;if(e.key==='v'&&!e.ctrlKey&&!e.metaKey){const hovered=document.querySelector('.chart-card:hover');if(hovered){const plotDiv=hovered.querySelector('.js-plotly-plot');if(plotDiv&&plotDiv.data){this.enlargedEl=true;this.$nextTick(()=>{const target=document.getElementById('enlarge-target');if(target)Plotly.react(target,plotDiv.data,{...plotDiv.layout,width:null,height:null},PC)})}}}if(e.key==='Escape'){this.enlargedEl=null;const et=document.getElementById('enlarge-target');if(et)Plotly.purge(et)}});this.$watch('xt',async(v)=>{this.td=null;this.tdViz=null;this.tdVizLoading=false;this.tdVizErr='';if(v!==null){const r=await this.f('trials/'+v);if(r&&!r._error)this.td=r}})},
+  _etags:{},
   _tabEps:{overview:['generation'],trials:[],objectives:['pareto'],analysis:[],streaming:['streaming'],dependencies:[],predict:[],config:['config']},
   async r(){
-    this._fetching=true;
     // Always fetch core data; add tab-specific endpoints
     const base=['status','experiment','trials','objectives'];
     const te=this._tabEps[this.tab]||[];
@@ -688,10 +686,19 @@ function app(){return{
     if(this.state.experiment?.parameters&&!Object.keys(this.pp).length)for(const p of this.state.experiment.parameters)if(!p.fixed&&p.bounds)this.pp[p.name]=p.parameter_type==='int'?Math.round((p.bounds[0]+p.bounds[1])/2):(p.bounds[0]+p.bounds[1])/2;
     if(!this.anlMetric&&this.state.experiment?.objectives?.length)this.anlMetric=this.state.experiment.objectives[0].name;
     if(!this.cs.length){const s=await this.f('config/schema');if(s?.fields&&!s._error)this.cs=s.fields;const c=await this.f('config');if(c&&!c._error&&!c._304)this.cv=c}
-    this._fetching=false;this.$nextTick(()=>this.charts())
+    this.$nextTick(()=>this.charts())
   },
   async f(p,m='GET',b=null){try{const o={method:m,headers:{Accept:'application/json'}};if(m==='GET'&&this._etags[p])o.headers['If-None-Match']=this._etags[p];if(b){o.headers['Content-Type']='application/json';o.body=JSON.stringify(b)}const r=await fetch(API+'/'+p,o);if(r.status===304)return{_304:true};const etag=r.headers.get('etag');if(etag)this._etags[p]=etag;const j=await r.json().catch(()=>null);if(!r.ok)return{_error:j?.detail||j?.error||r.statusText,_status:r.status};return j}catch(e){return{_error:e.message}}},
-  fTrials(){let t=this.state.trials?.trials||[];if(this.tf!=='all')t=t.filter(x=>x.status===this.tf);return t.sort((a,b)=>(a[this.tsk]>b[this.tsk]?1:-1)*this.tsd)},
+  allMetricNames(){
+    const objNames=(this.state.experiment?.objectives||[]).map(o=>o.name);
+    const all=new Set(objNames);
+    for(const t of this.state.trials?.trials||[])for(const m of Object.keys(t.metrics||{}))all.add(m);
+    // Objectives first, then non-objectives sorted
+    const nonObj=[...all].filter(n=>!objNames.includes(n)).sort();
+    return[...objNames,...nonObj];
+  },
+  isObjective(m){return(this.state.experiment?.objectives||[]).some(o=>o.name===m)},
+  fTrials(){let t=[...(this.state.trials?.trials||[])];if(this.tf!=='all')t=t.filter(x=>x.status===this.tf);return t.sort((a,b)=>(a[this.tsk]>b[this.tsk]?1:-1)*this.tsd)},
   tsort(k){if(this.tsk===k)this.tsd*=-1;else{this.tsk=k;this.tsd=1}},
   gtp(i){return this.state.trials?.trials?.find(t=>t.index===i)?.parameters||{}},
   async fetchViz(){if(!this.xt||this.tdVizLoading)return;this.tdVizLoading=true;this.tdVizErr='';const r=await this.f('trials/'+this.xt+'/visualization');if(r?.image)this.tdViz=r.image;else{this.tdViz=null;this.tdVizErr=r?._error||r?.error||'Visualization unavailable'}this.tdVizLoading=false},
@@ -710,27 +717,75 @@ function app(){return{
   pct(k){const t=this.state.status?.trials_total||0;const v=this.state.status?.[k]||0;return t?Math.round(v/t*100)+'%':''},
   pctc(s){const t=this.state.status?.trials_total||0;const v=this.state.trials?.counts?.[s]||0;return t?Math.round(v/t*100)+'%':''},
   budgetPct(){const t=this.state.status?.trials_total||0;const m=this.state.experiment?.max_trials||0;return m?Math.round(t/m*100)+'% used':''},
+  getDepNames(){
+    const names=new Set();
+    for(const t of this.state.trials?.trials||[])
+      for(const d of (t.dependencies||[]))if(d.name)names.add(d.name);
+    return[...names].sort();
+  },
   renderDepGraph(){
-    const el=document.getElementById('dep-graph');if(!el)return;
-    const ts=this.state.trials?.trials||[];const wd=ts.filter(t=>t.dependencies?.length);if(!wd.length)return;
-    const edges=[];for(const t of wd)for(const d of t.dependencies)edges.push([d.source_index,t.index]);
-    const nodeSet=new Set();edges.forEach(([s,t])=>{nodeSet.add(s);nodeSet.add(t)});
-    const nodes=Array.from(nodeSet).sort((a,b)=>a-b);
-    const pos={};const cols=Math.ceil(Math.sqrt(nodes.length));
-    nodes.forEach((n,i)=>{pos[n]={x:i%cols,y:Math.floor(i/cols)}});
+    const ts=this.state.trials?.trials||[];
+    if(!ts.length)return;
     const statusColor={'COMPLETED':'#22c55e','RUNNING':'#3b82f6','FAILED':'#ef4444','EARLY_STOPPED':'#f59e0b','ABANDONED':'#64748b'};
     const sm={};ts.forEach(t=>{sm[t.index]=t});
-    const ex=[],ey=[];edges.forEach(([s,t])=>{if(pos[s]&&pos[t]){ex.push(pos[s].x,pos[t].x,null);ey.push(pos[s].y,pos[t].y,null)}});
-    const hoverTexts=nodes.map(n=>{const trial=sm[n];if(!trial)return'T'+n;let txt='<b>T'+n+'</b> ('+trial.status+')<br>';const params=trial.parameters||{};const pkeys=Object.keys(params).slice(0,6);if(pkeys.length){txt+='<b>Parameters:</b><br>';pkeys.forEach(k=>txt+=k+': '+fmtN(params[k])+'<br>');if(Object.keys(params).length>6)txt+='...<br>'}const metrics=trial.metrics||{};const mkeys=Object.keys(metrics);if(mkeys.length){txt+='<b>Metrics:</b><br>';mkeys.forEach(k=>txt+=k+': '+fmtN(metrics[k])+'<br>')}return txt});
-    const traces=[
-      {x:ex,y:ey,mode:'lines',line:{color:'#4a5568',width:1.5},hoverinfo:'skip',showlegend:false},
-      {x:nodes.map(n=>pos[n].x),y:nodes.map(n=>pos[n].y),mode:'markers+text',
-       marker:{size:30,color:nodes.map(n=>statusColor[sm[n]?.status]||'#64748b'),line:{color:'#1a1a2e',width:2}},
-       text:nodes.map(n=>'T'+n),textposition:'middle center',textfont:{size:9,color:'#fff'},
-       hovertext:hoverTexts,hoverinfo:'text',showlegend:false}
-    ];
-    const annotations=edges.map(([s,t])=>{if(!pos[s]||!pos[t])return null;return{ax:pos[s].x,ay:pos[s].y,x:pos[t].x,y:pos[t].y,xref:'x',yref:'y',axref:'x',ayref:'y',showarrow:true,arrowhead:2,arrowsize:1.5,arrowwidth:1.5,arrowcolor:'#4a5568'}}).filter(Boolean);
-    Plotly.react(el,traces,{...PL,xaxis:{...PL.xaxis,showgrid:false,zeroline:false,showticklabels:false},yaxis:{...PL.yaxis,showgrid:false,zeroline:false,showticklabels:false,scaleanchor:'x'},annotations,margin:{l:20,r:20,t:10,b:20},hovermode:'closest'},PC);
+    const mkHover=(n)=>{
+      const trial=sm[n];if(!trial)return'T'+n;
+      let txt='<b>T'+n+'</b> ['+trial.status+']';
+      if(trial.gen_node)txt+=' <i>'+trial.gen_node+'</i>';
+      txt+='<br>';
+      const params=trial.parameters||{};const pk=Object.keys(params).slice(0,5);
+      if(pk.length){txt+=pk.map(k=>k+'='+fmtN(params[k])).join(', ');if(Object.keys(params).length>5)txt+=', ...';txt+='<br>'}
+      const met=trial.metrics||{};const mk=Object.keys(met);
+      if(mk.length)txt+=mk.map(k=>'<b>'+k+'</b>='+fmtN(met[k])).join(', ');
+      return txt;
+    };
+    // Render one graph per dependency name
+    for(const depName of this.getDepNames()){
+      const el=document.getElementById('dep-graph-'+depName);if(!el)continue;
+      // Collect edges for this dependency
+      const edges=[];
+      for(const t of ts)for(const d of (t.dependencies||[]))
+        if(d.name===depName)edges.push([d.source_index,t.index]);
+      if(!edges.length)continue;
+      const nodeSet=new Set();edges.forEach(([s,t])=>{nodeSet.add(s);nodeSet.add(t)});
+      const nodes=[...nodeSet].sort((a,b)=>a-b);
+      // Tree layout
+      const children={};const parentOf={};
+      edges.forEach(([s,t])=>{if(!children[s])children[s]=[];children[s].push(t);parentOf[t]=s});
+      const roots=nodes.filter(n=>!(n in parentOf));
+      const pos={};const visited=new Set();let row=0;
+      const place=(n,depth)=>{
+        if(visited.has(n))return;visited.add(n);
+        pos[n]={x:depth*3,y:row};
+        const kids=(children[n]||[]).sort((a,b)=>a-b);
+        if(!kids.length){row++;return}
+        kids.forEach(c=>place(c,depth+1));
+      };
+      roots.sort((a,b)=>a-b).forEach(r=>place(r,0));
+      // Place any unvisited nodes (cycles)
+      nodes.filter(n=>!visited.has(n)).forEach(n=>{pos[n]={x:0,y:row++}});
+      // Traces
+      const annotations=edges.map(([s,t])=>{
+        if(!pos[s]||!pos[t])return null;
+        const dx=pos[t].x-pos[s].x,dy=pos[t].y-pos[s].y;
+        const len=Math.sqrt(dx*dx+dy*dy);if(len===0)return null;
+        const r=0.5;// offset in data units (~circle radius)
+        const ux=dx/len,uy=dy/len;
+        return{ax:pos[s].x+ux*r,ay:pos[s].y+uy*r,x:pos[t].x-ux*r,y:pos[t].y-uy*r,
+          xref:'x',yref:'y',axref:'x',ayref:'y',
+          showarrow:true,arrowhead:3,arrowsize:1.2,arrowwidth:1.5,arrowcolor:'#4a5568'};
+      }).filter(Boolean);
+      const traces=[{
+        x:nodes.map(n=>pos[n].x),y:nodes.map(n=>pos[n].y),mode:'markers+text',
+        marker:{size:28,color:nodes.map(n=>statusColor[sm[n]?.status]||'#64748b'),line:{color:'#1a1a2e',width:2}},
+        text:nodes.map(n=>'T'+n),textposition:'middle center',textfont:{size:9,color:'#fff'},
+        hovertext:nodes.map(n=>mkHover(n)),hoverinfo:'text',showlegend:false
+      }];
+      Plotly.react(el,traces,{...PL,
+        xaxis:{...PL.xaxis,showgrid:false,zeroline:false,showticklabels:false,fixedrange:false},
+        yaxis:{...PL.yaxis,showgrid:false,zeroline:false,showticklabels:false,autorange:'reversed',fixedrange:false},
+        annotations,margin:{l:10,r:10,t:10,b:10},hovermode:'closest',dragmode:'pan'},PC);
+    }
   },
   async pickPoint(objective){
     const r=await this.f('pareto/pick?objective='+encodeURIComponent(objective));
