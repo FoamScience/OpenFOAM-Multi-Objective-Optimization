@@ -151,9 +151,9 @@ The web dashboard provides real-time monitoring and post-optimization analysis.
 **Performance:** ETag caching, tab-aware fetching, 3s polling.
 
 **REST API:** The dashboard is powered by an OpenAPI-compatible REST API.
-Interactive API documentation (Swagger UI) is available at ``/docs`` on the
-running server (e.g. ``http://localhost:8098/docs``). The raw OpenAPI spec
-is at ``/openapi.json``.""",
+- Swagger UI: ``/api/docs`` (e.g. ``http://localhost:8098/api/docs``)
+- OpenAPI spec: ``/api/openapi.json``
+- ReDoc: ``/redoc``""",
     },
 
     "concept.pareto_frontier": {
