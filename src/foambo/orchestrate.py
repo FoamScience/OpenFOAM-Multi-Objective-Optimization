@@ -1,7 +1,54 @@
 from ax.api.client import AnalysisCardBase, PercentileEarlyStoppingStrategy, Client
 from ax.orchestration.orchestrator_options import OrchestratorOptions
 from ax.api.types import TParameterization
-from ax.early_stopping.strategies import AndEarlyStoppingStrategy, OrEarlyStoppingStrategy, ThresholdEarlyStoppingStrategy
+from ax.early_stopping.strategies import AndEarlyStoppingStrategy, OrEarlyStoppingStrategy, ThresholdEarlyStoppingStrategy as _AxThresholdES
+
+
+class ThresholdEarlyStoppingStrategy(_AxThresholdES):
+    """Patched ThresholdEarlyStoppingStrategy that respects metric_signatures.
+
+    Ax 1.2.4's ThresholdEarlyStoppingStrategy._should_stop_trials_early ignores
+    self.metric_signatures and always checks the experiment's first objective.
+    This override uses the configured metric_signatures[0] instead.
+    """
+
+    def _should_stop_trials_early(self, trial_indices, experiment, current_node=None):
+        # Use configured metric if available, otherwise fall back to Ax default
+        if self.metric_signatures:
+            metric_signature = self.metric_signatures[0]
+            # Infer direction: check if this metric is a minimization objective
+            objectives = self._all_objectives_and_directions(experiment=experiment)
+            minimize = bool(objectives.get(metric_signature, True))  # cast numpy.bool_ → bool
+        else:
+            metric_signature, minimize = self._default_objective_and_direction(
+                experiment=experiment
+            )
+
+        data = self._lookup_and_validate_data(
+            experiment=experiment, metric_signatures=[metric_signature]
+        )
+        if data is None:
+            return {}
+
+        df = data.full_df
+
+        if not self.is_eligible_any(
+            trial_indices=trial_indices, experiment=experiment, df=df
+        ):
+            return {}
+
+        df_objective = df[df["metric_signature"] == metric_signature]
+        decisions = {}
+        for trial_index in trial_indices:
+            should_stop, reason = self._should_stop_trial_early(
+                trial_index=trial_index,
+                experiment=experiment,
+                df=df_objective,
+                minimize=minimize,
+            )
+            if should_stop:
+                decisions[trial_index] = reason
+        return decisions
 from ax.generation_strategy.generation_node import MaxGenerationParallelism
 from ax.storage.json_store.registry import CenterGenerationNode
 from foambo.metrics import FoamJobRunner, LocalJobMetric

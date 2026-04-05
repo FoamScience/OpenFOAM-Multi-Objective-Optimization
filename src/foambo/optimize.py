@@ -81,6 +81,17 @@ def optimize(cfg):
     from omegaconf import OmegaConf, DictConfig
     from .common import VERSION, set_experiment_name, get_experiment_name
     from .metrics import streaming_metric
+
+    # Patch Ax's JSON encoder to handle numpy scalar types (numpy.bool_, numpy.int64, etc.)
+    import numpy as np
+    from ax.storage.json_store import encoder as _ax_encoder
+    _orig_object_to_json = _ax_encoder.object_to_json
+    def _patched_object_to_json(obj, **kwargs):
+        if isinstance(obj, (np.bool_, np.generic)):
+            return _orig_object_to_json(obj.item(), **kwargs)
+        return _orig_object_to_json(obj, **kwargs)
+    _ax_encoder.object_to_json = _patched_object_to_json
+    _ax_encoder._object_to_json = _patched_object_to_json
     from .analysis import compute_analysis_cards, plot_pareto_frontier
     from .orchestrate import (
         ExistingTrialsOptions, ExperimentOptions, OptimizationOptions,
