@@ -1912,7 +1912,12 @@ def _render_with_paraview_state(case_path: str, script_path: str) -> dict:
         pvpython = shutil.which("pvpython")
         if pvpython is None:
             return {"error": "pvpython not found in PATH", "image": None}
-        log.info(f"Running: {pvpython} {script_path} {case_path} {screenshot_name}")
+        # Serve cached screenshot if it already exists
+        if os.path.exists(screenshot_path) and os.path.getsize(screenshot_path) > 0:
+            log.info(f"Serving cached screenshot for {case_path}")
+            with open(screenshot_path, "rb") as f:
+                img_data = base64.b64encode(f.read()).decode("utf-8")
+            return {"image": img_data, "case_path": case_path, "renderer": "paraview"}
         # Sandboxed environment: only expose case_path and essential ParaView vars
         safe_env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -1925,26 +1930,63 @@ def _render_with_paraview_state(case_path: str, script_path: str) -> dict:
         for k, v in os.environ.items():
             if k.startswith(("PV_", "VTK_", "PARAVIEW_", "LD_LIBRARY", "PYTHONPATH", "PYTHON", "FOAMBO_")):
                 safe_env[k] = v
-        # Use bubblewrap for OS-level isolation when available
+
+        # Provide a display for X11-backed ParaView builds (vtkXOpenGLRenderWindow).
+        # Prefer Xvfb (no auth issues, isolated). Fall back to host DISPLAY + XAUTHORITY.
+        xvfb_proc = None
+        xvfb = shutil.which("Xvfb")
+        if xvfb:
+            import random
+            disp_num = random.randint(50, 200)
+            disp_str = f":{disp_num}"
+            try:
+                xvfb_proc = subprocess.Popen(
+                    [xvfb, disp_str, "-screen", "0", "1280x1024x24", "-ac", "-nolisten", "tcp"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                import time as _time; _time.sleep(0.5)
+                safe_env["DISPLAY"] = disp_str
+                log.info(f"Started Xvfb on display {disp_str} (pid {xvfb_proc.pid})")
+            except Exception as e:
+                log.warning(f"Failed to start Xvfb: {e}")
+                xvfb_proc = None
+        if "DISPLAY" not in safe_env:
+            host_display = os.environ.get("DISPLAY", "")
+            if host_display:
+                safe_env["DISPLAY"] = host_display
+                xauth = os.environ.get("XAUTHORITY", os.path.expanduser("~/.Xauthority"))
+                if os.path.exists(xauth):
+                    safe_env["XAUTHORITY"] = xauth
+                log.info(f"Using host display {host_display}")
+            else:
+                log.warning("No Xvfb and no DISPLAY — pvpython may fail on X11 builds")
+
+        cmd = [pvpython, "--force-offscreen-rendering", script_path, case_path, screenshot_name]
+        log.info(f"Running: {' '.join(cmd)}")
         bwrap = shutil.which("bwrap")
         if bwrap:
             cmd = [
                 bwrap,
                 "--ro-bind", "/", "/",              # read-only root filesystem
+                "--dev", "/dev",                    # expose /dev (needed for /dev/urandom, DRI)
                 "--bind", case_path, case_path,     # read-write case folder
                 "--bind", "/tmp", "/tmp",           # ParaView needs tmp
                 "--unshare-net",                    # no network access
                 "--die-with-parent",                # kill if server dies
-                pvpython, script_path, case_path, screenshot_name,
+                pvpython, "--force-offscreen-rendering", script_path, case_path, screenshot_name,
             ]
-        else:
-            cmd = [pvpython, script_path, case_path, screenshot_name]
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=120,
-            cwd=case_path,
-            env=safe_env,
-        )
+            log.info(f"Running (sandboxed): {' '.join(cmd)}")
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True, text=True, timeout=120,
+                cwd=case_path,
+                env=safe_env,
+            )
+        finally:
+            if xvfb_proc is not None:
+                xvfb_proc.terminate()
+                log.info(f"Terminated Xvfb (pid {xvfb_proc.pid})")
         if result.stdout.strip():
             log.info(f"pvpython stdout: {result.stdout.strip()[:300]}")
         if result.stderr.strip():
