@@ -110,6 +110,7 @@ class TrialDetail(BaseModel):
     case_path: Optional[str] = None
     dependencies: List[dict]
     metrics: dict
+    execution_time_s: Optional[float] = None
 
 class TrialsResponse(BaseModel):
     trials: List[TrialDetail]
@@ -178,6 +179,7 @@ MUTABLE_PREFIXES = {
     "orchestration_settings.max_trials",
     "orchestration_settings.timeout_hours",
     "orchestration_settings.ttl_seconds_for_trials",
+    "orchestration_settings.trial_timeout",
     "orchestration_settings.tolerated_trial_failure_rate",
     "orchestration_settings.dimensionality_reduction.",
     "orchestration_settings.early_stopping_strategy.",
@@ -540,6 +542,13 @@ def _get_trials() -> dict:
                     trial_m[mname] = None
             all_metrics[tidx] = trial_m
 
+        # Build completion-time map from event log
+        _terminal_event_types = {"trial.completed", "trial.failed", "trial.early_stopped", "trial.killed"}
+        completion_ts: Dict[int, float] = {}
+        for ev in _state.event_log:
+            if ev.get("type") in _terminal_event_types:
+                completion_ts[ev["trial"]] = ev["ts"]
+
         trials = []
         counts: Dict[str, int] = {}
         for tidx, trial in list(exp.trials.items()):
@@ -558,6 +567,14 @@ def _get_trials() -> dict:
             deps = _parse_trial_deps(exp.runner, tidx, trial)
             metrics = all_metrics.get(tidx, {})
 
+            dispatch_time = trial.run_metadata.get("dispatch_time") if trial.run_metadata else None
+            exec_time = None
+            if dispatch_time is not None:
+                if status in ("COMPLETED", "FAILED", "EARLY_STOPPED"):
+                    exec_time = completion_ts.get(tidx, dispatch_time) - dispatch_time or None
+                elif status == "RUNNING":
+                    exec_time = time.time() - dispatch_time
+
             trials.append({
                 "index": tidx,
                 "status": status,
@@ -566,6 +583,7 @@ def _get_trials() -> dict:
                 "case_path": case_path,
                 "dependencies": deps,
                 "metrics": metrics,
+                "execution_time_s": exec_time,
             })
         return {"trials": trials, "counts": counts}
 
@@ -1116,6 +1134,13 @@ def _patch_config(updates: dict) -> dict:
 
     if updated:
         _state.bump("config", "experiment")
+        # Propagate trial_timeout to the runner if it was changed
+        if any(p == "orchestration_settings.trial_timeout" for p in updated):
+            try:
+                runner = _state.client._experiment.runner
+                runner._trial_timeout = orch_cfg.trial_timeout
+            except Exception:
+                pass
 
     return {"updated": updated, "rejected": rejected}
 

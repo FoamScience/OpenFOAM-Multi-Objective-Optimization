@@ -125,9 +125,16 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
         "Set to None for no timeout."
     ), examples=[48])
     ttl_seconds_for_trials: int | None = Field(default=None, description=(
-        "Time-to-live in seconds for individual trials. "
-        "Trials exceeding this are marked as failed. Useful for preventing runaway simulations."
+        "Time-to-live in seconds for candidate (queued, not yet running) trials. "
+        "Candidates exceeding this are marked STALE by Ax and may be re-suggested. "
+        "Does NOT stop or kill already-running trials."
     ), examples=[2400])
+    trial_timeout: int | float | str | None = Field(default=None, description=(
+        "Kill running trials that exceed this time limit. "
+        "An integer or float is an absolute timeout in seconds (e.g. 3600). "
+        "A string like '5*baseline' means 5x the baseline (T0) execution time. "
+        "Killed trials are marked FAILED. Set to None to disable."
+    ), examples=[3600, "5*baseline"])
     fatal_error_on_metric_trouble: bool = Field(default=False, description=(
         "Whether to terminate the experiment if metric evaluation fails. "
         "True: stop experiment on any metric failure. False: mark trial as failed and continue."

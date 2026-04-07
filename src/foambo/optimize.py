@@ -189,6 +189,8 @@ def optimize(cfg):
         runner.trial_dependencies = trial_deps
     runner._parameter_groups = exp_cfg.get_parameter_groups()
     runner._metric_names = [m.name for m in opt_cfg.metrics]
+    runner._trial_timeout = orch_cfg.trial_timeout
+    runner._baseline_execution_time = None  # set after baseline completes
     # Enable streaming data attachment during poll_trial (for early stopping)
     runner._streaming_client = client
     runner._streaming_cfg = raw_cfg["optimization"]
@@ -472,6 +474,13 @@ def optimize(cfg):
                 db_settings=_bl_db,
             )
         scheduler.run_n_trials(max_trials=1, timeout_hours=orch_cfg.timeout_hours, idle_callback=callback)
+        # Record baseline execution time for trial_timeout
+        _bl_trial = client._experiment.trials[baseline_index]
+        _bl_dispatch = (_bl_trial.run_metadata or {}).get("dispatch_time")
+        if _bl_dispatch is not None:
+            import time as _time
+            runner._baseline_execution_time = _time.time() - _bl_dispatch
+            log.info(f"Baseline execution time: {runner._baseline_execution_time:.1f}s")
         client._experiment.status_quo = assert_is_instance(
             client._experiment.trials[baseline_index], Trial
         ).arm
