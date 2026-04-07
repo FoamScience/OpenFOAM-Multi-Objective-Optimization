@@ -968,10 +968,23 @@ def _do_predict(parameters: dict) -> dict:
             means = prediction[0]
             sems = prediction[1] if len(prediction) > 1 else {}
             result = {}
+
+            def _extract_float(v):
+                if isinstance(v, (int, float)):
+                    return float(v)
+                if isinstance(v, dict):
+                    return float(v.get("mean", v.get("value", 0)))
+                if isinstance(v, (list, tuple)) and len(v) > 0:
+                    return float(v[0])
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return 0.0
+
             for metric_name in means:
                 result[metric_name] = {
-                    "mean": float(means[metric_name][0]) if isinstance(means[metric_name], list) else float(means[metric_name]),
-                    "sem": float(sems.get(metric_name, [0])[0]) if isinstance(sems.get(metric_name, [0]), list) else float(sems.get(metric_name, 0)),
+                    "mean": _extract_float(means[metric_name]),
+                    "sem": _extract_float(sems.get(metric_name, 0)),
                 }
             return {"predictions": result}
         except Exception as e:
