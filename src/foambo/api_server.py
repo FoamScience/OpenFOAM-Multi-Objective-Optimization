@@ -1935,7 +1935,6 @@ def _render_with_paraview_state(case_path: str, script_path: str) -> dict:
         safe_env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": os.environ.get("HOME", "/tmp"),
-            "DISPLAY": os.environ.get("DISPLAY", ""),
             "MESA_GL_VERSION_OVERRIDE": os.environ.get("MESA_GL_VERSION_OVERRIDE", ""),
             "TMPDIR": case_path,
         }
@@ -2160,6 +2159,8 @@ def start_api_server(client, raw_cfg, orch_cfg, host: str = "127.0.0.1",
                             access_log=False)
     server = uvicorn.Server(config)
     _state._uvicorn_server = server
+    _state._actual_port = actual_port
+    _state._actual_host = host
 
     thread = threading.Thread(target=server.run, daemon=True, name="foambo-api")
     thread.start()

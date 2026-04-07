@@ -649,13 +649,15 @@ def main():
     uvx foamBO --config My.yaml ++experiment.name=Test2  # Runs optimization from My.yaml with different experiment name
     uvx foamBO --analysis ++store.read_from=json         # Generates reports for optimization from foamBO.yaml configuration
     uvx foamBO --analysis --json                         # Generates reports and exports Plotly figures as JSON
-    uvx foamBO --docs                                    # Browse the documentation""",
+    uvx foamBO --docs                                    # Browse the documentation
+""",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--analysis', action='store_true', help='Generate optimization reports')
     group.add_argument('--generate-config', action='store_true', help='Generate a default config file and exit')
     group.add_argument('--docs', action='store_true', help='Open Configuration Docs explorer')
     group.add_argument('--no-opt', action='store_true', help='Load experiment and start web dashboard without running optimization')
+    group.add_argument('--template', type=str, metavar='NAME', help='Show a reusable template (use --template list to see available)')
     group.add_argument('--upgrade-config', action='store_true', help='Check config YAML against current schema and show suggested changes')
     group.add_argument('--pack', action='store_true', help='Pack experiment into a .foambo archive')
     group.add_argument('--unpack', type=str, metavar='ARCHIVE', help='Unpack a .foambo archive')
@@ -682,6 +684,27 @@ def main():
         parser.error('--include-trials can only be used with --pack')
     if args.skip_patterns and not getattr(args, 'pack', False):
         parser.error('--skip-patterns can only be used with --pack')
+
+    if args.template:
+        import importlib.resources as _res
+        _TEMPLATES = {
+            "openfoam.stream_metrics": ("templates/openfoam_stream_metrics.h",
+                "OpenFOAM coded function object that pushes streaming metrics to the foamBO API"),
+        }
+        if args.template == "list":
+            print("Available templates:\n")
+            for name, (_, desc) in sorted(_TEMPLATES.items()):
+                print(f"  {name:30s} {desc}")
+            print(f"\nUsage: foamBO --template <name>")
+        elif args.template in _TEMPLATES:
+            tpl_path, _ = _TEMPLATES[args.template]
+            tpl_file = _res.files("foambo").joinpath(tpl_path)
+            print(tpl_file.read_text())
+        else:
+            print(f"Unknown template: {args.template}")
+            print(f"Use --template list to see available templates")
+            sys.exit(1)
+        return
 
     if args.upgrade_config:
         from .config_upgrade import run_upgrade_check

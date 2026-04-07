@@ -1,0 +1,148 @@
+/*---------------------------------------------------------------------------*\
+  foamboStreamMetrics — OpenFOAM coded function object for foamBO
+
+  Reads postProcessing data from other function objects and pushes metric
+  values to the foamBO API server. Uses standard C++ I/O only
+
+  Requirements:
+    - FOAMBO_API_ENDPOINT, FOAMBO_TRIAL_INDEX, FOAMBO_SESSION_ID env vars
+      (automatically set by foamBO)
+    - curl available on the compute node
+    - postProcessing function objects already configured
+  Usage:
+    1. Copy this file to your case's system/ directory
+    2. Add to controlDict:  #include "foamboStreamMetrics"
+    3. Customize the metric computation section below
+    4. Set orchestration_settings.poll_streaming_metrics: false in foamBO config
+\*---------------------------------------------------------------------------*/
+
+foamboStreamMetrics
+{
+    type            coded;
+    name            foamboStreamMetrics;
+    libs            (utilityFunctionObjects);
+
+    writeControl    timeStep;
+    writeInterval   50;
+
+    codeInclude
+    #{
+        #include <fstream>
+        #include <sstream>
+        #include <cstdlib>
+        #include <dirent.h>
+        #include <algorithm>
+        #include <vector>
+        #include <cmath>
+    #};
+
+    codeExecute
+    #{
+        const char* ep = std::getenv("FOAMBO_API_ENDPOINT");
+        const char* ti = std::getenv("FOAMBO_TRIAL_INDEX");
+        const char* sid = std::getenv("FOAMBO_SESSION_ID");
+        if (!ep || !ti) return true;  // not under foamBO
+
+        int step = static_cast<int>(mesh().time().value());
+        std::string base = mesh().time().globalPath();
+
+        // Find latest time directory in a postProcessing subfolder
+        auto latestDir = [](const std::string& ppDir) -> std::string
+        {
+            DIR* d = opendir(ppDir.c_str());
+            if (!d) return "";
+            std::vector<std::string> dirs;
+            struct dirent* e;
+            while ((e = readdir(d)))
+            {
+                std::string n = e->d_name;
+                if (n != "." && n != "..") dirs.push_back(n);
+            }
+            closedir(d);
+            if (dirs.empty()) return "";
+            std::sort(dirs.begin(), dirs.end());
+            return ppDir + "/" + dirs.back();
+        };
+
+        // Read last numeric value from a surfaceFieldValue.dat
+        auto readLast = [&](const std::string& funcName) -> double
+        {
+            std::string dir = latestDir(base + "/postProcessing/" + funcName);
+            if (dir.empty()) return 0;
+            std::ifstream f(dir + "/surfaceFieldValue.dat");
+            if (!f.good()) return 0;
+            std::string last, line;
+            while (std::getline(f, line))
+            {
+                if (!line.empty() && line[0] != '#') last = line;
+            }
+            if (last.empty()) return 0;
+            std::istringstream iss(last);
+            double val = 0, tmp;
+            while (iss >> tmp) val = tmp;
+            return val;
+        };
+
+        // Read max continuity error from solver log
+        auto readContErr = [&](const std::string& logName) -> double
+        {
+            std::ifstream f(base + "/" + logName);
+            if (!f.good()) return 0;
+            double maxErr = 0;
+            std::string line;
+            while (std::getline(f, line))
+            {
+                if (line.find("time step continuity errors") != std::string::npos)
+                {
+                    std::istringstream iss(line);
+                    std::string tok;
+                    double val = 0;
+                    while (iss >> tok)
+                    {
+                        try { val = std::stod(tok); } catch (...) {}
+                    }
+                    if (std::fabs(val) > maxErr) maxErr = std::fabs(val);
+                }
+            }
+            return maxErr;
+        };
+
+        // =================================
+        // == CUSTOMIZE YOUR METRICS HERE ==
+        // =================================
+
+        std::ostringstream json;
+        json << "{\"metrics\":{";
+
+        // Continuity errors (divergence indicator)
+        json << "\"continuityErrors\":" << readContErr("log.simpleFoam");
+
+        // Pressure rise across patches
+        // double pIn  = readLast("inletPressure");
+        // double pOut = readLast("outletPressure");
+        // json << ",\"pressureHead\":" << std::fabs(pIn - pOut) / (998.2 * 9.81);
+
+        // Add more metrics as needed:
+        // json << ",\"myMetric\":" << readLast("myFunctionObject");
+
+        json << "},\"step\":" << step;
+        if (sid) json << ",\"session_id\":\"" << sid << "\"";
+        json << "}";
+
+        // ══════════════════════════════════════════════════════════════════
+
+        // POST via curl (fire-and-forget, backgrounded)
+        std::string url = std::string(ep) + "/trials/" + ti + "/push/metrics";
+        std::string cmd = "curl -s -X POST \"" + url + "\""
+            + " -H \"Content-Type: application/json\""
+            + " -d '" + json.str() + "'"
+            + " > /dev/null 2>&1 &";
+
+        if (Pstream::master())
+        {
+            (void)std::system(cmd.c_str());
+            Info << "foamboStreamMetrics: pushed step " << step << nl;
+        }
+        return true;
+    #};
+}
