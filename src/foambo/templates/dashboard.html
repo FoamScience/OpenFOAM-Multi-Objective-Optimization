@@ -304,6 +304,20 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
           <div class="stat-card"><div class="value" x-text="state.experiment?.parallelism || 1"></div><div class="label">Parallelism</div></div>
         </div>
       </div>
+
+      <!-- Event Log -->
+      <div class="chart-card" :class="state.experiment?.dimensionality_reduction?.enabled?'panel-12':'panel-6'" x-show="state.events?.events?.length">
+        <h6>Event Log</h6>
+        <div style="max-height:200px;overflow-y:auto;font-family:'JetBrains Mono',monospace;font-size:0.7rem;line-height:1.6">
+          <template x-for="(e,i) in (state.events?.events||[]).slice().reverse().slice(0,50)" :key="'ev-'+i">
+            <div>
+              <span style="color:var(--pico-muted-color)" x-text="new Date(e.ts*1000).toLocaleTimeString()"></span>
+              <span :style="{color: e.type.includes('failed')||e.type.includes('killed')?'#ef4444':e.type.includes('completed')?'#22c55e':e.type.includes('streaming')?'#3b82f6':e.type.includes('dispatched')?'#f59e0b':'var(--pico-secondary)'}" x-text="'T'+e.trial+' '+e.type"></span>
+              <span style="color:var(--pico-muted-color)" x-text="e.detail?(' — '+e.detail.split('/').pop()):''" ></span>
+            </div>
+          </template>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -322,6 +336,7 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
           <th @click="tsort('gen_node')" style="cursor:pointer">Gen Node</th>
           <th>Source</th>
           <th>Case</th>
+          <th @click="tsort('execution_time_s')" style="cursor:pointer" title="Time from dispatch to retrieval">Time</th>
           <template x-for="m in allMetricNames()" :key="'th-'+m"><th @click="tsort(m)" style="cursor:pointer" :style="isObjective(m)?'color:var(--accent)':''" x-text="m"></th></template>
         </tr></thead>
         <template x-for="t in fTrials()" :key="t.index">
@@ -333,10 +348,11 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
               <td x-text="t.gen_node||'-'" style="font-size:0.75rem"></td>
               <td x-text="t.dependencies?.length ? 'T'+t.dependencies[0].source_index : '-'" style="font-size:0.75rem"></td>
               <td style="font-size:0.7rem;color:var(--pico-secondary)" x-text="t.case_path?.split('/').pop()||'-'"></td>
+              <td style="font-size:0.75rem;color:var(--pico-secondary)" :style="t.status==='RUNNING'?'color:#3b82f6':''" x-text="fmtDur(t.execution_time_s)" :title="t.execution_time_s!=null?(t.status==='RUNNING'?'Elapsed: '+fmtDur(t.execution_time_s):'Duration: '+fmtDur(t.execution_time_s)):''"></td>
               <template x-for="m in allMetricNames()" :key="'tv-'+m+'-'+t.index"><td :style="{color:isBest(t,m)?'var(--accent)':'inherit',fontWeight:isBest(t,m)?'600':'normal'}" x-text="t.metrics?.[m]!=null?fmtN(t.metrics[m]):'-'"></td></template>
             </tr>
             <tr x-show="xt===t.index" class="trial-detail">
-              <td :colspan="7+allMetricNames().length" style="padding:0.75rem 1rem;border-left:3px solid var(--accent)">
+              <td :colspan="8+allMetricNames().length" style="padding:0.75rem 1rem;border-left:3px solid var(--accent)">
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
                   <!-- Left: Parameters + Log -->
                   <div>
@@ -667,14 +683,14 @@ const GC = {CenterOfSearchSpace:'#64748b',Sobol:'#3b82f6',MBM:'#00d4aa',bo:'#00d
 
 function app(){return{
   tab:'overview',tabs:[{id:'overview',label:'Overview'},{id:'trials',label:'Trials'},{id:'objectives',label:'Objectives'},{id:'analysis',label:'Analysis'},{id:'streaming',label:'Streaming'},{id:'dependencies',label:'Dependencies'},{id:'predict',label:'Predict'},{id:'config',label:'Config'}],
-  state:{status:null,experiment:null,trials:null,objectives:null,streaming:null,generation:null,pareto:null},
+  state:{status:null,experiment:null,trials:null,objectives:null,streaming:null,generation:null,pareto:null,events:null},
   lastUpdate:'',tf:'all',tsk:'index',tsd:1,xt:null,td:null,tdViz:null,tdVizLoading:false,tdVizErr:'',pvState:'',pp:{},predicting:false,pr:null,pe:null,cs:[],cv:{},cmp:[],
   enlargedEl:null,
   anlMetric:'',anlTopK:10,anlLoading:false,anlError:'',anlSens:null,anlCV:null,anlPC:null,anlContour:null,anlSearch:null,anlInsights:null,anlHealth:null,anlGroupSens:null,anlGroupInt:null,anlGroupBest:null,frozenGroups:{},fetchTrialIdx:'',
   _schedPoll(){setTimeout(async()=>{await this.r();this._schedPoll()},3000)},
   async init(){await this.r();this._schedPoll();this.$watch('tab',()=>this.r());document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const n=parseInt(e.key);if(n>=1&&n<=this.tabs.length)this.tab=this.tabs[n-1].id;if(e.key==='v'&&!e.ctrlKey&&!e.metaKey){const hovered=document.querySelector('.chart-card:hover');if(hovered){const plotDiv=hovered.querySelector('.js-plotly-plot');if(plotDiv&&plotDiv.data){this.enlargedEl=true;this.$nextTick(()=>{const target=document.getElementById('enlarge-target');if(target)Plotly.react(target,plotDiv.data,{...plotDiv.layout,width:null,height:null},PC)})}}}if(e.key==='Escape'){this.enlargedEl=null;const et=document.getElementById('enlarge-target');if(et)Plotly.purge(et)}});this.$watch('xt',async(v)=>{this.td=null;this.tdViz=null;this.tdVizLoading=false;this.tdVizErr='';if(v!==null){const r=await this.f('trials/'+v);if(r&&!r._error)this.td=r}})},
   _etags:{},
-  _tabEps:{overview:['generation'],trials:[],objectives:['pareto'],analysis:[],streaming:['streaming'],dependencies:[],predict:[],config:['config']},
+  _tabEps:{overview:['generation','events'],trials:[],objectives:['pareto'],analysis:[],streaming:['streaming'],dependencies:[],predict:[],config:['config']},
   async r(){
     // Always fetch core data; add tab-specific endpoints
     const base=['status','experiment','trials','objectives'];
