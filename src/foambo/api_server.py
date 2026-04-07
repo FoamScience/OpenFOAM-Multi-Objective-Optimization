@@ -202,6 +202,13 @@ class _ApiState:
         self.last_callback: float = time.time()
         self.callback_seq: int = 0
 
+        # Event-driven orchestration state
+        self.event_log: list[dict] = []  # timestamped events
+        self.trial_push_event = threading.Event()
+        self.trial_status_overrides: dict[int, str] = {}  # trial_idx -> "completed"/"failed"
+        self.trial_pushed_metrics: dict[int, list] = {}  # trial_idx -> [{metrics, step, ts}]
+        self.trial_heartbeats: dict[int, float] = {}
+
         # Unique session ID so ETags never match across server restarts
         self._session_id = hex(int(time.time() * 1000))[-8:]
         # Per-endpoint version counters for ETag caching
@@ -222,9 +229,28 @@ class _ApiState:
     def etag(self, endpoint: str) -> str:
         return f'"{self._session_id}-{endpoint}-{self._versions.get(endpoint, 0)}"'
 
+    def log_event(self, trial: int, event_type: str, detail: str = ""):
+        self.event_log.append({
+            "ts": time.time(),
+            "trial": trial,
+            "type": event_type,
+            "detail": detail,
+        })
+
     def update(self, client):
         """Called from the optimizer callback to refresh state."""
         with self.lock:
+            # Detect newly completed/failed trials for event logging
+            old_terminal: set[int] = set()
+            if self.client is not None:
+                try:
+                    from ax.core.base_trial import TrialStatus as _TS
+                    for idx, t in self.client._experiment.trials.items():
+                        if t.status in (_TS.COMPLETED, _TS.FAILED, _TS.EARLY_STOPPED):
+                            old_terminal.add(idx)
+                except Exception:
+                    pass
+
             self.client = client
             self.last_callback = time.time()
             self.callback_seq += 1
@@ -233,6 +259,15 @@ class _ApiState:
                 "trials", "objectives", "streaming",
                 "generation", "pareto", "config",
             )
+
+            # Log newly completed/failed trials
+            try:
+                from ax.core.base_trial import TrialStatus as _TS
+                for idx, t in client._experiment.trials.items():
+                    if idx not in old_terminal and t.status in (_TS.COMPLETED, _TS.FAILED, _TS.EARLY_STOPPED):
+                        self.log_event(idx, f"trial.{t.status.name.lower()}", "")
+            except Exception:
+                pass
 
 
 _state = _ApiState()
@@ -1696,6 +1731,73 @@ def post_group_interactions(request_body: dict):
     except Exception as e:
         return SafeJSONResponse(content={"error": str(e)}, status_code=500)
 
+
+# Push endpoints (event-driven orchestration)
+
+@app.post("/api/v1/trials/{trial_index}/push/status")
+def push_trial_status(trial_index: int, request_body: dict):
+    """Trial pushes completion/failure status."""
+    status = request_body.get("status", "")
+    exit_code = request_body.get("exit_code")
+    session = request_body.get("session_id", "")
+
+    # Validate session to detect rogue jobs from crashed runs
+    if session and session != _state._session_id:
+        log.warning(f"Trial {trial_index} push from stale session {session} (current: {_state._session_id})")
+        return SafeJSONResponse(content={"error": "stale session", "expected": _state._session_id}, status_code=409)
+
+    if exit_code is not None:
+        status = "completed" if exit_code == 0 else "failed"
+
+    with _state.lock:
+        _state.trial_status_overrides[trial_index] = status
+        _state.trial_heartbeats[trial_index] = time.time()
+        _state.log_event(trial_index, f"trial.{status}",
+                         request_body.get("message", ""))
+    _state.trial_push_event.set()
+    _state.bump("trials")
+    return SafeJSONResponse(content={"ok": True})
+
+
+@app.post("/api/v1/trials/{trial_index}/push/metrics")
+def push_trial_metrics(trial_index: int, request_body: dict):
+    """Trial pushes streaming metric values."""
+    metrics = request_body.get("metrics", {})
+    step = request_body.get("step")
+    session = request_body.get("session_id", "")
+
+    if session and session != _state._session_id:
+        return SafeJSONResponse(content={"error": "stale session"}, status_code=409)
+
+    with _state.lock:
+        _state.trial_pushed_metrics.setdefault(trial_index, []).append({
+            "metrics": metrics, "step": step, "ts": time.time(),
+        })
+        _state.trial_heartbeats[trial_index] = time.time()
+        for mn, val in metrics.items():
+            _state.log_event(trial_index, "trial.streaming",
+                             f"{mn} step={step} value={val}")
+    _state.trial_push_event.set()
+    _state.bump("streaming", "trials")
+    return SafeJSONResponse(content={"ok": True})
+
+
+@app.post("/api/v1/trials/{trial_index}/push/heartbeat")
+def push_trial_heartbeat(trial_index: int):
+    """Trial signals it's alive."""
+    with _state.lock:
+        _state.trial_heartbeats[trial_index] = time.time()
+    return SafeJSONResponse(content={"ok": True})
+
+
+@app.get("/api/v1/events")
+def get_events(if_none_match: Optional[str] = Header(None)):
+    """Return the timestamped event log."""
+    with _state.lock:
+        return SafeJSONResponse(content={"events": _state.event_log[-500:]})
+
+
+# Store actual port on _state for event-driven runner API endpoint injection
 
 # Visualization endpoints
 

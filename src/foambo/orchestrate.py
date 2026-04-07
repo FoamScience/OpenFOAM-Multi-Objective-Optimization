@@ -1,54 +1,7 @@
 from ax.api.client import AnalysisCardBase, PercentileEarlyStoppingStrategy, Client
 from ax.orchestration.orchestrator_options import OrchestratorOptions
 from ax.api.types import TParameterization
-from ax.early_stopping.strategies import AndEarlyStoppingStrategy, OrEarlyStoppingStrategy, ThresholdEarlyStoppingStrategy as _AxThresholdES
-
-
-class ThresholdEarlyStoppingStrategy(_AxThresholdES):
-    """Patched ThresholdEarlyStoppingStrategy that respects metric_signatures.
-
-    Ax 1.2.4's ThresholdEarlyStoppingStrategy._should_stop_trials_early ignores
-    self.metric_signatures and always checks the experiment's first objective.
-    This override uses the configured metric_signatures[0] instead.
-    """
-
-    def _should_stop_trials_early(self, trial_indices, experiment, current_node=None):
-        # Use configured metric if available, otherwise fall back to Ax default
-        if self.metric_signatures:
-            metric_signature = self.metric_signatures[0]
-            # Infer direction: check if this metric is a minimization objective
-            objectives = self._all_objectives_and_directions(experiment=experiment)
-            minimize = bool(objectives.get(metric_signature, True))  # cast numpy.bool_ → bool
-        else:
-            metric_signature, minimize = self._default_objective_and_direction(
-                experiment=experiment
-            )
-
-        data = self._lookup_and_validate_data(
-            experiment=experiment, metric_signatures=[metric_signature]
-        )
-        if data is None:
-            return {}
-
-        df = data.full_df
-
-        if not self.is_eligible_any(
-            trial_indices=trial_indices, experiment=experiment, df=df
-        ):
-            return {}
-
-        df_objective = df[df["metric_signature"] == metric_signature]
-        decisions = {}
-        for trial_index in trial_indices:
-            should_stop, reason = self._should_stop_trial_early(
-                trial_index=trial_index,
-                experiment=experiment,
-                df=df_objective,
-                minimize=minimize,
-            )
-            if should_stop:
-                decisions[trial_index] = reason
-        return decisions
+from ax.early_stopping.strategies import AndEarlyStoppingStrategy, OrEarlyStoppingStrategy, ThresholdEarlyStoppingStrategy
 from ax.generation_strategy.generation_node import MaxGenerationParallelism
 from ax.storage.json_store.registry import CenterGenerationNode
 from foambo.metrics import FoamJobRunner, LocalJobMetric
@@ -211,6 +164,21 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
         "Allow uploading and running pvpython visualization scripts from the web dashboard. "
         "Set to false to disable script upload/execution for security."
     ))
+    legacy_poll: bool = Field(default=False, description=(
+        "When True, use the legacy polling loop. When False (default), use event-driven "
+        "mode where trials push status and metrics to the API server. "
+        "For remote runners, api_host must be set to an address reachable by all compute nodes "
+        "(e.g. the login node hostname, or 0.0.0.0 to bind all interfaces). "
+        "Note: stale jobs from crashed runs may push to a new foamBO instance — "
+        "FOAMBO_API_ENDPOINT includes a session ID to identify the originating process."
+    ))
+    poll_streaming_metrics: bool = Field(default=True, description=(
+        "When True, foamBO actively polls streaming metrics by running the configured "
+        "progress commands each poll cycle. When False, streaming metrics are only "
+        "received via push (trials must POST to the API). "
+        "Set to False when using OpenFOAM function objects or Allrun scripts that push "
+        "metrics directly. Process status polling (alive/dead) is always active regardless."
+    ))
     dimensionality_reduction: DimensionalityReductionOptions = Field(
         default_factory=lambda: DimensionalityReductionOptions(enabled=False),
         description="Automatic parameter fixing based on Sobol sensitivity analysis after an exploration phase"
@@ -297,6 +265,41 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
             enforce_immutable_search_space_and_opt_config=self.immutable_search_space,
             logging_level=log.level,
         )
+
+
+import threading
+from ax.api.client import Orchestrator
+
+class EventDrivenOrchestrator(Orchestrator):
+    """Orchestrator that waits on threading.Event instead of sleeping.
+
+    When trials push data to the API, the event wakes the orchestrator
+    immediately. Falls back to timeout-based polling.
+    """
+    _push_event: threading.Event | None = None
+
+    def wait_for_completed_trials_and_report_results(self, idle_callback=None, force_refit=False):
+        if self._push_event is None:
+            return super().wait_for_completed_trials_and_report_results(
+                idle_callback=idle_callback, force_refit=force_refit)
+
+        seconds = self.options.init_seconds_between_polls or 10
+        while len(self.pending_trials) > 0 and not self.poll_and_process_results():
+            if idle_callback is not None:
+                try:
+                    idle_callback(self)
+                except Exception:
+                    pass
+            self._push_event.clear()
+            triggered = self._push_event.wait(timeout=seconds)
+            if triggered:
+                seconds = self.options.init_seconds_between_polls or 10
+            else:
+                seconds = min(seconds * self.options.seconds_between_polls_backoff_factor, 120)
+
+        if idle_callback is not None:
+            idle_callback(self)
+        return self.report_results(force_refit=force_refit)
 
 
 class ExperimentOptions(FoamBOBaseModel):

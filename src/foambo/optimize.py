@@ -96,7 +96,7 @@ def optimize(cfg):
     from .orchestrate import (
         ExistingTrialsOptions, ExperimentOptions, OptimizationOptions,
         ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
-        FoamBOConfig, TrialDependency,
+        FoamBOConfig, TrialDependency, EventDrivenOrchestrator,
     )
     from ax.api.client import MultiObjective, Orchestrator, db_settings_from_storage_config
     import pandas as pd
@@ -368,6 +368,14 @@ def optimize(cfg):
             port=orch_cfg.api_port,
         )
         _update_api = update_api_state
+        # Wire event-driven mode onto the runner
+        if not orch_cfg.legacy_poll:
+            from .api_server import _state as _api_state
+            runner._api_state = _api_state
+            runner._api_host = orch_cfg.api_host
+            runner._api_port = _api_state._actual_port
+            log.info("Event-driven orchestration enabled (push endpoints active)")
+        runner._poll_streaming_metrics = orch_cfg.poll_streaming_metrics
 
     def _log_trial_failure(trial_index: int, case_path: str | None, log: Logger):
         """Log the tail of a failed trial's runner log."""
@@ -442,16 +450,27 @@ def optimize(cfg):
         from ax.generation_strategy.generation_strategy import GenerationStrategy
         from ax.core.trial import Trial
         from pyre_extensions import assert_is_instance
-        scheduler = Orchestrator(
-            experiment=client._experiment,
-            generation_strategy=GenerationStrategy(
-                name="baseline",
-                nodes=[ManualGenerationNode(node_name="baseline", parameters=baseline_cfg.parameters)]),
-            options=orch_cfg.to_scheduler_options(),
-            db_settings=db_settings_from_storage_config(client._storage_config)
-            if client._storage_config is not None
-            else None,
-        )
+        _bl_gs = GenerationStrategy(
+            name="baseline",
+            nodes=[ManualGenerationNode(node_name="baseline", parameters=baseline_cfg.parameters)])
+        _bl_db = (db_settings_from_storage_config(client._storage_config)
+                  if client._storage_config is not None else None)
+        if not orch_cfg.legacy_poll and orch_cfg.api_port != 0:
+            from .api_server import _state as _api_state
+            scheduler = EventDrivenOrchestrator(
+                experiment=client._experiment,
+                generation_strategy=_bl_gs,
+                options=orch_cfg.to_scheduler_options(),
+                db_settings=_bl_db,
+            )
+            scheduler._push_event = _api_state.trial_push_event
+        else:
+            scheduler = Orchestrator(
+                experiment=client._experiment,
+                generation_strategy=_bl_gs,
+                options=orch_cfg.to_scheduler_options(),
+                db_settings=_bl_db,
+            )
         scheduler.run_n_trials(max_trials=1, timeout_hours=orch_cfg.timeout_hours, idle_callback=callback)
         client._experiment.status_quo = assert_is_instance(
             client._experiment.trials[baseline_index], Trial
@@ -465,14 +484,25 @@ def optimize(cfg):
             _apply_objective_thresholds(client, opt_cfg.objective_thresholds,
                                        log=log, baseline_data=bl_data)
 
-    scheduler = Orchestrator(
-        experiment=client._experiment,
-        generation_strategy=client._generation_strategy_or_choose(),
-        options=orch_cfg.to_scheduler_options(),
-        db_settings=db_settings_from_storage_config(client._storage_config)
-        if client._storage_config is not None
-        else None,
-    )
+    _db_settings = (db_settings_from_storage_config(client._storage_config)
+                     if client._storage_config is not None else None)
+    if not orch_cfg.legacy_poll and orch_cfg.api_port != 0:
+        from .api_server import _state as _api_state
+        scheduler = EventDrivenOrchestrator(
+            experiment=client._experiment,
+            generation_strategy=client._generation_strategy_or_choose(),
+            options=orch_cfg.to_scheduler_options(),
+            db_settings=_db_settings,
+        )
+        scheduler._push_event = _api_state.trial_push_event
+        log.info("Using EventDrivenOrchestrator (push-event wake)")
+    else:
+        scheduler = Orchestrator(
+            experiment=client._experiment,
+            generation_strategy=client._generation_strategy_or_choose(),
+            options=orch_cfg.to_scheduler_options(),
+            db_settings=_db_settings,
+        )
     def _stop_running_trials(sched: Orchestrator):
         """Stop all running trials and save state on interrupt."""
         from ax.core.base_trial import TrialStatus as AxTrialStatus

@@ -737,19 +737,31 @@ class FoamJobRunner(IRunner):
         dep_meta = self._resolve_dependencies(trial_index, case_path, dict(parameterization))
         # Extract hook env vars (always present, may be no-ops)
         hook_env = dep_meta.pop("_hook_env", {})
+        # Inject API endpoint for event-driven mode
+        if hasattr(self, '_api_state') and self._api_state is not None:
+            hook_env["FOAMBO_API_ENDPOINT"] = (
+                f"http://{getattr(self, '_api_host', '127.0.0.1')}"
+                f":{getattr(self, '_api_port', 8098)}/api/v1"
+            )
+            hook_env["FOAMBO_TRIAL_INDEX"] = str(trial_index)
+            hook_env["FOAMBO_SESSION_ID"] = getattr(self._api_state, '_session_id', '')
         # If all metrics are Python callables and no runner is set, skip subprocess dispatch
         all_metrics_are_fns = all(m in _fn_registry for m in self._metric_names) if self._metric_names else False
         has_runner = self.cfg['template_case'].get('runner') not in (None, "", "null", "None")
         if all_metrics_are_fns and not has_runner:
             log.info(f"Trial {trial_index}: caseless mode (Python callables)")
             meta = {"job_id": -1, "job": {"case_path": case_path}, "case_path": case_path,
-                    "parameters": dict(parameterization)}
+                    "parameters": dict(parameterization), "dispatch_time": time.time()}
         else:
             (job_id, job) = self.dispatcher[self.mode](
                 parameterization, case_path, self.cfg['template_case'], hook_env=hook_env)
             log.info(f"Dispatched trial {trial_index}: {case_path}")
             meta = {"job_id": job_id, "job": job.model_dump(), "case_path": case_path,
-                    "parameters": dict(parameterization)}
+                    "parameters": dict(parameterization), "dispatch_time": time.time()}
+        # Log dispatch event
+        api_state = getattr(self, '_api_state', None)
+        if api_state is not None:
+            api_state.log_event(trial_index, "trial.dispatched", case_path)
         if dep_meta:
             meta["dependencies"] = dep_meta
         return meta
@@ -757,19 +769,118 @@ class FoamJobRunner(IRunner):
     _streaming_cfg: Dict | None = None
     _streaming_client: Any = None
 
+    # Track last known status per trial to detect transitions for event logging
+    _last_poll_status: dict = {}
+
     def poll_trial(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> TrialStatus:
         if not trial_metadata or 'job_id' not in trial_metadata:
             return TrialStatus.COMPLETED
         status = self.status_query[self.mode](trial_metadata['job_id'], self.cfg, trial_metadata)
+        # Check trial timeout (absolute seconds or N*baseline)
+        if status == TrialStatus.RUNNING:
+            timeout_cfg = getattr(self, '_trial_timeout', None)
+            dispatch_t = trial_metadata.get("dispatch_time")
+            if timeout_cfg is not None and dispatch_t is not None:
+                baseline_t = getattr(self, '_baseline_execution_time', None)
+                limit = None
+                limit_desc = ""
+                if isinstance(timeout_cfg, (int, float)):
+                    limit = float(timeout_cfg)
+                    limit_desc = f"{limit:.0f}s"
+                elif isinstance(timeout_cfg, str) and "baseline" in timeout_cfg:
+                    if baseline_t is not None:
+                        factor = float(timeout_cfg.split("*")[0].strip())
+                        limit = factor * baseline_t
+                        limit_desc = f"{factor}x baseline ({baseline_t:.0f}s = {limit:.0f}s)"
+                if limit is not None:
+                    elapsed = time.time() - dispatch_t
+                    if elapsed > limit:
+                        log.warning(
+                            f"Trial {trial_index} timed out: {elapsed:.0f}s > {limit_desc}. Killing.")
+                        try:
+                            self.stop_trial(trial_index, trial_metadata)
+                        except Exception as e:
+                            log.warning(f"Failed to kill timed-out trial {trial_index}: {e}")
+                        status = TrialStatus.FAILED
         # Attach streaming data during poll so it's visible to early stopping
-        if status == TrialStatus.RUNNING and self._streaming_client is not None and self._streaming_cfg is not None:
+        # Skip if poll_streaming_metrics is disabled (metrics arrive via push instead)
+        if (status == TrialStatus.RUNNING
+                and getattr(self, '_poll_streaming_metrics', True)
+                and self._streaming_client is not None
+                and self._streaming_cfg is not None):
             try:
                 streaming_metric(self._streaming_client, self._streaming_cfg)
             except Exception:
                 pass
+        # Log status transitions to event log
+        api_state = getattr(self, '_api_state', None)
+        if api_state is not None:
+            prev = self._last_poll_status.get(trial_index)
+            if prev != status and status != TrialStatus.RUNNING:
+                event_type = f"trial.{status.name.lower()}"
+                detail = (f"timed out ({time.time() - trial_metadata.get('dispatch_time', 0):.0f}s)"
+                          if event_type == "trial.failed" and prev == TrialStatus.RUNNING
+                          else f"detected by {self.mode} poll")
+                api_state.log_event(trial_index, event_type, detail)
+            self._last_poll_status[trial_index] = status
         return status
+
     def stop_trial(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> dict[str, Any]:
+        api_state = getattr(self, '_api_state', None)
+        if api_state is not None:
+            api_state.log_event(trial_index, "trial.killed", f"{self.mode} mode")
         return self.kill_job[self.mode](trial_metadata['job_id'], self.cfg, trial_metadata)
+
+class EventDrivenRunner(FoamJobRunner):
+    """FoamJobRunner that checks API push state before polling subprocesses."""
+
+    _api_state: Any = None
+    _api_host: str = "127.0.0.1"
+    _api_port: int = 8098
+
+    def run_trial(self, trial_index: int, parameterization: TParameterization) -> dict[str, Any]:
+        meta = super().run_trial(trial_index, parameterization)
+        if self._api_state:
+            self._api_state.log_event(trial_index, "trial.dispatched",
+                                       meta.get("case_path", ""))
+        return meta
+
+    def poll_trial(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> TrialStatus:
+        # Check push queue first
+        if self._api_state is not None:
+            pushed = self._api_state.trial_status_overrides.pop(trial_index, None)
+            if pushed == "completed":
+                return TrialStatus.COMPLETED
+            elif pushed == "failed":
+                return TrialStatus.FAILED
+
+            # Process pushed streaming metrics
+            pushed_metrics = self._api_state.trial_pushed_metrics.pop(trial_index, [])
+            if pushed_metrics and self._streaming_client is not None:
+                for entry in pushed_metrics:
+                    for metric_name, value in entry["metrics"].items():
+                        step = entry.get("step")
+                        if step is not None:
+                            try:
+                                self._streaming_client.attach_data(
+                                    trial_index=trial_index,
+                                    raw_data={metric_name: (float(value), None)},
+                                    progression={metric_name: step},
+                                )
+                            except Exception as e:
+                                log.debug(f"Failed to attach pushed metric: {e}")
+
+        # Fallback: normal subprocess poll
+        status = super().poll_trial(trial_index, trial_metadata)
+
+        # Log completion/failure from subprocess detection
+        if self._api_state and status in (TrialStatus.COMPLETED, TrialStatus.FAILED):
+            self._api_state.log_event(trial_index,
+                f"trial.{'completed' if status == TrialStatus.COMPLETED else 'failed'}",
+                "detected by subprocess poll")
+
+        return status
+
 
 ### JSON serialize/deserialize
 
@@ -792,6 +903,9 @@ CORE_ENCODER_REGISTRY[DictConfig] = config_to_dict
 
 CORE_ENCODER_REGISTRY[FoamJobRunner] = runner_to_dict;
 CORE_DECODER_REGISTRY["FoamJobRunner"] = FoamJobRunner
+
+CORE_ENCODER_REGISTRY[EventDrivenRunner] = runner_to_dict;
+CORE_DECODER_REGISTRY["EventDrivenRunner"] = EventDrivenRunner
 register_runner(FoamJobRunner)
 
 CORE_ENCODER_REGISTRY[FoamJobMetric] = metric_to_dict
