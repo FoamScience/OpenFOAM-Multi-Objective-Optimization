@@ -190,16 +190,27 @@ def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightRes
 
     param_names = {p["name"] for p in exp.get("parameters", [])}
     for constraint in exp.get("parameter_constraints", []):
-        # Rough check: each word that's alphanumeric could be a param name
-        tokens = constraint.replace("<=", " ").replace(">=", " ").replace("+", " ").replace("-", " ").replace("*", " ").split()
-        for token in tokens:
-            if token.isidentifier() and token in param_names:
-                r.passed(f"Parameter constraint references: {token}")
-            elif token.isidentifier() and not token.replace(".", "").isdigit():
-                # Could be a param name that doesn't exist
-                if token not in param_names:
-                    r.warned(f"Parameter constraint token: {token}",
-                             f"not in parameters (may be a constant)")
+        # Validate with sympy if available, else fall back to token check
+        try:
+            from foambo.constraints import classify_constraints
+            linear, nonlinear = classify_constraints(
+                [constraint], list(param_names)
+            )
+            kind = "nonlinear" if nonlinear else "linear"
+            r.passed(f"Parameter constraint ({kind}): {constraint}")
+            # Check that all free symbols are known parameters
+            import sympy
+            from foambo.constraints import _parse_inequality
+            expr, _ = _parse_inequality(constraint)
+            for sym in expr.free_symbols:
+                if str(sym) not in param_names:
+                    r.warned(
+                        f"Parameter constraint symbol: {sym}",
+                        f"not in parameters (may be a constant)",
+                    )
+        except Exception as e:
+            r.failed(f"Parameter constraint parse error: {constraint}",
+                     str(e))
 
     phased_hooks_used = set()
     for dep in cfg.get("trial_dependencies", []):
@@ -218,6 +229,8 @@ def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightRes
             if phase != "immediate":
                 phased_hooks_used.add(phase)
 
+    runner_cfg = opt.get("case_runner", {})
+    template = runner_cfg.get("template_case", "")
     if phased_hooks_used:
         runner_cmd = runner_cfg.get("runner", "")
         runner_str = runner_cmd if isinstance(runner_cmd, str) else " ".join(runner_cmd or [])
