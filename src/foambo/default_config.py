@@ -768,6 +768,50 @@ def get_config_docs() -> Dict[str, Any]:
         """).strip(),
     }
 
+    harvested["orchestration_settings.legacy_poll"] = {
+        "category": "Config",
+        "content": textwrap.dedent("""
+            Controls whether foamBO uses legacy polling or event-driven orchestration.
+
+            **Event-driven mode** (``legacy_poll: false``, default):
+            Trials push status and metrics to the API server via ``FOAMBO_API_ENDPOINT``.
+            The orchestrator wakes immediately on push — no wasted sleep cycles.
+
+            **Legacy polling** (``legacy_poll: true``):
+            foamBO sleeps between poll cycles and checks subprocess status periodically.
+            Use this if the API server is unreachable from compute nodes.
+
+            **Remote runner configuration:**
+            For SLURM or SSH-based runners, ``api_host`` must be set to an address
+            reachable by all compute nodes (e.g. the login node hostname):
+            ```yaml
+            orchestration_settings:
+              legacy_poll: false
+              api_host: login01.cluster.local   # reachable by compute nodes
+              api_port: 8098
+            ```
+
+            **Environment variables** injected into every trial subprocess:
+            - ``FOAMBO_API_ENDPOINT`` — full API URL (e.g. ``http://login01:8098/api/v1``)
+            - ``FOAMBO_TRIAL_INDEX`` — the trial number
+            - ``FOAMBO_SESSION_ID`` — unique ID for this foamBO instance (for rogue job detection)
+
+            **Allrun completion notification:**
+            ```bash
+            curl -s -X POST "$FOAMBO_API_ENDPOINT/trials/$FOAMBO_TRIAL_INDEX/push/status" \\
+              -H "Content-Type: application/json" \\
+              -d '{"status":"completed","exit_code":'$?',"session_id":"'$FOAMBO_SESSION_ID'"}'
+            ```
+
+            **Streaming metrics from OpenFOAM function objects:**
+            ```bash
+            curl -s -X POST "$FOAMBO_API_ENDPOINT/trials/$FOAMBO_TRIAL_INDEX/push/metrics" \\
+              -H "Content-Type: application/json" \\
+              -d '{"metrics":{"continuityErrors":'$VALUE'},"step":'$TIME',"session_id":"'$FOAMBO_SESSION_ID'"}'
+            ```
+        """).strip(),
+    }
+
     # Merge concept docs from separate file
     from .docs_concepts import CONCEPTS
     harvested.update(CONCEPTS)

@@ -344,4 +344,74 @@ trial_dependencies:
 This reuses the mesh when geometry matches AND warm-starts solver fields from
 the nearest trial — two independent dependencies working together.""",
     },
+
+    "concept.event_driven_orchestration": {
+        "category": "Concept",
+        "content": """\
+Event-driven orchestration replaces polling with push-based trial notifications.
+
+**Legacy polling** (``legacy_poll: true``): foamBO sleeps between poll cycles,
+periodically checking subprocess status and fetching metrics. Latency = poll interval.
+
+**Event-driven** (``legacy_poll: false``, default): trials push status and metrics
+to the API server. The orchestrator wakes immediately on push, reducing latency
+from seconds/minutes to milliseconds. Falls back to timeout-based polling if no
+push arrives.
+
+**How it works:**
+- Every trial subprocess receives ``FOAMBO_API_ENDPOINT``, ``FOAMBO_TRIAL_INDEX``,
+  and ``FOAMBO_SESSION_ID`` as environment variables
+- Trials can POST to the API to report status changes and streaming metrics
+- The orchestrator waits on a ``threading.Event`` instead of sleeping
+- When a push arrives, the event fires and the orchestrator processes immediately
+
+**Push endpoints:**
+- ``POST /api/v1/trials/{idx}/push/status`` — report completion or failure
+- ``POST /api/v1/trials/{idx}/push/metrics`` — push streaming metric values
+- ``POST /api/v1/trials/{idx}/push/heartbeat`` — signal the trial is alive
+
+**Allrun integration example:**
+```bash
+#!/bin/bash
+blockMesh
+$FOAMBO_PRE_MESH
+snappyHexMesh
+$FOAMBO_PRE_SOLVE
+simpleFoam
+EXIT_CODE=$?
+$FOAMBO_POST_SOLVE
+
+# Notify foamBO of completion
+curl -s -X POST "$FOAMBO_API_ENDPOINT/trials/$FOAMBO_TRIAL_INDEX/push/status" \\
+  -H "Content-Type: application/json" \\
+  -d "{\\\"status\\\":\\\"completed\\\",\\\"exit_code\\\":$EXIT_CODE,\\\"session_id\\\":\\\"$FOAMBO_SESSION_ID\\\"}"
+```
+
+**OpenFOAM function object** for streaming metrics:
+```bash
+# Called from controlDict writeInterval, e.g. via a coded function object
+curl -s -X POST "$FOAMBO_API_ENDPOINT/trials/$FOAMBO_TRIAL_INDEX/push/metrics" \\
+  -H "Content-Type: application/json" \\
+  -d "{\\\"metrics\\\":{\\\"continuityErrors\\\":$VALUE},\\\"step\\\":$TIME,\\\"session_id\\\":\\\"$FOAMBO_SESSION_ID\\\"}"
+```
+
+**Local mode:** The runner automatically detects subprocess completion —
+Allrun curl is optional (useful for sub-phase notifications like "meshing done").
+
+**Remote mode (SLURM, SSH):** The Allrun curl is essential for fast status
+updates. Without it, foamBO falls back to the (slow) SSH-based polling.
+``api_host`` must be set to an address reachable by all compute nodes
+(e.g. the login node hostname). Example: ``api_host: login01.cluster.local``
+or ``api_host: 0.0.0.0`` to bind all interfaces.
+
+**Session ID and rogue jobs:** Each foamBO instance has a unique session ID.
+Push endpoints validate this ID — if a stale job from a crashed run pushes
+to a new foamBO instance, the push is rejected (HTTP 409). The session ID
+is available as ``FOAMBO_SESSION_ID`` in the trial environment.
+
+**Event log:** All orchestration events are timestamped and stored:
+trial dispatched, streaming metrics, completion, failure, early stopping,
+objective values. The log is serialized with the client JSON and available
+in ``--no-opt`` mode via ``GET /api/v1/events``.""",
+    },
 }
