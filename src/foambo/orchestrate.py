@@ -853,6 +853,17 @@ class StoreOptions(FoamBOBaseModel):
                 with open(filepath, "w") as f:
                     json.dump(state, f)
         client._maybe_save_experiment_and_generation_strategy(client._experiment, client._generation_strategy)
+        # Cache GP model state_dict for fast reload (skips hyperparameter optimization)
+        try:
+            gs = client._generation_strategy
+            if gs and gs.adapter and hasattr(gs.adapter, 'generator'):
+                surr = getattr(gs.adapter.generator, 'surrogate', None)
+                if surr and surr.model is not None:
+                    import torch
+                    model_path = f"artifacts/{get_experiment_name()}_model.pt"
+                    torch.save(surr.model.state_dict(), model_path)
+        except Exception:
+            pass  # non-critical — full refit will happen on next load
         if cards:
             for card in cards:
                 client._save_analysis_card_to_db_if_possible(experiment=client._experiment, analysis_card=card)

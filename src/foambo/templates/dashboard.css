@@ -1,0 +1,229 @@
+:root {
+  --pico-font-family: 'JetBrains Mono', monospace;
+  --pico-font-size: 14px;
+  --accent: #00d4aa;
+}
+[data-theme="dark"] {
+  --pico-primary: #00d4aa;
+  --pico-primary-hover: #00eebb;
+  --pico-color: #f0f2f5;
+  --pico-muted-color: #7a8494;
+  --pico-secondary: #d0d6de;
+  --pico-h6-color: #f0f2f5;
+}
+body { margin: 0; }
+article h6, .config-section-title { color: var(--pico-color) !important; }
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1.5rem;
+}
+.app-header h1 { margin: 0; font-size: 1rem; color: var(--accent); }
+.app-header .status {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  font-size: 0.75rem;
+  color: var(--pico-secondary);
+}
+.dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+.dot-live { background: var(--pico-ins-color); }
+.dot-off { background: var(--pico-del-color); }
+@keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.3} }
+
+/* Tabs — flush against header */
+nav[role="tablist"] {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  padding: 0 1rem;
+  margin: 0;
+  overflow-x: auto;
+  background: var(--pico-background-color);
+}
+nav[role="tablist"] button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.6rem 1rem;
+  font-size: 0.8rem;
+  color: var(--pico-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+nav[role="tablist"] button:hover { color: var(--pico-color); }
+nav[role="tablist"] button.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+nav[role="tablist"] .tab-key {
+  font-size: 0.6rem;
+  opacity: 0.4;
+  margin-left: 4px;
+}
+/* Consistent action buttons across all tabs */
+.btn { font-size:0.75rem;padding:0.3rem 0.8rem;cursor:pointer;border-radius:4px;border:1px solid var(--pico-muted-border-color);background:transparent;color:var(--pico-color);transition:all 0.15s;display:inline-flex;align-items:center;width:auto;margin:0 }
+.btn:hover { border-color:var(--accent);color:var(--accent) }
+.btn:disabled { opacity:0.4;cursor:not-allowed }
+.btn-accent { border-color:var(--accent);color:var(--accent) }
+.btn-danger { border-color:#ef4444;color:#ef4444 }
+.btn-danger:hover { background:rgba(239,68,68,0.1) }
+tr.trial-selected { background:rgba(0,212,170,0.1) !important }
+tr.trial-selected td { border-bottom-color:transparent }
+tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
+
+.page { padding: 1rem; margin: 0 auto; }
+.page[hidden] { display: none; }
+
+/* Grafana-like panel grid */
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 0.75rem;
+}
+.panel { grid-column: span 12; }
+.panel-6 { grid-column: span 6; }
+.panel-4 { grid-column: span 4; }
+.panel-3 { grid-column: span 3; }
+.panel-8 { grid-column: span 8; }
+@media (max-width: 900px) {
+  .panel-6, .panel-4, .panel-3, .panel-8 { grid-column: span 12; }
+}
+
+/* Stat grid */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.stat-card {
+  padding: 0.75rem;
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-card-background-color);
+  border: 1px solid var(--pico-muted-border-color);
+}
+.stat-card .value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--accent);
+  line-height: 1.2;
+}
+.stat-card .label {
+  font-size: 0.7rem;
+  color: var(--pico-secondary);
+  margin-top: 0.15rem;
+}
+
+/* Badge */
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 1rem;
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+.badge-COMPLETED { background: rgba(34,197,94,0.15); color: #22c55e; }
+.badge-RUNNING { background: rgba(59,130,246,0.15); color: #3b82f6; }
+.badge-FAILED { background: rgba(239,68,68,0.15); color: #ef4444; }
+.badge-EARLY_STOPPED { background: rgba(245,158,11,0.15); color: #f59e0b; }
+.badge-ABANDONED { background: rgba(100,116,139,0.15); color: #94a3b8; }
+
+/* Gen bar */
+.gen-bar { display: flex; height: 1.5rem; border-radius: 4px; overflow: hidden; }
+.gen-bar > div {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6rem;
+  color: #0f1117;
+  font-weight: 600;
+  transition: width 0.5s;
+}
+
+/* Chart / Panel */
+.chart-card {
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  padding: 0.75rem;
+  background: var(--pico-card-background-color);
+  overflow: hidden;
+  min-width: 0;
+}
+.chart-card .js-plotly-plot, .chart-card .plotly { width:100% !important; }
+.chart-card h6 {
+  margin: 0 0 0.5rem;
+  font-size: 0.75rem;
+  color: var(--pico-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  padding-bottom: 0.4rem;
+}
+
+/* Dep tree */
+.dep-tree { font-size: 0.8rem; line-height: 1.8; white-space: pre; }
+.node-COMPLETED { color: #22c55e; }
+.node-RUNNING { color: #3b82f6; }
+.node-FAILED { color: #ef4444; }
+.node-EARLY_STOPPED { color: #f59e0b; }
+
+/* Config cards */
+.config-card { margin-bottom: 1rem; }
+.config-field {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  font-size: 0.8rem;
+}
+.config-field:last-child { border-bottom: none; }
+.config-desc { font-size: 0.7rem; color: var(--pico-muted-color); font-style: italic; margin-bottom: 0.2rem; }
+.config-key { color: var(--pico-color); }
+.config-key .lock { font-size: 0.65rem; }
+
+/* Predict */
+.predict-result {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--pico-card-background-color);
+  border-radius: var(--pico-border-radius);
+  border: 1px solid var(--pico-muted-border-color);
+  margin-bottom: 0.5rem;
+}
+.predict-result .mean { font-size: 1rem; color: var(--accent); font-weight: 600; }
+.predict-result .sem { font-size: 0.8rem; color: var(--pico-secondary); }
+
+/* Filter pills */
+.filters { display: flex; gap: 0.4rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.filters button {
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: 1rem;
+  background: transparent;
+  font-size: 0.75rem;
+  color: var(--pico-muted-color);
+  cursor: pointer;
+}
+.filters button:hover { border-color: var(--pico-color); color: var(--pico-color); }
+.filters button.active { border-color: var(--accent); color: var(--accent); background: rgba(0,212,170,0.1); }
+
+/* Plotly */
+.js-plotly-plot .plotly .modebar { opacity: 0.2; }
+.js-plotly-plot .plotly .modebar:hover { opacity: 0.7; }
+.enlarge-modal {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  background: rgba(0,0,0,0.85); z-index: 100; display: flex;
+  align-items: center; justify-content: center; cursor: pointer;
+}
+.enlarge-modal > div {
+  width: 90vw; height: 85vh; background: var(--pico-card-background-color);
+  border-radius: var(--pico-border-radius); padding: 1rem; position: relative;
+}

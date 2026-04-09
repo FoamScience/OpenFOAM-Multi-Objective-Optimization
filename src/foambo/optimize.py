@@ -816,6 +816,27 @@ def main():
                 if hasattr(p, "get") and p.get("groups"):
                     param_groups[p["name"]] = list(p["groups"])
             runner._parameter_groups = param_groups
+        # Pre-warm GP model (with cached state_dict if available → 0.15s vs 9s)
+        try:
+            import os, torch
+            gs = client._generation_strategy
+            node = gs.current_node
+            model_cache = f"artifacts/{cfg['experiment']['name']}_model.pt"
+            if os.path.exists(model_cache):
+                cached_sd = torch.load(model_cache, weights_only=True)
+                from ax.generators.torch.botorch_modular.surrogate import Surrogate
+                _orig_fit = Surrogate.fit
+                def _fast_fit(self, *a, state_dict=None, refit=True, **kw):
+                    return _orig_fit(self, *a, state_dict=cached_sd, refit=False, **kw)
+                Surrogate.fit = _fast_fit
+                node._fit(experiment=client._experiment, data=client._experiment.lookup_data())
+                Surrogate.fit = _orig_fit
+                log.info("GP model restored from cache (fast)")
+            else:
+                node._fit(experiment=client._experiment, data=client._experiment.lookup_data())
+                log.info("GP model fitted from scratch (no cache)")
+        except Exception as e:
+            log.warning("Model pre-warm failed: %s", e)
         from .api_server import start_api_server, stop_api_server
         thread = start_api_server(
             client=client, raw_cfg=cfg, orch_cfg=orch_cfg,

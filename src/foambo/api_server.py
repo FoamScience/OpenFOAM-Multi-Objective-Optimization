@@ -147,6 +147,16 @@ class ParetoResponse(BaseModel):
     reference_point: Optional[dict] = None
     model_predictions_used: bool
 
+class SweepRequest(BaseModel):
+    base_parameters: dict
+    sweep_params: list[str]
+    n_points: int = 25
+
+class GroupSweepRequest(BaseModel):
+    frozen_group: str
+    base_parameters: dict
+    n_points: int = 25
+
 class StatusResponse(BaseModel):
     running: bool
     uptime_s: float
@@ -290,18 +300,44 @@ async def _global_exception_handler(request: Request, exc: Exception):
     return SafeJSONResponse(content={"error": str(exc)}, status_code=500)
 
 
+def _resolve_template(filename: str) -> str:
+    """Resolve a template file path, trying importlib.resources first."""
+    import importlib.resources
+    try:
+        return str(importlib.resources.files("foambo").joinpath(f"templates/{filename}"))
+    except Exception:
+        import os
+        return os.path.join(os.path.dirname(__file__), "templates", filename)
+
+
 @app.get("/", response_class=Response)
 def serve_dashboard():
     """Serve the web dashboard HTML."""
-    import importlib.resources
-    try:
-        html = importlib.resources.files("foambo").joinpath("templates/dashboard.html").read_text()
-    except Exception:
-        import os
-        path = os.path.join(os.path.dirname(__file__), "templates", "dashboard.html")
-        with open(path) as f:
-            html = f.read()
+    path = _resolve_template("dashboard.html")
+    with open(path) as f:
+        html = f.read()
     return Response(content=html, media_type="text/html")
+
+
+_STATIC_TYPES = {
+    ".css": "text/css",
+    ".js": "application/javascript",
+}
+
+
+@app.get("/static/{filename}")
+def serve_static(filename: str):
+    """Serve static assets (CSS/JS) from templates dir."""
+    import os
+    ext = os.path.splitext(filename)[1]
+    if ext not in _STATIC_TYPES:
+        raise HTTPException(404, "Not found")
+    path = _resolve_template(filename)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Not found")
+    with open(path) as f:
+        content = f.read()
+    return Response(content=content, media_type=_STATIC_TYPES[ext])
 
 
 def _check_etag(endpoint: str, if_none_match: Optional[str]) -> Optional[Response]:
@@ -1281,6 +1317,109 @@ def predict(req: PredictRequest):
     return SafeJSONResponse(content=data)
 
 
+def _do_sweep(base_params: dict, sweep_params: list[str], n_points: int = 25) -> dict:
+    """Sweep each param in *sweep_params* across its bounds, predict all at once."""
+    import numpy as np
+    with _state.lock:
+        client = _state.client
+        if client is None:
+            raise HTTPException(503, "Optimizer not initialized")
+        gs = None
+        try:
+            gs = client._generation_strategy
+        except Exception:
+            pass
+        if gs is None or gs.adapter is None:
+            raise HTTPException(503, "Model not fitted yet")
+
+        exp = client._experiment
+        from ax.core.observation import ObservationFeatures
+        from ax.core.parameter import RangeParameter, ChoiceParameter
+
+        # Build observation features for all sweep lines
+        all_obs = []
+        sweep_meta = []  # (param_name, x_values, start_idx, count)
+        for pname in sweep_params:
+            param = exp.search_space.parameters.get(pname)
+            if param is None or isinstance(param, ChoiceParameter):
+                continue
+            lo, hi = param.lower, param.upper
+            if param.parameter_type.name == "INT":
+                xs = np.unique(np.linspace(lo, hi, n_points).astype(int)).tolist()
+            else:
+                xs = np.linspace(lo, hi, n_points).tolist()
+            start = len(all_obs)
+            for xval in xs:
+                p = dict(base_params)
+                p[pname] = xval
+                all_obs.append(ObservationFeatures(parameters=p))
+            sweep_meta.append((pname, xs, start, len(xs)))
+
+        # Add base point
+        base_idx = len(all_obs)
+        all_obs.append(ObservationFeatures(parameters=base_params))
+
+        try:
+            prediction = gs.adapter.predict(all_obs)
+            means = prediction[0]
+            sems = prediction[1] if len(prediction) > 1 else {}
+        except Exception as e:
+            raise HTTPException(503, f"Sweep prediction failed: {e}")
+
+        def _val(v, idx):
+            if isinstance(v, (list, tuple)):
+                return float(v[idx]) if idx < len(v) else 0.0
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
+
+        # Unpack into per-param curves
+        curves = []
+        for pname, xs, start, count in sweep_meta:
+            preds = {}
+            for metric in means:
+                m_means = [_val(means[metric], start + i) for i in range(count)]
+                cov_row = sems.get(metric, {})
+                m_sems_raw = cov_row.get(metric, 0) if isinstance(cov_row, dict) else cov_row
+                m_sems = [_val(m_sems_raw, start + i) for i in range(count)]
+                preds[metric] = {"mean": m_means, "sem": m_sems}
+            curves.append({"param_name": pname, "x_values": xs, "predictions": preds})
+
+        # Base point predictions
+        base_preds = {}
+        for metric in means:
+            base_preds[metric] = {
+                "mean": _val(means[metric], base_idx),
+                "sem": _val(sems.get(metric, {}).get(metric, 0) if isinstance(sems.get(metric), dict) else sems.get(metric, 0), base_idx),
+            }
+
+        return {"curves": curves, "base_predictions": base_preds}
+
+
+@app.post("/api/v1/predict/sweep")
+def predict_sweep(req: SweepRequest):
+    data = _do_sweep(req.base_parameters, req.sweep_params, req.n_points)
+    return SafeJSONResponse(content=data)
+
+
+@app.post("/api/v1/predict/group-sweep")
+def predict_group_sweep(req: GroupSweepRequest):
+    with _state.lock:
+        client = _state.client
+        if client is None:
+            raise HTTPException(503, "Optimizer not initialized")
+        param_groups = getattr(client._experiment.runner, '_parameter_groups', {})
+    # Find params NOT in the frozen group
+    frozen_params = {n for n, gs in param_groups.items() if req.frozen_group in gs}
+    all_params = list(req.base_parameters.keys())
+    sweep_params = [p for p in all_params if p not in frozen_params]
+    if not sweep_params:
+        raise HTTPException(400, f"No unfrozen parameters to sweep (all belong to '{req.frozen_group}')")
+    data = _do_sweep(req.base_parameters, sweep_params, req.n_points)
+    return SafeJSONResponse(content=data)
+
+
 @app.get("/api/v1/pareto")
 def get_pareto(use_model: bool = Query(True),
                if_none_match: Optional[str] = Header(None)):
@@ -1469,6 +1608,11 @@ def _compute_ax_healthcheck(analysis_cls, **kwargs) -> dict:
                     parsed = _j.loads(blob)
                     if isinstance(parsed, dict) and "status" in parsed:
                         continue  # skip raw status blobs
+                    # Plotly figure JSON → return as figure, not raw blob
+                    if isinstance(parsed, dict) and "data" in parsed:
+                        results.append({"title": sub.title, "subtitle": sub.subtitle,
+                                        "figure": parsed, "level": level})
+                        continue
                 except (ValueError, TypeError):
                     pass  # not JSON, keep it
                 results.append({"title": sub.title, "subtitle": sub.subtitle,
