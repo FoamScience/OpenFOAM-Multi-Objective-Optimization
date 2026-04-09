@@ -571,7 +571,12 @@ def _get_trials() -> dict:
             exec_time = None
             if dispatch_time is not None:
                 if status in ("COMPLETED", "FAILED", "EARLY_STOPPED"):
-                    exec_time = completion_ts.get(tidx, dispatch_time) - dispatch_time or None
+                    end_ts = completion_ts.get(tidx)
+                    # Fall back to Ax's trial.time_completed when event log is unavailable (e.g. --no-opt reload)
+                    if end_ts is None and trial.time_completed is not None:
+                        end_ts = trial.time_completed.timestamp()
+                    if end_ts is not None:
+                        exec_time = end_ts - dispatch_time or None
                 elif status == "RUNNING":
                     exec_time = time.time() - dispatch_time
 

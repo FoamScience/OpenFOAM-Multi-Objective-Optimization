@@ -316,7 +316,11 @@ class ExperimentOptions(FoamBOBaseModel):
     description: str = Field(description="A short experiment description",
                               examples=["Sample experiment description"])
     parameter_constraints: List[str] = Field(description=(
-        "Linear inequalities between optimization parameters, e.g. `'param1 <= param2 + 2*param3'`"
+        "Inequalities between optimization parameters. Linear constraints "
+        "(e.g. ``'x1 <= x2 + 5'``) are passed to Ax directly. Nonlinear "
+        "constraints (e.g. ``'x1 * x2 <= 10'``, ``'x1**2 + x2**2 <= 100'``) "
+        "are detected automatically and forwarded to BoTorch's acquisition "
+        "function optimizer."
     ), examples=[[]])
     parameters: List[Any] = Field(description=(
         "List of RangeParameterConfig or ChoiceParameterConfig. "
@@ -335,13 +339,27 @@ class ExperimentOptions(FoamBOBaseModel):
         set_experiment_name(self.name)
         return self
 
+    def _classify_constraints(self) -> tuple[list[str], list[str]]:
+        """Split parameter_constraints into (linear, nonlinear)."""
+        if not self.parameter_constraints:
+            return [], []
+        from foambo.constraints import classify_constraints
+        param_names = [p.name for p in self.parameters]
+        return classify_constraints(self.parameter_constraints, param_names)
+
     def to_dict(self):
+        linear, _ = self._classify_constraints()
         return {
             "name": self.name,
             "description": self.description,
             "parameters": self.parameters,
-            "parameter_constraints": self.parameter_constraints,
+            "parameter_constraints": linear,
         }
+
+    def get_nonlinear_constraints(self) -> list[str]:
+        """Return the nonlinear constraint expressions (not passed to Ax)."""
+        _, nonlinear = self._classify_constraints()
+        return nonlinear
 
     def get_parameter_groups(self) -> dict[str, list[str]]:
         """Return {param_name: [group1, group2, ...]} mapping."""

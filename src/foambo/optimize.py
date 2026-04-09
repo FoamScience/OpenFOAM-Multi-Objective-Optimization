@@ -204,6 +204,15 @@ def optimize(cfg):
                     spec.generator_kwargs["surrogate_spec"] = cfg._kernel_surrogate_spec
                     log.info(f"Custom kernel set on generation node '{node.name}'")
 
+    # Inject nonlinear parameter constraints into BoTorch's optimize_acqf
+    nl_exprs = exp_cfg.get_nonlinear_constraints()
+    if nl_exprs:
+        from foambo.constraints import build_nonlinear_constraints, patch_optimize_acqf
+        param_names = [p.name for p in exp_cfg.parameters]
+        nl_callables = build_nonlinear_constraints(nl_exprs, param_names)
+        patch_optimize_acqf(nl_callables)
+        log.info("Nonlinear parameter constraints active: %s", nl_exprs)
+
     client.set_early_stopping_strategy(orch_cfg.early_stopping_strategy)
 
     # Risk 7: Warn if early stopping references objective metrics (they don't stream)
@@ -804,7 +813,7 @@ def main():
         if runner is not None:
             param_groups = {}
             for p in cfg.get("experiment", {}).get("parameters", []):
-                if isinstance(p, dict) and p.get("groups"):
+                if hasattr(p, "get") and p.get("groups"):
                     param_groups[p["name"]] = list(p["groups"])
             runner._parameter_groups = param_groups
         from .api_server import start_api_server, stop_api_server

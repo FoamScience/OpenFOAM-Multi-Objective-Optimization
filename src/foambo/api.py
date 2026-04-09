@@ -164,7 +164,12 @@ class FoamBO:
         return self
 
     def constraint(self, expr: str) -> FoamBO:
-        """Add a parameter constraint (e.g. ``"x1 <= x2 + 5"``)."""
+        """Add a parameter constraint.
+
+        Linear constraints (e.g. ``"x1 <= x2 + 5"``) are passed to Ax.
+        Nonlinear constraints (e.g. ``"x1 * x2 <= 10"``) are automatically
+        detected and forwarded to BoTorch's acquisition optimizer.
+        """
         self._param_constraints.append(expr)
         return self
 
