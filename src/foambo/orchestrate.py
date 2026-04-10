@@ -1,3 +1,4 @@
+from ax.utils.common.logger import get_logger
 from ax.api.client import AnalysisCardBase, PercentileEarlyStoppingStrategy, Client
 from ax.orchestration.orchestrator_options import OrchestratorOptions
 from ax.api.types import TParameterization
@@ -63,7 +64,14 @@ EARLY_STOPPER_MAP = {
 
 
 class DimensionalityReductionOptions(FoamBOBaseModel):
-    """Automatic parameter screening based on Sobol sensitivity analysis."""
+    """Automatic parameter screening based on Sobol sensitivity analysis.
+
+    For high-dimensional problems (15+ parameters), consider coupling with SAASBO
+    in the generation strategy: use SAASBO for the initial exploration phase (its
+    sparsity-inducing priors via MCMC identify important parameters automatically),
+    then transition to BOTORCH_MODULAR + dimensionality reduction to hard-drop
+    confirmed-unimportant parameters for faster iterations.
+    """
     enabled: bool = Field(default=False, description="Enable automatic dimensionality reduction")
     after_trials: int = Field(default=10, description=(
         "Run sensitivity analysis after this many completed trials. "
@@ -83,6 +91,64 @@ class DimensionalityReductionOptions(FoamBOBaseModel):
         "At least one parameter always remains active. "
         "Example: 0.5 means at most half the parameters can be fixed."
     ))
+
+
+class RobustOptimizationConfig(FoamBOBaseModel):
+    """Robust optimization across environmental/context variables.
+
+    Declares some parameter groups as 'context' (environmental variables the design
+    must tolerate but cannot control) and optimizes the remaining 'design' parameters
+    for robustness across context variations using a configurable risk measure.
+    """
+    context_groups: List[str] = Field(
+        description="Parameter group names treated as context (environmental) variables")
+    risk_measure: str = Field(default="cvar", description=(
+        "Risk measure for robust acquisition. "
+        "'cvar' (default, Conditional Value at Risk — avg of worst alpha fraction). "
+        "For multi-objective: ParEGO-style Chebyshev scalarization is applied "
+        "before CVaR automatically."
+    ))
+    robustness: float = Field(default=0.5, ge=0.0, le=1.0, description=(
+        "Robustness level on a 0-1 scale. "
+        "1 = most robust (optimizes for worst-case conditions). "
+        "0 = risk-neutral (optimizes for average across conditions). "
+        "Maps to alpha = max(1 - robustness, 0.05) for CVaR/VaR. "
+        "Ignored by worst_case and expectation."
+    ))
+    context_points: List[Dict[str, float]] | None = Field(default=None, description=(
+        "Discrete operating points to evaluate robustness over. "
+        "If omitted, auto-generated via Sobol from context parameter bounds."
+    ))
+    context_samples: int = Field(default=10, ge=2, description=(
+        "Number of Sobol samples to generate when context_points is omitted."
+    ))
+    context_constraints: List[str] = Field(default=[], description=(
+        "Inequality constraints on context params only (e.g. 'x1 - 0.5*x2 >= 0'). "
+        "Used to pre-filter context_points (explicit or auto-generated)."
+    ))
+
+    @property
+    def alpha(self) -> float:
+        """CVaR alpha — fraction of worst outcomes to average over."""
+        return max(1.0 - self.robustness, 0.05)
+
+    @property
+    def n_w(self) -> int:
+        """Number of context samples (resolved after auto-generation)."""
+        if self.context_points is None:
+            return self.context_samples
+        return len(self.context_points)
+
+    _VALID_RISK_MEASURES = {"auto", "cvar"}
+
+    @model_validator(mode="after")
+    def _validate(self):
+        if self.risk_measure not in self._VALID_RISK_MEASURES:
+            raise ValueError(
+                f"risk_measure must be one of {self._VALID_RISK_MEASURES}, got '{self.risk_measure}'")
+        if self.context_points is not None and len(self.context_points) < 2:
+            raise ValueError("context_points must have at least 2 entries")
+        return self
 
 
 class ConfigOrchestratorOptions(FoamBOBaseModel):
@@ -218,7 +284,7 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
                     return _orig(experiment, **kwargs)
                 except (ValueError, RuntimeError) as e:
                     import logging
-                    logging.getLogger("ax.foambo.optimize").warning(
+                    get_logger(__name__).warning(
                         f"Global stopping evaluation failed (incomplete data): {e}. "
                         f"Continuing optimization.")
                     return False, f"Skipped due to error: {e}"
@@ -285,7 +351,38 @@ class EventDrivenOrchestrator(Orchestrator):
     """
     _push_event: threading.Event | None = None
 
+    def _sleep_if_too_early_to_poll(self) -> None:
+        """Override Ax's sleep-based polling with event-based wake.
+
+        Instead of unconditionally sleeping, wait on the push event so that
+        trial completions (signalled by the runner or API) wake us immediately.
+        Falls back to timeout if no event fires.
+        """
+        if self._push_event is None:
+            return super()._sleep_if_too_early_to_poll()
+
+        from ax.utils.common.timeutils import current_timestamp_in_millis
+        get_logger(__name__).debug("EventDriven _sleep_if_too_early_to_poll called")
+        if self._latest_trial_start_timestamp is not None:
+            seconds_since = round(
+                (current_timestamp_in_millis()
+                 - self._latest_trial_start_timestamp) / 1000
+            )
+            remaining = self.options.min_seconds_before_poll - seconds_since
+            if remaining > 0:
+                self._push_event.clear()
+                triggered = self._push_event.wait(timeout=remaining)
+                if triggered:
+                    get_logger(__name__).debug(
+                        "Push event received — waking immediately (skipped %.0fs sleep)", remaining)
+                else:
+                    get_logger(__name__).debug(
+                        "Poll timeout (%.0fs) — no push event", remaining)
+
     def wait_for_completed_trials_and_report_results(self, idle_callback=None, force_refit=False):
+        """Override main polling loop: event.wait instead of sleep."""
+        get_logger(__name__).debug("EventDriven wait_for entered (push_event=%s, pending=%d)",
+                                  self._push_event is not None, len(self.pending_trials))
         if self._push_event is None:
             return super().wait_for_completed_trials_and_report_results(
                 idle_callback=idle_callback, force_refit=force_refit)
@@ -297,12 +394,16 @@ class EventDrivenOrchestrator(Orchestrator):
                     idle_callback(self)
                 except Exception:
                     pass
+            get_logger(__name__).info("Entering event wait (timeout=%.0fs, pending=%d)", seconds, len(self.pending_trials))
             self._push_event.clear()
             triggered = self._push_event.wait(timeout=seconds)
             if triggered:
+                get_logger(__name__).info("Push event received — waking poll loop immediately")
                 seconds = self.options.init_seconds_between_polls or 10
             else:
+                prev = seconds
                 seconds = min(seconds * self.options.seconds_between_polls_backoff_factor, 120)
+                get_logger(__name__).info("Poll loop timeout (%.0fs) — next in %.0fs", prev, seconds)
 
         if idle_callback is not None:
             idle_callback(self)
@@ -369,6 +470,22 @@ class ExperimentOptions(FoamBOBaseModel):
         """Return parameter names belonging to a given group."""
         return [name for name, groups in self.get_parameter_groups().items()
                 if group in groups]
+
+    def get_context_param_names(self, robust_cfg: "RobustOptimizationConfig") -> list[str]:
+        """Ordered list of parameter names belonging to context_groups."""
+        pg = self.get_parameter_groups()
+        return [p.name for p in self.parameters
+                if any(g in robust_cfg.context_groups for g in pg.get(p.name, []))]
+
+    def get_design_param_names(self, robust_cfg: "RobustOptimizationConfig") -> list[str]:
+        """All parameter names NOT in context_groups."""
+        ctx = set(self.get_context_param_names(robust_cfg))
+        return [p.name for p in self.parameters if p.name not in ctx]
+
+    def get_context_dim_indices(self, robust_cfg: "RobustOptimizationConfig") -> list[int]:
+        """Integer indices of context params in the full parameter list."""
+        all_names = [p.name for p in self.parameters]
+        return [all_names.index(n) for n in self.get_context_param_names(robust_cfg)]
 
     @classmethod
     def generate_parameter_space(cls, params_cfg):
@@ -476,14 +593,12 @@ class ModelSpecConfig(FoamBOBaseModel):
         "SAASBO",
         "SAAS_MTGP",
         "THOMPSON",
-        "LEGACY_BOTORCH",
         "BOTORCH_MODULAR",
         "EMPIRICAL_BAYES_THOMPSON",
         "EB_ASHR",
         "UNIFORM",
         "ST_MTGP",
         "BO_MIXED",
-        "CONTEXT_SACBO",
     ] = Field(description="Generator algorithm name (e.g. SOBOL for random init, BOTORCH_MODULAR for BO)")
     model_kwargs: Dict | None = Field(default=None, description="Extra keyword arguments passed to the generator (e.g. seed for SOBOL)")
     transforms: List[str] | None = Field(default=None, description=(
@@ -1072,12 +1187,23 @@ class FoamBOConfig(FoamBOBaseModel):
     orchestration_settings: ConfigOrchestratorOptions = Field(description="Timeouts, polling, stopping strategies")
     store: StoreOptions = Field(description="Where to save/load experiment state")
     trial_dependencies: List[TrialDependency] = Field(default=[], description="Trial-to-trial dependency definitions")
+    robust_optimization: RobustOptimizationConfig | None = Field(default=None, description=(
+        "CVaR robust optimization config. When present, context_groups are treated as "
+        "environmental variables and design params are optimized for robustness."
+    ))
 
     @field_validator("trial_dependencies", mode="before")
     @classmethod
     def parse_trial_deps(cls, v):
         if v and isinstance(v[0], dict | DictConfig):
             return [TrialDependency.model_validate(dict(d)) for d in v]
+        return v
+
+    @field_validator("robust_optimization", mode="before")
+    @classmethod
+    def parse_robust_opt(cls, v):
+        if isinstance(v, dict | DictConfig):
+            return RobustOptimizationConfig.model_validate(dict(v))
         return v
 
     # Store raw input before validators transform it (for OmegaConf roundtrip)

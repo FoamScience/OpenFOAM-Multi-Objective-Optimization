@@ -112,6 +112,7 @@ def _get_doc_models():
         OptimizationOptions, FoamJobRunnerOptions, VariableSubstOptions,
         FileSubstOptions, BaselineOptions, StoreOptions, ExistingTrialsOptions,
         TrialSelector, TrialAction, TrialDependency,
+        DimensionalityReductionOptions,
     )
     from .metrics import FoamJob, LocalJobMetric
     return [
@@ -128,6 +129,7 @@ def _get_doc_models():
         (VariableSubstOptions,       "optimization.case_runner.variable_substitution[]"),
         (FileSubstOptions,           "optimization.case_runner.file_substitution[]"),
         (ConfigOrchestratorOptions,  "orchestration_settings"),
+        (DimensionalityReductionOptions, "orchestration_settings.dimensionality_reduction"),
         (StoreOptions,               "store"),
         (TrialDependency,            "trial_dependencies[]"),
         (TrialSelector,              "trial_dependencies[].source"),

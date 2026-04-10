@@ -414,4 +414,104 @@ trial dispatched, streaming metrics, completion, failure, early stopping,
 objective values. The log is serialized with the client JSON and available
 in ``--no-opt`` mode via ``GET /api/v1/events``.""",
     },
+
+    "concept.robustness_and_risk_measures": {
+        "category": "Concept",
+        "content": """\
+Robust optimization finds designs that perform well across a SET of conditions,
+not just one. foamBO uses **CVaR** (Conditional Value at Risk) as the risk
+measure for both single- and multi-objective problems.
+
+**The problem with standard BO:**
+Standard Bayesian Optimization finds the best design for a single operating
+condition. But real systems face varying conditions — a design optimal at one
+condition may fail at another.
+
+**Context parameters:**
+Some parameters represent environmental conditions the design must tolerate but
+cannot control (temperature, load, speed). These are *context parameters*.
+Design parameters (geometry, material) are what the optimizer controls.
+
+```yaml
+robust_optimization:
+  context_groups: [operating_point]   # group name(s) to treat as context
+  robustness: 0.5                     # 0=risk-neutral, 1=most robust
+  context_points:                     # explicit, or omit for Sobol auto-generation
+    - {temperature: 300, load: 50}
+    - {temperature: 400, load: 80}
+    - {temperature: 350, load: 65}
+```
+
+If ``context_points`` is omitted, foamBO generates them via Sobol sampling from
+the parameter bounds (controlled by ``context_samples``).
+
+**How CVaR works:**
+
+CVaR averages the worst alpha-fraction of outcomes across context points.
+The ``robustness`` parameter controls how much of the tail to focus on:
+``alpha = max(1 - robustness, 0.05)``. ``robustness=1`` → alpha=0.05
+(most robust, focuses on worst 5%), ``robustness=0`` → alpha=1.0 (risk-neutral,
+averages all outcomes).
+
+**Multi-objective: ParEGO-style CVaR:**
+
+For multi-objective problems, foamBO uses ParEGO-style Chebyshev scalarization
+before CVaR. Each optimization step draws random Chebyshev weights from a
+Dirichlet distribution, scalarizes the objectives, then applies CVaR on the
+scalar. Different weights each iteration explore different trade-offs on the
+robust Pareto front.
+
+**How it works mechanically:**
+
+1. The GP model trains on ALL data (design + context dimensions) — no info loss
+2. At acquisition time, ``SubstituteContextFeatures`` replaces context dims with
+   ALL context points. A candidate ``[x1, x2, w1, w2]`` with 3 context points
+   becomes 3 evaluations with different context values.
+3. **CVaR** sorts predictions across context points and averages the worst
+   alpha-fraction. For MOO, Chebyshev scalarization is applied first.
+4. ``fixed_features`` prevents optimizing context dims — the optimizer searches
+   only over design parameters
+5. For MOO: the acquisition function uses qLogEI (ParEGO-style). Random
+   Chebyshev weights change each iteration to explore different regions of the
+   robust Pareto front.
+
+**Concrete example (single-objective, CVaR):**
+3 design params, 2 context params, 5 context points.
+Candidate design ``[d1=3.2, d2=1.5, d3=7.0]``:
+
+- Context 0: temp=300, load=50 → efficiency = 0.85
+- Context 1: temp=400, load=80 → efficiency = 0.61  ← worst
+- Context 2: temp=350, load=65 → efficiency = 0.78
+- Context 3: temp=300, load=80 → efficiency = 0.71
+- Context 4: temp=400, load=50 → efficiency = 0.82
+
+With ``robustness=0.2`` (alpha=0.80), CVaR averages worst 80%:
+sorted = [0.61, 0.71, 0.78, 0.82, 0.85], worst 80% = [0.61, 0.71, 0.78, 0.82]
+CVaR = 0.73. The harsh condition drags the score down — optimizer steers toward
+designs that don't collapse under stress.
+
+**Concrete example (multi-objective, ParEGO CVaR):**
+Same setup but 3 objectives (efficiency↑, pressure↑, torque↓). Random
+Chebyshev weights are drawn, e.g. ``w = [0.4, 0.35, 0.25]``, objectives are
+normalized to [0,1], and augmented Chebyshev scalarization is applied per
+context point. CVaR then averages the worst-alpha fraction of the scalarized
+values. Next iteration, different weights emphasize different trade-offs.
+Over many iterations, the robust Pareto front emerges.
+
+**Trial execution:**
+Each trial runs ONE simulation. Context points are assigned round-robin during
+BO. During initialization (Sobol), both design and context are sampled freely.
+
+**The robustness trade-off:**
+Robust designs sacrifice peak performance at any single condition for consistent
+performance across all conditions. A non-robust design might score 0.95 at one
+condition but 0.40 at another. A robust design might score 0.80 everywhere.
+
+**Constraints under robust optimization:**
+- Geometry-only constraints work normally (handled by Ax)
+- Context-only constraints filter which context points are used
+- Cross-group constraints become *soft* — a simulation that fails at an
+  infeasible design×context combination produces bad metrics, and the risk
+  measure naturally steers away from such designs""",
+    },
 }

@@ -213,6 +213,28 @@ def preprocess_case(parameters, cfg):
         templateCase = FoamCase(path)
         newcase = os.path.join(trial_destination, f"{EXPERIMENT_NAME}_trial_"+hash)
         case = templateCase.clone(newcase)
+        # foamlib clone preserves symlinks (symlinks=True). Relative symlinks
+        # break when the trial dir is at a different depth than the base case.
+        # Dereference any broken symlinks by replacing them with the real file.
+        for root, dirs, files in os.walk(str(case.path)):
+            for name in files + dirs:
+                fpath = os.path.join(root, name)
+                if os.path.islink(fpath) and not os.path.exists(fpath):
+                    # Broken symlink — resolve relative to original base case
+                    link_target = os.readlink(fpath)
+                    resolved = os.path.normpath(os.path.join(os.path.dirname(
+                        os.path.join(str(path), os.path.relpath(fpath, str(case.path)))),
+                        link_target))
+                    if os.path.exists(resolved):
+                        os.unlink(fpath)
+                        if os.path.isdir(resolved):
+                            shutil.copytree(resolved, fpath)
+                        else:
+                            shutil.copy2(resolved, fpath)
+                        log.debug("Dereferenced broken symlink: %s → %s", name, resolved)
+                    else:
+                        log.warning("Broken symlink in trial (target not found): %s → %s",
+                                    fpath, link_target)
         return case
 
     case = prepare_case(**cfg['template_case'])

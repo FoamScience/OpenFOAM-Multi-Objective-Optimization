@@ -9,7 +9,7 @@ We use:
 Artifacts: CSV data for experiment trials
 """
 
-import sys, argparse, pprint, json
+import logging, sys, argparse, pprint, json
 
 def _apply_objective_thresholds(client, expressions: list[str], log=None,
                                 baseline_data: dict[str, float] | None = None):
@@ -66,7 +66,351 @@ def _apply_objective_thresholds(client, expressions: list[str], log=None,
         log.info(f"Objective thresholds set: {summary}")
 
 
-def optimize(cfg):
+def _param_bounds(p):
+    """Extract (lower, upper) from RangeParameterConfig or Ax RangeParameter."""
+    if hasattr(p, 'bounds'):
+        return float(p.bounds[0]), float(p.bounds[1])
+    return float(p.lower), float(p.upper)
+
+
+def _resolve_context_points(robust_cfg, exp_cfg, log):
+    """Auto-generate context_points via Sobol if not explicitly provided."""
+    if robust_cfg.context_points is not None:
+        return  # already explicit
+    import numpy as np
+    from torch.quasirandom import SobolEngine
+
+    context_names = exp_cfg.get_context_param_names(robust_cfg)
+    d = len(context_names)
+    if d == 0:
+        raise ValueError(
+            f"No parameters found in context_groups {robust_cfg.context_groups}. "
+            "Check that parameter 'groups' tags match context_groups names.")
+
+    # Collect bounds and types for context params
+    param_map = {p.name: p for p in exp_cfg.parameters}
+    bounds_lo, bounds_hi, is_int = [], [], []
+    for cn in context_names:
+        p = param_map[cn]
+        lo_val, hi_val = _param_bounds(p)
+        bounds_lo.append(lo_val)
+        bounds_hi.append(hi_val)
+        is_int.append(getattr(p, 'parameter_type', 'float') == 'int')
+    lo = np.array(bounds_lo, dtype=np.float64)
+    hi = np.array(bounds_hi, dtype=np.float64)
+
+    # Generate Sobol samples, over-sample to handle constraint filtering
+    n_target = robust_cfg.context_samples
+    sobol = SobolEngine(dimension=d, scramble=True)
+    # Over-sample 3x to leave room for constraint rejection
+    n_raw = n_target * 3
+    raw = sobol.draw(n_raw).numpy()  # (n_raw, d) in [0,1]
+    scaled = lo + raw * (hi - lo)
+
+    # Round integer params
+    for j, is_i in enumerate(is_int):
+        if is_i:
+            scaled[:, j] = np.round(scaled[:, j])
+
+    # Build dicts
+    points = [{cn: float(scaled[i, j]) for j, cn in enumerate(context_names)}
+              for i in range(n_raw)]
+
+    # Apply context_constraints filter
+    if robust_cfg.context_constraints:
+        from foambo.constraints import _parse_inequality
+        import sympy
+        symbols = [sympy.Symbol(n) for n in context_names]
+        compiled = []
+        for expr_str in robust_cfg.context_constraints:
+            normalized, _ = _parse_inequality(expr_str)
+            fn = sympy.lambdify(symbols, normalized, modules=["numpy"])
+            compiled.append(fn)
+        filtered = []
+        for pt in points:
+            vals = [pt[cn] for cn in context_names]
+            if all(fn(*vals) >= 0 for fn in compiled):
+                filtered.append(pt)
+        points = filtered
+
+    if len(points) < 2:
+        raise ValueError(
+            f"Only {len(points)} context points survived constraint filtering "
+            f"(need >= 2). Relax context_constraints or increase context_samples.")
+
+    # Take first n_target
+    points = points[:n_target]
+    robust_cfg.context_points = points
+    log.debug("Generated %d context points via Sobol from %s parameter bounds",
+             len(points), robust_cfg.context_groups)
+    for i, pt in enumerate(points):
+        log.debug("  context[%d]: %s", i, pt)
+
+
+def _wire_robust_optimization(client, exp_cfg, robust_cfg, log):
+    """Wire CVaR risk measure + SubstituteContextFeatures + fixed_features + round-robin.
+
+    Makes BO context-aware for robust optimization:
+    1. Builds normalized feature_set tensor from context_points
+    2. Patches Surrogate.fit to attach SubstituteContextFeatures + cache baseline_Y
+    3. Patches get_botorch_objective_and_transform to inject CVaR
+    4. For MOO: ParEGO-style Chebyshev scalarization as CVaR preprocessing
+    5. Sets up fixed_features for context dims
+    6. Patches GenerationStrategy.gen for round-robin context + weight randomization
+    """
+    import math
+    import torch
+    import numpy as np
+    from botorch.acquisition.risk_measures import CVaR
+    from botorch.acquisition.objective import GenericMCObjective
+    from ax.adapter.registry import Generators
+
+    context_names = exp_cfg.get_context_param_names(robust_cfg)
+    context_indices = exp_cfg.get_context_dim_indices(robust_cfg)
+    param_map = {p.name: p for p in exp_cfg.parameters}
+    n_w = robust_cfg.n_w
+    alpha = robust_cfg.alpha
+
+    # --- Detect SOO vs MOO ---
+    from ax.core.objective import MultiObjective
+    is_moo = isinstance(
+        client._experiment.optimization_config.objective, MultiObjective
+    )
+    n_objectives = (len(client._experiment.optimization_config.objective.objectives)
+                    if is_moo else 1)
+
+    robust_cfg._resolved_risk_measure = "cvar"
+
+    # --- 1. Build normalized feature_set tensor (n_w x d_context) ---
+    bounds_lo = np.array([_param_bounds(param_map[cn])[0] for cn in context_names])
+    bounds_hi = np.array([_param_bounds(param_map[cn])[1] for cn in context_names])
+    raw = np.array([[pt[cn] for cn in context_names]
+                    for pt in robust_cfg.context_points])
+    normalized = (raw - bounds_lo) / (bounds_hi - bounds_lo + 1e-12)
+    feature_set = torch.tensor(normalized, dtype=torch.double)
+
+    log.info("Robust optimization: CVaR(alpha=%.2f, n_w=%d), context_params=%s, MOO=%s",
+             alpha, n_w, context_names, is_moo)
+
+    # --- MOO state (mutable, closure-captured) ---
+    _state = {"baseline_Y": None, "chebyshev_scalarize": None}
+
+    def _sample_chebyshev_weights():
+        """Sample random weights from Dirichlet(1,...,1) = uniform on simplex."""
+        return torch.distributions.Dirichlet(
+            torch.ones(n_objectives, dtype=torch.double)).sample()
+
+    def _compute_best_f():
+        """Compute best scalarized training value for qLogEI (MOO only)."""
+        bY = _state.get("baseline_Y")
+        fn = _state.get("chebyshev_scalarize")
+        if bY is None or fn is None or bY.shape[0] == 0:
+            return 0.0
+        vals = fn(bY.unsqueeze(0), None)  # (1, n)
+        return vals.max().item()
+
+    # --- 2. Patch Surrogate.fit: attach SubstituteContextFeatures + cache baseline_Y ---
+    from ax.generators.torch.botorch_modular.surrogate import Surrogate
+    _orig_surrogate_fit = Surrogate.fit
+
+    def _fit_with_context_features(self, *args, **kwargs):
+        from foambo.constraints import clear_candidate_cache
+        clear_candidate_cache()
+        result = _orig_surrogate_fit(self, *args, **kwargs)
+        if self.model is not None:
+            from botorch.models.transforms.input import InputTransform, ChainedInputTransform
+
+            class _SubstituteContextFeatures(InputTransform, torch.nn.Module):
+                """Replace context dims with n_w scenarios (keeps same d)."""
+                def __init__(self, ctx_indices, ctx_values):
+                    super().__init__()
+                    self.transform_on_train = False
+                    self.transform_on_eval = True
+                    self.transform_on_fantasize = True
+                    self.register_buffer("ctx_indices", torch.tensor(ctx_indices, dtype=torch.long))
+                    self.register_buffer("ctx_values", ctx_values)  # (n_w, d_ctx)
+                    self._n_w = ctx_values.shape[0]
+
+                def transform(self, X):
+                    # X: (..., q, d) → (..., q*n_w, d)
+                    shape = X.shape
+                    q, d = shape[-2], shape[-1]
+                    batch = shape[:-2]
+                    X_exp = X.unsqueeze(-2).expand(*batch, q, self._n_w, d).clone()
+                    X_exp[..., self.ctx_indices] = self.ctx_values.to(X_exp)
+                    return X_exp.reshape(*batch, q * self._n_w, d)
+
+            def _attach_ctx_tf(model):
+                tf = _SubstituteContextFeatures(context_indices, feature_set)
+                if hasattr(model, 'input_transform') and model.input_transform is not None:
+                    existing = model.input_transform
+                    model.input_transform = ChainedInputTransform(
+                        tf_existing=existing, tf_ctx=tf)
+                else:
+                    model.input_transform = tf
+
+            if hasattr(self.model, 'models'):
+                for sub_model in self.model.models:
+                    _attach_ctx_tf(sub_model)
+                log.debug("Attached SubstituteContextFeatures(n_w=%d) to %d sub-models",
+                          n_w, len(self.model.models))
+            else:
+                _attach_ctx_tf(self.model)
+                log.debug("Attached SubstituteContextFeatures(n_w=%d) to model", n_w)
+
+            # Cache baseline_Y for MOO Chebyshev scalarization
+            if is_moo:
+                try:
+                    if hasattr(self.model, 'train_targets') and self.model.train_targets is not None:
+                        Y = self.model.train_targets
+                        if isinstance(Y, list):
+                            Y = torch.stack(Y[:n_objectives], dim=-1)
+                        if Y.dim() == 1:
+                            Y = Y.unsqueeze(-1)
+                        _state["baseline_Y"] = Y
+                        log.debug("Cached baseline_Y (%d points, %d objectives)",
+                                  Y.shape[0], Y.shape[1])
+                except Exception as e:
+                    log.warning("Failed to cache baseline_Y: %s", e)
+        return result
+
+    Surrogate.fit = _fit_with_context_features
+
+    # --- 3. Patch get_botorch_objective_and_transform for CVaR ---
+    import ax.generators.torch.utils as _torch_utils
+    _orig_get_obj = _torch_utils.get_botorch_objective_and_transform
+
+    def _get_obj_with_risk(*args, **kwargs):
+        objective, posterior_transform = _orig_get_obj(*args, **kwargs)
+        if is_moo:
+            # ParEGO-style: Chebyshev scalarization → CVaR
+            # The scalarization is built fresh each gen call with new weights
+            from botorch.utils.multi_objective.scalarization import get_chebyshev_scalarization
+            weights = _state.get("_next_weights") or _sample_chebyshev_weights()
+            bY = _state["baseline_Y"]
+            if bY is None:
+                bY = torch.empty(0, n_objectives, dtype=torch.double)
+            scalarize = get_chebyshev_scalarization(weights, Y=bY)
+            _state["chebyshev_scalarize"] = scalarize
+            preprocessing = GenericMCObjective(scalarize)
+            log.debug("ParEGO CVaR: weights=%s, baseline_Y=%s",
+                      weights.tolist(),
+                      f"{bY.shape}" if bY.numel() > 0 else "None")
+        else:
+            preprocessing = objective
+        risk_obj = CVaR(alpha=alpha, n_w=n_w, preprocessing_function=preprocessing)
+        log.debug("Injected CVaR(alpha=%.2f, n_w=%d) as MC objective", alpha, n_w)
+        return risk_obj, posterior_transform
+
+    _torch_utils.get_botorch_objective_and_transform = _get_obj_with_risk
+    import ax.generators.torch.botorch_modular.acquisition as _acq_mod
+    _acq_mod.get_botorch_objective_and_transform = _get_obj_with_risk
+
+    # --- 4. Set up fixed_features for context dims ---
+    first_pt = robust_cfg.context_points[0]
+    initial_ff = {}
+    for idx, cn in zip(context_indices, context_names):
+        lo, hi = _param_bounds(param_map[cn])
+        val = (first_pt[cn] - lo) / (hi - lo + 1e-12)
+        initial_ff[idx] = val
+    from foambo.constraints import patch_optimize_acqf_robust
+    patch_optimize_acqf_robust(initial_ff)
+
+    # --- 5. For MOO: qLogEI + best_f injection (ParEGO scalarizes to single obj) ---
+    _BO_GENERATORS = {Generators.BOTORCH_MODULAR, Generators.BO_MIXED}
+    if is_moo:
+        for node in client._generation_strategy._nodes:
+            for spec in node.generator_specs:
+                if (spec.generator_enum not in _BO_GENERATORS
+                        and spec.generator_enum not in (
+                            Generators.SOBOL, Generators.UNIFORM, Generators.FACTORIAL)):
+                    log.warning(
+                        "Robust MOO is not compatible with generator '%s'. "
+                        "Only BOTORCH_MODULAR and BO_MIXED are supported.",
+                        spec.generator_enum.name)
+
+        # qLogNoisyExpectedImprovement concatenates baseline+candidate then splits
+        # back — incompatible with one-to-many transforms. Use qLogEI instead.
+        from botorch.acquisition.logei import qLogExpectedImprovement
+        for node in client._generation_strategy._nodes:
+            for spec in node.generator_specs:
+                if spec.generator_enum in _BO_GENERATORS:
+                    spec.generator_kwargs["botorch_acqf_class"] = qLogExpectedImprovement
+
+        # Patch input constructor: get_best_f_mc fails with non-block designs
+        # (ModelListGP). Inject best_f from Chebyshev-scalarized training data.
+        from botorch.acquisition.input_constructors import (
+            construct_inputs_qLogEI as _orig_construct_qlei,
+            ACQF_INPUT_CONSTRUCTOR_REGISTRY,
+        )
+
+        def _construct_inputs_qLogEI_with_best_f(*args, **kwargs):
+            if kwargs.get("best_f") is None:
+                kwargs["best_f"] = _compute_best_f()
+                log.debug("qLogEI: best_f=%.4f", kwargs["best_f"])
+            return _orig_construct_qlei(*args, **kwargs)
+
+        ACQF_INPUT_CONSTRUCTOR_REGISTRY[qLogExpectedImprovement] = _construct_inputs_qLogEI_with_best_f
+        log.debug("MOO: qLogExpectedImprovement + ParEGO CVaR")
+
+    # --- 6. Patch GenerationStrategy.gen for round-robin context ---
+    from foambo.constraints import set_fixed_features
+
+    _ctx_idx = [0]
+    _orig_gs_gen = client._generation_strategy.gen
+    ctx_dim_map = dict(zip(context_indices, context_names))
+
+    def _gen_with_context(*args, **kwargs):
+        gs = client._generation_strategy
+        is_bo = any(
+            s.generator_enum in _BO_GENERATORS
+            for s in gs.current_node.generator_specs
+        )
+        if not is_bo:
+            return _orig_gs_gen(*args, **kwargs)
+
+        # Fix context dims so optimizer doesn't search them
+        first_pt = robust_cfg.context_points[0]
+        ff = {}
+        for dim_idx, cn in ctx_dim_map.items():
+            lo, hi = _param_bounds(param_map[cn])
+            ff[dim_idx] = (first_pt[cn] - lo) / (hi - lo + 1e-12)
+        set_fixed_features(ff)
+
+        # Pre-sample Chebyshev weights for this gen call (MOO ParEGO)
+        if is_moo:
+            _state["_next_weights"] = _sample_chebyshev_weights()
+            log.debug("Chebyshev weights: %s", _state["_next_weights"].tolist())
+
+        import time as _t
+        _gen_t0 = _t.perf_counter()
+        result = _orig_gs_gen(*args, **kwargs)
+        _gen_elapsed = _t.perf_counter() - _gen_t0
+
+        # Assign different context points per trial (round-robin)
+        for trial_grs in result:
+            idx = _ctx_idx[0] % n_w
+            ctx_pt = robust_cfg.context_points[idx]
+            _ctx_idx[0] += 1
+            for gr in trial_grs:
+                for arm in gr.arms:
+                    for cn in context_names:
+                        arm.parameters[cn] = ctx_pt[cn]
+            ctx_desc = ", ".join(f"{cn}={ctx_pt[cn]:.4g}" for cn in context_names)
+            log.debug("Trial assigned context #%d: %s", idx, ctx_desc)
+
+        log.debug("Generated %d candidate(s) in %.1fs", len(result), _gen_elapsed)
+        return result
+
+    client._generation_strategy.gen = _gen_with_context
+
+    # --- 7. Store robust metadata on runner ---
+    runner = client._experiment.runner
+    runner._robust_cfg = robust_cfg
+    runner._context_param_names = context_names
+
+
+def optimize(cfg, debug=False):
     """Main optimization loop.
 
     Colored logging is set up automatically on the first call.
@@ -103,7 +447,7 @@ def optimize(cfg):
     from logging import Logger
     from ax.utils.common.logger import get_logger
     # Must run after Ax imports — Ax adds its own handlers that override ours
-    setup_colored_logging()
+    setup_colored_logging(debug=debug)
     log = get_logger(__name__)
 
     # Accept FoamBOConfig or DictConfig
@@ -165,8 +509,26 @@ def optimize(cfg):
         client.configure_experiment(**exp_cfg.to_dict())
 
     ## 2.0 Trial generation
+    # Suppress Ax's verbose GenerationStrategy repr log
+    _ax_client_log = logging.getLogger("ax.api.client")
+    _ax_client_orig_level = _ax_client_log.level
+    _ax_client_log.setLevel(logging.WARNING)
     gs_cfg.set_generation_strategy(client)
-    log.info(f"Configured trial generation strategy: {client._generation_strategy.name}")
+    _ax_client_log.setLevel(_ax_client_orig_level)
+
+    gs = client._generation_strategy
+    phases = []
+    for node in gs._nodes:
+        specs = ", ".join(s.generator_enum.value for s in node.generator_specs)
+        # Extract max trials from MinTrials transition criteria
+        max_t = None
+        for tc in (node.transition_criteria or []):
+            if hasattr(tc, 'threshold'):
+                max_t = tc.threshold
+                break
+        label = f"{node.name}({specs}, {max_t})" if max_t else f"{node.name}({specs})"
+        phases.append(label)
+    log.info("Generation strategy: %s  [%s]", gs.name, " → ".join(phases))
     log.info("=================================================")
 
     ## 3.0 Optimization setup
@@ -178,9 +540,20 @@ def optimize(cfg):
         if opt_cfg.objective_thresholds:
             _apply_objective_thresholds(client, opt_cfg.objective_thresholds, log=log)
     log.info("=================================================")
-    log.info(f"Objectives:\n%s", pprint.pformat(client._experiment.optimization_config._objective))
+    _obj = client._experiment.optimization_config._objective
+    if hasattr(_obj, 'objectives'):
+        # Multi-objective
+        obj_lines = []
+        for o in _obj.objectives:
+            direction = "minimize" if o.minimize else "maximize"
+            obj_lines.append(f"  {o.metric.name} ({direction})")
+        log.info("Objectives (multi):\n%s", ", ".join(obj_lines))
+    else:
+        direction = "minimize" if _obj.minimize else "maximize"
+        log.info("Objective: %s (%s)", _obj.metric.name, direction)
     if client._experiment._tracking_metrics:
-        log.info(f"Tracking metrics:\n%s", pprint.pformat(client._experiment._tracking_metrics))
+        names = sorted(m.name for m in client._experiment._tracking_metrics.values())
+        log.info("Tracking metrics: %s", ", ".join(names))
         log.info("=================================================")
     client.configure_runner(**opt_cfg.to_runner_dict())
     # Wire trial dependencies and metric names onto the runner
@@ -212,6 +585,15 @@ def optimize(cfg):
         nl_callables = build_nonlinear_constraints(nl_exprs, param_names)
         patch_optimize_acqf(nl_callables)
         log.info("Nonlinear parameter constraints active: %s", nl_exprs)
+
+    # Inject CVaR robust optimization if configured
+    robust_cfg = getattr(foambo_cfg, 'robust_optimization', None) if foambo_cfg else None
+    if robust_cfg is None and isinstance(cfg, DictConfig) and 'robust_optimization' in cfg and cfg['robust_optimization']:
+        from foambo.orchestrate import RobustOptimizationConfig
+        robust_cfg = RobustOptimizationConfig.model_validate(dict(cfg['robust_optimization']))
+    if robust_cfg is not None:
+        _resolve_context_points(robust_cfg, exp_cfg, log)
+        _wire_robust_optimization(client, exp_cfg, robust_cfg, log)
 
     client.set_early_stopping_strategy(orch_cfg.early_stopping_strategy)
 
@@ -285,7 +667,7 @@ def optimize(cfg):
                     mean_cv_error = _np.mean(cv_errors)
                     # If mean CV error > 50% of error range, model fit is poor
                     if obs_range > 0 and mean_cv_error / obs_range > 0.5:
-                        log.debug(f"Dimensionality reduction deferred — model fit too poor "
+                        log.info(f"Dimensionality reduction deferred — model fit too poor "
                                   f"(CV error ratio: {mean_cv_error / obs_range:.2f})")
                         return
             except Exception:
@@ -311,7 +693,7 @@ def optimize(cfg):
                 log.warning(f"Dimensionality reduction disabled after 3 failed attempts: {e}")
                 _dim_reduction_done = True
             else:
-                log.debug(f"Dimensionality reduction attempt {_dim_reduction_attempts} failed: {e}")
+                log.info(f"Dimensionality reduction attempt {_dim_reduction_attempts} failed: {e}")
             return
 
         # Aggregate importance across metrics (max importance across all objectives)
@@ -385,6 +767,7 @@ def optimize(cfg):
             runner._api_state = _api_state
             runner._api_host = orch_cfg.api_host
             runner._api_port = _api_state._actual_port
+            runner._push_event = _api_state.trial_push_event
             log.info("Event-driven orchestration enabled (push endpoints active)")
         runner._poll_streaming_metrics = orch_cfg.poll_streaming_metrics
 
@@ -578,7 +961,7 @@ def optimize(cfg):
     log.info("==================== End ========================")
     return client
 
-def setup_colored_logging():
+def setup_colored_logging(debug=False):
     import logging
     import colorlog
     from rich.traceback import install as install_rich_traceback
@@ -606,6 +989,8 @@ def setup_colored_logging():
         lgr = logging.getLogger(name)
         lgr.handlers.clear()
         lgr.propagate = True
+        if debug and name.startswith("ax.foambo"):
+            lgr.setLevel(logging.DEBUG)
     # Rich tracebacks: syntax-highlighted, dimmed frames for libraries
     from rich.console import Console
     install_rich_traceback(
@@ -621,6 +1006,18 @@ def setup_colored_logging():
             "pydantic",
         ],
     )
+    # When debug, patch Ax's get_logger so future loggers also get DEBUG
+    # (Ax's get_logger hardcodes setLevel(INFO) on every logger it creates)
+    if debug:
+        from ax.utils.common import logger as _ax_logger_mod
+        _orig_get_logger = _ax_logger_mod.get_logger
+        def _debug_get_logger(name):
+            lgr = _orig_get_logger(name)
+            if name.startswith("foambo"):
+                lgr.setLevel(logging.DEBUG)
+            return lgr
+        _ax_logger_mod.get_logger = _debug_get_logger
+
     # Suppress foamlib's Rich progress bars (they clutter the log output)
     try:
         from foamlib._cases._run import FoamCaseRunBase
@@ -658,6 +1055,7 @@ def main():
     uvx foamBO --config My.yaml ++experiment.name=Test2  # Runs optimization from My.yaml with different experiment name
     uvx foamBO --analysis ++store.read_from=json         # Generates reports for optimization from foamBO.yaml configuration
     uvx foamBO --analysis --json                         # Generates reports and exports Plotly figures as JSON
+    uvx foamBO --config-builder                           # Launch web UI to build a config YAML
     uvx foamBO --docs                                    # Browse the documentation
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -671,6 +1069,7 @@ def main():
     group.add_argument('--pack', action='store_true', help='Pack experiment into a .foambo archive')
     group.add_argument('--unpack', type=str, metavar='ARCHIVE', help='Unpack a .foambo archive')
     group.add_argument('--preflight-checks', action='store_true', help='Validate configuration before running')
+    group.add_argument('--config-builder', action='store_true', help='Launch the web-based config builder UI')
     group.add_argument('-V', '--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('--config', type=str, default=DEFAULT_CONFIG, help=f'Path to config YAML file (optional, default={DEFAULT_CONFIG})')
     parser.add_argument('--json', action='store_true', help='Export Plotly figures as JSON (only valid with --analysis)')
@@ -680,6 +1079,7 @@ def main():
         help='Trials to include in --pack: best, pareto, all, or comma-separated indices')
     parser.add_argument('--skip-patterns', type=str, default=None,
         help='Comma-separated glob patterns to exclude from --pack (e.g. "processor*/,postProcessing/")')
+    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('overrides', nargs=argparse.REMAINDER, help='Config overrides in ++key=value format')
     args = parser.parse_args()
 
@@ -693,6 +1093,11 @@ def main():
         parser.error('--include-trials can only be used with --pack')
     if args.skip_patterns and not getattr(args, 'pack', False):
         parser.error('--skip-patterns can only be used with --pack')
+
+    if args.debug:
+        for name in list(logging.Logger.manager.loggerDict):
+            if name.startswith("ax.foambo"):
+                logging.getLogger(name).setLevel(logging.DEBUG)
 
     if args.template:
         import importlib.resources as _res
@@ -742,6 +1147,16 @@ def main():
         ok = run_preflight(cfg, dry_run=args.dry_run)
         sys.exit(0 if ok else 1)
 
+    if args.config_builder:
+        from .api_server import app as _app, _state as _srv_state
+        import uvicorn
+        _srv_state.standalone = True
+        host = "127.0.0.1"
+        port = 8098
+        print(f"Config Builder running at http://{host}:{port}/config-builder")
+        uvicorn.run(_app, host=host, port=port, log_level="warning")
+        return
+
     if args.docs:
         import pathlib
         from .docs import run_docs_tui
@@ -772,7 +1187,6 @@ def main():
         sys.exit(0)
 
     if args.analysis:
-        import logging
         log = logging.getLogger(__name__)
         from .config import load_config, override_config
         from .analysis import compute_analysis_cards, plot_pareto_frontier
@@ -791,7 +1205,6 @@ def main():
         return
 
     if args.no_opt:
-        import logging
         log = logging.getLogger(__name__)
         from .config import load_config, override_config
         from .common import set_experiment_name
@@ -837,6 +1250,34 @@ def main():
                 log.info("GP model fitted from scratch (no cache)")
         except Exception as e:
             log.warning("Model pre-warm failed: %s", e)
+        # Attach AppendFeatures for robust optimization (CVaR context awareness)
+        if 'robust_optimization' in cfg and cfg['robust_optimization']:
+            try:
+                from .orchestrate import RobustOptimizationConfig, ExperimentOptions
+                robust_cfg = RobustOptimizationConfig.model_validate(dict(cfg['robust_optimization']))
+                exp_cfg = ExperimentOptions.model_validate(dict(cfg['experiment']))
+                _resolve_context_points(robust_cfg, exp_cfg, log)
+                # Attach AppendFeatures to the already-fitted model
+                import torch, numpy as np
+                context_names = exp_cfg.get_context_param_names(robust_cfg)
+                param_map = {p.name: p for p in exp_cfg.parameters}
+                bounds_lo = np.array([_param_bounds(param_map[cn])[0] for cn in context_names])
+                bounds_hi = np.array([_param_bounds(param_map[cn])[1] for cn in context_names])
+                raw = np.array([[pt[cn] for cn in context_names] for pt in robust_cfg.context_points])
+                normalized = (raw - bounds_lo) / (bounds_hi - bounds_lo + 1e-12)
+                feature_set = torch.tensor(normalized, dtype=torch.double)
+                from botorch.models.transforms.input import AppendFeatures
+                surr = gs.adapter.generator.surrogate
+                if surr.model is not None:
+                    af = AppendFeatures(feature_set=feature_set,
+                                        transform_on_train=False, transform_on_eval=True)
+                    surr.model.input_transform = af
+                    log.debug("Attached AppendFeatures(n_w=%d) for robust predict", robust_cfg.n_w)
+                if runner is not None:
+                    runner._robust_cfg = robust_cfg
+                    runner._context_param_names = context_names
+            except Exception as e:
+                log.warning("Robust optimization setup failed in --no-opt: %s", e)
         from .api_server import start_api_server, stop_api_server
         thread = start_api_server(
             client=client, raw_cfg=cfg, orch_cfg=orch_cfg,
@@ -862,4 +1303,4 @@ def main():
     if args.no_ui:
         from omegaconf import OmegaConf
         OmegaConf.update(cfg, "orchestration_settings.api_port", 0)
-    optimize(cfg)
+    optimize(cfg, debug=args.debug)

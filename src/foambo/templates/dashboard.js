@@ -10,7 +10,7 @@ function app(){return{
   state:{status:null,experiment:null,trials:null,objectives:null,streaming:null,generation:null,pareto:null,events:null},
   lastUpdate:'',tf:'all',tsk:'index',tsd:1,xt:null,td:null,tdViz:null,tdVizLoading:false,tdVizErr:'',pvState:'',pp:{},predicting:false,pr:null,pe:null,cs:[],cv:{},cmp:[],
   enlargedEl:null,
-  anlMetric:'',anlTopK:10,anlLoading:false,anlError:'',anlSens:null,anlCV:null,anlPC:null,anlContour:null,anlSearch:null,anlInsights:null,anlHealth:null,anlGroupSens:null,anlGroupInt:null,anlGroupBest:null,frozenGroups:{},fetchTrialIdx:'',
+  anlMetric:'',anlTopK:10,anlLoading:false,anlError:'',anlSens:null,anlCV:null,anlPC:null,anlContour:null,anlSearch:null,anlInsights:null,anlHealth:null,anlGroupSens:null,anlGroupInt:null,anlRobust:null,anlGroupBest:null,frozenGroups:{},fetchTrialIdx:'',
   sweeping:false,sweepData:null,sweepErr:null,sweepNPts:25,
   _schedPoll(){setTimeout(async()=>{await this.r();this._schedPoll()},3000)},
   async init(){await this.r();this._schedPoll();this.$watch('tab',()=>this.r());document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const n=parseInt(e.key);if(n>=1&&n<=this.tabs.length)this.tab=this.tabs[n-1].id;if(e.key==='v'&&!e.ctrlKey&&!e.metaKey){const hovered=document.querySelector('.chart-card:hover');if(hovered){const plotDiv=hovered.querySelector('.js-plotly-plot')||(hovered.classList.contains('js-plotly-plot')?hovered:null);if(plotDiv&&plotDiv.data){this.enlargedEl=true;this.$nextTick(()=>{const target=document.getElementById('enlarge-target');if(target)Plotly.react(target,plotDiv.data,{...plotDiv.layout,width:null,height:null},PC)})}}}if(e.key==='Escape'){this.enlargedEl=null;const et=document.getElementById('enlarge-target');if(et)Plotly.purge(et)}});this.$watch('xt',async(v)=>{this.td=null;this.tdViz=null;this.tdVizLoading=false;this.tdVizErr='';if(v!==null){const r=await this.f('trials/'+v);if(r&&!r._error)this.td=r}})},
@@ -252,7 +252,8 @@ function app(){return{
     this.anlLoading=true;this.anlError='';
     const m=this.anlMetric||(this.state.experiment?.objectives?.[0]?.name)||'';
     if(!m){this.anlError='No metric selected';this.anlLoading=false;return}
-    const [s,pc,cv,ct,ss,ins,hc,gs,gi]=await Promise.allSettled([
+    const isRobust=!!this.state.experiment?.robust_optimization;
+    const [s,pc,cv,ct,ss,ins,hc,gs,gi,rp_]=await Promise.allSettled([
       this.f('analysis/sensitivity','POST',{metric:m,top_k:this.anlTopK}),
       this.f('analysis/parallel-coordinates','POST',{metric:m}),
       this.f('analysis/cross-validation','POST',{}),
@@ -262,6 +263,7 @@ function app(){return{
       this.f('analysis/healthchecks','POST',{}),
       this.f('analysis/group-sensitivity','POST',{metric:m}),
       this.f('analysis/group-interactions','POST',{metric:m}),
+      isRobust?this.f('analysis/robustness-profile','POST',{}):Promise.resolve(null),
     ]);
     const _r=(r)=>r.status==='fulfilled'&&r.value&&!r.value._error?r.value:null;
     const _e=(r)=>r.status==='fulfilled'&&r.value?._error?r.value._error:'';
@@ -274,6 +276,7 @@ function app(){return{
     this.anlHealth=_r(hc);
     const gsR=_r(gs);this.anlGroupSens=gsR?.groups?gsR:null;
     const giR=_r(gi);this.anlGroupInt=giR?.matrix?giR:null;
+    const rpR=_r(rp_);this.anlRobust=rpR?.per_context?rpR:null;
     // Failed analyses are silently skipped — panels just don't appear
     this.anlLoading=false;
     this.$nextTick(()=>{
@@ -309,6 +312,38 @@ function app(){return{
         if(el){
           const d=this.anlGroupInt;
           Plotly.react(el,[{z:d.matrix,x:d.groups,y:d.groups,type:'heatmap',colorscale:[[0,'#1a1a2e'],[0.5,'#3b82f6'],[1,'#ef4444']],showscale:true}],{...DL,margin:{...DL.margin,l:120,b:80}},PC);
+        }
+      }
+      // Robustness profile: grouped bar chart (per metric, per context point)
+      if(this.anlRobust?.per_context){
+        const el=document.getElementById('anl-robust');
+        if(el){
+          const d=this.anlRobust;
+          const metrics=Object.keys(d.per_context[0]?.predictions||{});
+          const ctxLabels=d.per_context.map((_,i)=>'ctx#'+i);
+          const traces=[];
+          metrics.forEach((mn,mi)=>{
+            const vals=d.per_context.map(pc=>pc.predictions[mn]?.mean||0);
+            const errs=d.per_context.map(pc=>pc.predictions[mn]?.sem||0);
+            traces.push({
+              name:mn,x:ctxLabels,y:vals,error_y:{type:'data',array:errs,visible:true},
+              type:'bar',marker:{color:CL[mi%CL.length]}
+            });
+          });
+          // Add CVaR reference line per metric
+          metrics.forEach((mn,mi)=>{
+            if(d.cvar&&d.cvar[mn]!=null){
+              traces.push({
+                name:'CVaR('+mn+')',x:[ctxLabels[0],ctxLabels[ctxLabels.length-1]],
+                y:[d.cvar[mn],d.cvar[mn]],mode:'lines',
+                line:{color:CL[mi%CL.length],dash:'dash',width:2},
+                showlegend:true
+              });
+            }
+          });
+          Plotly.react(el,traces,{...DL,barmode:'group',
+            xaxis:{title:'Context Point'},yaxis:{title:'Predicted Value'},
+            margin:{...DL.margin,b:60}},PC);
         }
       }
       // Render figure cards from search-space, insights, healthchecks

@@ -131,12 +131,65 @@ def build_nonlinear_constraints(
 
 
 # ---------------------------------------------------------------------------
-# Monkey-patch optimize_acqf to inject nonlinear constraints at call time.
+# Monkey-patch optimize_acqf to inject nonlinear constraints and/or
+# fixed_features (for CVaR robust optimization) at call time.
 # This avoids storing non-serializable callables in Ax's GenerationStrategy.
 # ---------------------------------------------------------------------------
 
 _active_nl_constraints: list[tuple[Callable[[torch.Tensor], torch.Tensor], bool]] | None = None
+_active_fixed_features: dict[int, float] | None = None
 _orig_optimize_acqf = None
+_batch_size: int = 1
+_candidate_cache: list = []
+_compile_acqf: bool = False
+
+
+def _patched_optimize_acqf(*args, **kwargs):
+    global _candidate_cache
+
+    # --- Inject constraints / fixed_features ---
+    if _active_nl_constraints and "nonlinear_inequality_constraints" not in kwargs:
+        kwargs["nonlinear_inequality_constraints"] = _active_nl_constraints
+        log.debug("Injected %d nonlinear constraint(s) into optimize_acqf",
+                  len(_active_nl_constraints))
+    if _active_fixed_features and "fixed_features" not in kwargs:
+        kwargs["fixed_features"] = _active_fixed_features
+        log.debug("Injected %d fixed_feature(s) into optimize_acqf",
+                  len(_active_fixed_features))
+
+    # --- Return cached candidate from previous batch ---
+    if _candidate_cache:
+        log.debug("Returning cached candidate (%d remaining)", len(_candidate_cache) - 1)
+        return _candidate_cache.pop(0)
+
+    # --- torch.compile on acquisition function ---
+    if _compile_acqf:
+        acq = kwargs.get('acq_function') or (args[0] if args else None)
+        if acq is not None and not getattr(acq, '_foambo_compiled', False):
+            import torch as _torch
+            log.info("Compiling acquisition function with torch.compile (first call may be slow)")
+            compiled_acq = _torch.compile(acq, dynamic=False)
+            compiled_acq._foambo_compiled = True
+            if 'acq_function' in kwargs:
+                kwargs['acq_function'] = compiled_acq
+            elif args:
+                args = (compiled_acq,) + args[1:]
+
+    # Batch generation (q>1) not viable for CVaR + mixed discrete params:
+    # optimize_acqf_mixed loops over discrete combos, each running q*d-dim
+    # joint SLSQP with q*n_w GP evals per step. Intractable at scale.
+
+    return _orig_optimize_acqf(*args, **kwargs)
+
+
+def _ensure_patched() -> None:
+    """Apply the optimize_acqf monkey-patch once (idempotent)."""
+    global _orig_optimize_acqf
+    if _orig_optimize_acqf is not None:
+        return
+    import botorch.optim.optimize as _botorch_optim
+    _orig_optimize_acqf = _botorch_optim.optimize_acqf
+    _botorch_optim.optimize_acqf = _patched_optimize_acqf
 
 
 def patch_optimize_acqf(
@@ -146,20 +199,40 @@ def patch_optimize_acqf(
 
     The patch is applied once; subsequent calls update the active constraints.
     """
-    global _active_nl_constraints, _orig_optimize_acqf
+    global _active_nl_constraints
     _active_nl_constraints = nl_constraints
+    _ensure_patched()
 
-    if _orig_optimize_acqf is not None:
-        return  # already patched
 
-    import botorch.optim.optimize as _botorch_optim
-    _orig_optimize_acqf = _botorch_optim.optimize_acqf
+def set_fixed_features(fixed: dict[int, float] | None) -> None:
+    """Update active fixed_features for context dims. Called per-trial for round-robin."""
+    global _active_fixed_features
+    _active_fixed_features = fixed
 
-    def _patched_optimize_acqf(*args, **kwargs):
-        if _active_nl_constraints and "nonlinear_inequality_constraints" not in kwargs:
-            kwargs["nonlinear_inequality_constraints"] = _active_nl_constraints
-            log.debug("Injected %d nonlinear constraint(s) into optimize_acqf",
-                      len(_active_nl_constraints))
-        return _orig_optimize_acqf(*args, **kwargs)
 
-    _botorch_optim.optimize_acqf = _patched_optimize_acqf
+def patch_optimize_acqf_robust(fixed_features: dict[int, float]) -> None:
+    """Ensure patch is applied and set initial fixed_features for robust optimization."""
+    set_fixed_features(fixed_features)
+    _ensure_patched()
+
+
+def set_batch_size(size: int) -> None:
+    """Set batch candidate generation size (q>1 joint optimization)."""
+    global _batch_size
+    _batch_size = max(size, 1)
+    if _batch_size > 1:
+        log.info("Batch candidate generation enabled: q=%d", _batch_size)
+
+
+def enable_acqf_compile(enabled: bool = True) -> None:
+    """Enable/disable torch.compile on acquisition function."""
+    global _compile_acqf
+    _compile_acqf = enabled
+
+
+def clear_candidate_cache() -> None:
+    """Flush cached candidates (call when model is refitted)."""
+    global _candidate_cache
+    if _candidate_cache:
+        log.debug("Cleared %d cached candidates (model refitted)", len(_candidate_cache))
+    _candidate_cache = []

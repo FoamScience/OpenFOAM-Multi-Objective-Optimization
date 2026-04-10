@@ -103,14 +103,21 @@ def static_checks(cfg: DictConfig) -> PreflightResult:
         else:
             r.warned(f"File substitution: {pname}", "parameter not found in experiment.parameters")
 
+    def _check_exe(exe: str) -> bool:
+        """Check executable: PATH lookup for bare names, template_case-relative for ./ paths."""
+        if exe.startswith("./") or exe.startswith("../"):
+            return template and os.path.isfile(os.path.join(template, exe))
+        return bool(shutil.which(exe)) or os.path.isfile(exe)
+
     runner_cmd = runner_cfg.get("runner")
     if runner_cmd and runner_cmd != "null":
         cmd_str = runner_cmd if isinstance(runner_cmd, str) else " ".join(runner_cmd)
         exe = runner_cmd.split()[0] if isinstance(runner_cmd, str) else runner_cmd[0]
-        if shutil.which(exe) or os.path.isfile(exe):
+        if _check_exe(exe):
             r.passed(f"Runner executable found: {exe}", f"full command: {cmd_str}")
         else:
-            r.warned(f"Runner executable: {exe}", f"not found in PATH — full command: {cmd_str}")
+            where = f"in template_case ({template})" if exe.startswith("./") else "in PATH"
+            r.warned(f"Runner executable: {exe}", f"not found {where} — full command: {cmd_str}")
 
     if runner_cfg.get("mode") == "remote":
         for key, label in [("remote_status_query", "Remote status query"),
@@ -119,11 +126,12 @@ def static_checks(cfg: DictConfig) -> PreflightResult:
             if cmd and cmd != "null":
                 cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
                 exe = cmd.split()[0] if isinstance(cmd, str) else cmd[0]
-                if shutil.which(exe) or os.path.isfile(exe):
+                if _check_exe(exe):
                     r.passed(f"{label}: executable '{exe}' found",
                              f"only the executable is checked, not the full command: {cmd_str}")
                 else:
-                    r.warned(f"{label}: executable '{exe}' not found",
+                    where = f"in template_case ({template})" if exe.startswith("./") else "in PATH"
+                    r.warned(f"{label}: executable '{exe}' not found {where}",
                              f"full command: {cmd_str}")
             elif key == "remote_status_query":
                 r.failed(label, "required for mode=remote but not set")

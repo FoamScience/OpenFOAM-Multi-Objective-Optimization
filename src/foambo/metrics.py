@@ -33,6 +33,7 @@ DEPENDENCY_ACTION_TIMEOUT = 120 # trial dependency action (e.g. file copy, mapFi
 PROCESS_REAP_TIMEOUT = 5        # wait for killed process to exit
 
 jobs : Dict[int, sb.Popen] = {}
+job_finish_times: Dict[int, tuple] = {}  # pid → (exit_wallclock, returncode)
 trial_progression_step : Dict[int, Dict[str, int]] = {}
 
 # Python callable registry for metrics: metric_name -> callable
@@ -104,6 +105,12 @@ class FoamJob(FoamBOBaseModel):
                 threading.Thread(target=stream_stderr, args=(proc.stderr,), daemon=True).start()
             job_id = proc.pid
             jobs[job_id] = proc
+            # Background thread records actual subprocess exit time
+            import threading
+            def _watch_exit(pid, p):
+                rc = p.wait()
+                job_finish_times[pid] = (time.time(), rc)
+            threading.Thread(target=_watch_exit, args=(job_id, proc), daemon=True).start()
             metadata={
                 "command": proc.args,
                 "pid": proc.pid,
@@ -602,7 +609,7 @@ class FoamJobRunner(IRunner):
                 if all(target_params.get(p) == entry_params.get(p) for p in group_params):
                     log.info(f"matching_group '{group}': T{idx} matches on {group_params}")
                     return (idx, completed[idx]["case_path"])
-            log.info(f"matching_group '{group}': no completed trial matches {group_params}")
+            log.debug(f"matching_group '{group}': no completed trial matches {group_params}")
             return None
         if strategy == "custom":
             cmd = selector.command
@@ -762,6 +769,18 @@ class FoamJobRunner(IRunner):
         api_state = getattr(self, '_api_state', None)
         if api_state is not None:
             api_state.log_event(trial_index, "trial.dispatched", case_path)
+        # Background thread fires push_event when subprocess exits (independent of API)
+        push_ev = getattr(self, '_push_event', None)
+        pid = meta.get("job_id")
+        if push_ev is not None and pid and pid > 0 and pid in jobs:
+            import threading
+            proc = jobs[pid]
+            def _signal_exit(p, ev, tidx):
+                p.wait()
+                ev.set()
+                log.info("Subprocess %d exited — push event fired for trial %d", p.pid, tidx)
+            threading.Thread(target=_signal_exit, args=(proc, push_ev, trial_index),
+                             daemon=True).start()
         if dep_meta:
             meta["dependencies"] = dep_meta
         return meta
@@ -812,17 +831,27 @@ class FoamJobRunner(IRunner):
                 streaming_metric(self._streaming_client, self._streaming_cfg)
             except Exception:
                 pass
+        # Fire push event on status change to non-RUNNING (wakes orchestrator instantly)
+        prev = self._last_poll_status.get(trial_index)
+        if prev != status and status != TrialStatus.RUNNING:
+            push_ev = getattr(self, '_push_event', None)
+            if push_ev is not None:
+                push_ev.set()
+                log.info("Trial %d status → %s — push event fired", trial_index, status.name)
         # Log status transitions to event log
         api_state = getattr(self, '_api_state', None)
         if api_state is not None:
-            prev = self._last_poll_status.get(trial_index)
             if prev != status and status != TrialStatus.RUNNING:
                 event_type = f"trial.{status.name.lower()}"
+                # Use actual subprocess exit time when available (local mode)
+                job_id = trial_metadata.get('job_id')
+                finish_info = job_finish_times.pop(job_id, None) if job_id else None
+                actual_ts = finish_info[0] if finish_info else None
                 detail = (f"timed out ({time.time() - trial_metadata.get('dispatch_time', 0):.0f}s)"
                           if event_type == "trial.failed" and prev == TrialStatus.RUNNING
                           else f"detected by {self.mode} poll")
-                api_state.log_event(trial_index, event_type, detail)
-            self._last_poll_status[trial_index] = status
+                api_state.log_event(trial_index, event_type, detail, ts=actual_ts)
+        self._last_poll_status[trial_index] = status
         return status
 
     def stop_trial(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> dict[str, Any]:
@@ -843,6 +872,18 @@ class EventDrivenRunner(FoamJobRunner):
         if self._api_state:
             self._api_state.log_event(trial_index, "trial.dispatched",
                                        meta.get("case_path", ""))
+            # Start background thread that fires push_event when subprocess exits
+            pid = meta.get("pid")
+            if pid and pid in jobs:
+                import threading
+                push_event = self._api_state.trial_push_event
+                proc = jobs[pid]
+                def _signal_exit(p, ev, tidx):
+                    p.wait()
+                    ev.set()
+                    log.debug("Subprocess %d exited — push event fired for trial %d", p.pid, tidx)
+                threading.Thread(target=_signal_exit, args=(proc, push_event, trial_index),
+                                 daemon=True).start()
         return meta
 
     def poll_trial(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> TrialStatus:
@@ -870,15 +911,11 @@ class EventDrivenRunner(FoamJobRunner):
                             except Exception as e:
                                 log.debug(f"Failed to attach pushed metric: {e}")
 
-        # Fallback: normal subprocess poll
+        # Fallback: normal subprocess poll (parent logs event with actual exit time)
         status = super().poll_trial(trial_index, trial_metadata)
-
-        # Log completion/failure from subprocess detection
-        if self._api_state and status in (TrialStatus.COMPLETED, TrialStatus.FAILED):
-            self._api_state.log_event(trial_index,
-                f"trial.{'completed' if status == TrialStatus.COMPLETED else 'failed'}",
-                "detected by subprocess poll")
-
+        # Fire push event when subprocess exits so EventDrivenOrchestrator wakes immediately
+        if status != TrialStatus.RUNNING and self._api_state is not None:
+            self._api_state.trial_push_event.set()
         return status
 
 
