@@ -419,8 +419,12 @@ in ``--no-opt`` mode via ``GET /api/v1/events``.""",
         "category": "Concept",
         "content": """\
 Robust optimization finds designs that perform well across a SET of conditions,
-not just one. foamBO uses **CVaR** (Conditional Value at Risk) as the risk
-measure for both single- and multi-objective problems.
+not just one. foamBO selects the risk measure automatically based on the problem:
+
+- **Single-objective**: CVaR (Conditional Value at Risk)
+- **Multi-objective**: MARS (MVaR Approximation via Random Scalarizations, Daulton 2022)
+
+The ``risk_measure`` setting can override this: ``"auto"`` (default), ``"cvar"``, or ``"mars"``.
 
 **The problem with standard BO:**
 Standard Bayesian Optimization finds the best design for a single operating
@@ -432,9 +436,11 @@ Some parameters represent environmental conditions the design must tolerate but
 cannot control (temperature, load, speed). These are *context parameters*.
 Design parameters (geometry, material) are what the optimizer controls.
 
+**YAML configuration:**
 ```yaml
 robust_optimization:
   context_groups: [operating_point]   # group name(s) to treat as context
+  risk_measure: auto                  # auto, cvar, or mars
   robustness: 0.5                     # 0=risk-neutral, 1=most robust
   context_points:                     # explicit, or omit for Sobol auto-generation
     - {temperature: 300, load: 50}
@@ -442,10 +448,32 @@ robust_optimization:
     - {temperature: 350, load: 65}
 ```
 
-If ``context_points`` is omitted, foamBO generates them via Sobol sampling from
-the parameter bounds (controlled by ``context_samples``).
+**Fluent API:**
+```python
+from foambo import FoamBO
 
-**How CVaR works:**
+client = (
+    FoamBO("MyOptimization")
+    .parameter("x1", bounds=[0.0, 1.0], group="design")
+    .parameter("temp", bounds=[300, 500], group="operating")
+    .minimize("loss", fn=my_function)
+    .robust(
+        context_groups=["operating"],
+        risk_measure="auto",        # MARS for MOO, CVaR for SOO
+        robustness=0.7,             # focus on worst 30% of contexts
+        context_points=[...],       # or omit for Sobol auto-generation
+        context_samples=10,         # number of Sobol samples if auto
+        context_constraints=["temp >= 350"],  # filter context space
+    )
+    .run()
+)
+```
+
+If ``context_points`` is omitted, foamBO generates them via Sobol sampling from
+the parameter bounds (controlled by ``context_samples``). Context constraints
+filter out infeasible context combinations.
+
+**CVaR (single-objective):**
 
 CVaR averages the worst alpha-fraction of outcomes across context points.
 The ``robustness`` parameter controls how much of the tail to focus on:
@@ -453,13 +481,27 @@ The ``robustness`` parameter controls how much of the tail to focus on:
 (most robust, focuses on worst 5%), ``robustness=0`` → alpha=1.0 (risk-neutral,
 averages all outcomes).
 
-**Multi-objective: ParEGO-style CVaR:**
+**MARS (multi-objective, default):**
 
-For multi-objective problems, foamBO uses ParEGO-style Chebyshev scalarization
-before CVaR. Each optimization step draws random Chebyshev weights from a
-Dirichlet distribution, scalarizes the objectives, then applies CVaR on the
-scalar. Different weights each iteration explore different trade-offs on the
-robust Pareto front.
+MARS provides a proper joint risk guarantee for multi-objective problems via
+MVaR (Multivariate Value at Risk). The key insight (Theorem 5.1, Daulton 2022):
+there is a bijection between MVaR points and VaR of Chebyshev scalarizations
+with different weight vectors. MARS exploits this by:
+
+1. Sampling random Chebyshev weights from the simplex (uniform)
+2. Applying VaR to the Chebyshev-scalarized objectives
+3. Using the result as a single-output acquisition objective (qLogEI)
+
+Each iteration uses different weights, exploring different trade-offs on the
+robust Pareto front. Unlike per-objective CVaR (which ignores correlations),
+MARS captures the joint distribution of objectives under context uncertainty.
+
+**ParEGO-style CVaR (legacy MOO path):**
+
+When ``risk_measure="cvar"`` is explicitly set for MOO, foamBO uses
+ParEGO-style Chebyshev scalarization before CVaR. This is simpler but lacks
+the theoretical guarantees of MARS — it optimizes a risk measure on a
+scalarized proxy, not the true multivariate risk.
 
 **How it works mechanically:**
 
@@ -467,13 +509,14 @@ robust Pareto front.
 2. At acquisition time, ``SubstituteContextFeatures`` replaces context dims with
    ALL context points. A candidate ``[x1, x2, w1, w2]`` with 3 context points
    becomes 3 evaluations with different context values.
-3. **CVaR** sorts predictions across context points and averages the worst
-   alpha-fraction. For MOO, Chebyshev scalarization is applied first.
+3. The risk measure aggregates predictions across context points:
+   - **CVaR**: sorts and averages the worst alpha-fraction
+   - **MARS**: normalizes objectives using the Pareto front bounds, applies
+     Chebyshev scalarization with random weights, then takes VaR
 4. ``fixed_features`` prevents optimizing context dims — the optimizer searches
    only over design parameters
-5. For MOO: the acquisition function uses qLogEI (ParEGO-style). Random
-   Chebyshev weights change each iteration to explore different regions of the
-   robust Pareto front.
+5. For MOO: the acquisition function uses qLogEI. Random Chebyshev weights
+   change each iteration to explore different regions of the robust Pareto front.
 
 **Concrete example (single-objective, CVaR):**
 3 design params, 2 context params, 5 context points.
@@ -490,13 +533,15 @@ sorted = [0.61, 0.71, 0.78, 0.82, 0.85], worst 80% = [0.61, 0.71, 0.78, 0.82]
 CVaR = 0.73. The harsh condition drags the score down — optimizer steers toward
 designs that don't collapse under stress.
 
-**Concrete example (multi-objective, ParEGO CVaR):**
-Same setup but 3 objectives (efficiency↑, pressure↑, torque↓). Random
-Chebyshev weights are drawn, e.g. ``w = [0.4, 0.35, 0.25]``, objectives are
-normalized to [0,1], and augmented Chebyshev scalarization is applied per
-context point. CVaR then averages the worst-alpha fraction of the scalarized
-values. Next iteration, different weights emphasize different trade-offs.
-Over many iterations, the robust Pareto front emerges.
+**Concrete example (multi-objective, MARS):**
+Same setup but 2 objectives: efficiency↑, cost↓. MARS draws random weights
+(e.g. ``w = [0.6, 0.4]``), normalizes objectives to [0,1] using the current
+Pareto front bounds, then computes the augmented Chebyshev scalarization at
+each context point. VaR at alpha=0.3 takes the 30th percentile of the
+scalarized values (the threshold below which only 30% of contexts fall).
+The optimizer maximizes this — finding designs whose worst-case Chebyshev
+trade-off is as good as possible. Next iteration, different weights
+(e.g. ``w = [0.3, 0.7]``) explore a different region of the robust Pareto front.
 
 **Trial execution:**
 Each trial runs ONE simulation. Context points are assigned round-robin during
@@ -506,6 +551,11 @@ BO. During initialization (Sobol), both design and context are sampled freely.
 Robust designs sacrifice peak performance at any single condition for consistent
 performance across all conditions. A non-robust design might score 0.95 at one
 condition but 0.40 at another. A robust design might score 0.80 everywhere.
+
+**When to use which risk measure:**
+- **SOO → CVaR** (automatic): well-understood, differentiable, one objective
+- **MOO → MARS** (automatic): proper joint risk guarantee, theoretically sound
+- **MOO + CVaR** (manual override): simpler, if MARS causes issues
 
 **Constraints under robust optimization:**
 - Geometry-only constraints work normally (handled by Ax)

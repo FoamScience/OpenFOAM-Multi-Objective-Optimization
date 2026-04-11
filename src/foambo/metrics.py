@@ -740,8 +740,15 @@ class FoamJobRunner(IRunner):
         trial_progression_step[trial_index] = {}
         case_data = self.preprocessor.setup(parameterization, self.cfg)
         case_path = str(case_data['case'].path)
-        # Resolve trial dependencies before dispatching
-        dep_meta = self._resolve_dependencies(trial_index, case_path, dict(parameterization))
+        # Detect caseless mode early (before dependency resolution which writes to disk)
+        all_metrics_are_fns = all(m in _fn_registry for m in self._metric_names) if self._metric_names else False
+        has_runner = self.cfg['template_case'].get('runner') not in (None, "", "null", "None")
+        is_caseless = all_metrics_are_fns and not has_runner
+        # Resolve trial dependencies before dispatching (skip for caseless — no real case dir)
+        if not is_caseless:
+            dep_meta = self._resolve_dependencies(trial_index, case_path, dict(parameterization))
+        else:
+            dep_meta = {}
         # Extract hook env vars (always present, may be no-ops)
         hook_env = dep_meta.pop("_hook_env", {})
         # Inject API endpoint for event-driven mode
@@ -753,9 +760,7 @@ class FoamJobRunner(IRunner):
             hook_env["FOAMBO_TRIAL_INDEX"] = str(trial_index)
             hook_env["FOAMBO_SESSION_ID"] = getattr(self._api_state, '_session_id', '')
         # If all metrics are Python callables and no runner is set, skip subprocess dispatch
-        all_metrics_are_fns = all(m in _fn_registry for m in self._metric_names) if self._metric_names else False
-        has_runner = self.cfg['template_case'].get('runner') not in (None, "", "null", "None")
-        if all_metrics_are_fns and not has_runner:
+        if is_caseless:
             log.info(f"Trial {trial_index}: caseless mode (Python callables)")
             meta = {"job_id": -1, "job": {"case_path": case_path}, "case_path": case_path,
                     "parameters": dict(parameterization), "dispatch_time": time.time()}
