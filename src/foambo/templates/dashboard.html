@@ -229,15 +229,17 @@
 
   <!-- OBJECTIVES -->
   <div class="page" :hidden="tab !== 'objectives'">
-    <div class="panel-grid">
-      <!-- Best value cards -->
+    <!-- Best value cards: single flex row, fits all objectives regardless of count -->
+    <div class="obj-stat-row">
       <template x-for="o in state.experiment?.objectives||[]" :key="'s'+o.name">
-        <div class="stat-card panel-4">
+        <div class="stat-card">
           <div class="value" x-text="bv(o.name)"></div>
           <div class="label" x-text="o.name"></div>
           <div class="label" x-text="(o.minimize?'minimize':'maximize')+' — T'+bt(o.name)"></div>
         </div>
       </template>
+    </div>
+    <div class="panel-grid">
       <!-- Per-objective charts -->
       <template x-for="o in state.experiment?.objectives||[]" :key="'co'+o.name">
         <div class="chart-card panel-6"><h6 x-text="o.name+' ('+(o.minimize?'min':'max')+')'"></h6><div :id="'co-'+o.name" style="height:220px"></div></div>

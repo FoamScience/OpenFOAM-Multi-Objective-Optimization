@@ -924,30 +924,28 @@ def _get_generation() -> dict:
         node_counts: Dict[str, int] = {}
         node_targets: Dict[str, int | None] = {}
 
-        # Initialize all strategy nodes with 0 counts and extract targets
+        # First pass: initialize strategy nodes with 0 counts. Target computation
+        # is deferred to a second pass so we can subtract external trials
+        # (baseline, seeded) from `use_all_trials_in_exp` MinTrials budgets.
         max_trials = _state.orch_cfg.max_trials if _state.orch_cfg else 0
-        allocated = 0
+        node_raw_tc: Dict[str, Any] = {}
         for node in gs._nodes:
             node_counts[node.name] = 0
-            target = None
+            node_targets[node.name] = None
+            node_raw_tc[node.name] = None
             for tc in node.transition_criteria:
-                # MinTrials has .threshold (int)
                 if hasattr(tc, "threshold") and isinstance(getattr(tc, "threshold", None), (int, float)):
-                    target = int(tc.threshold)
+                    node_raw_tc[node.name] = ("min_trials", tc)
                     break
-                # AutoTransitionAfterGen = 1 trial (e.g. CenterOfSearchSpace)
                 if tc.criterion_class == "AutoTransitionAfterGen":
-                    target = 1
+                    node_raw_tc[node.name] = ("auto", tc)
                     break
-            if target is not None:
-                allocated += target
-            node_targets[node.name] = target
-        # Last node (usually MBM) gets remaining budget
-        last_node = gs._nodes[-1].name if gs._nodes else None
-        if last_node and node_targets.get(last_node) is None and max_trials > 0:
-            node_targets[last_node] = max_trials - allocated
 
-        # Count by inspecting each trial's generator_run node name
+        # Count by inspecting each trial's generator_run node name.
+        # External counts (baseline, seeded, or any trial whose origin node is
+        # not in the current strategy) are tracked separately because they DO
+        # count toward downstream MinTrials(use_all_trials_in_exp=True) budgets.
+        external_total = 0
         for trial in list(exp.trials.values()):
             node_name = None
             gr = getattr(trial, "generator_run", None) or (
@@ -963,11 +961,53 @@ def _get_generation() -> dict:
                 node_counts.setdefault("baseline", 0)
                 node_counts["baseline"] += 1
                 node_targets.setdefault("baseline", 1)
+                external_total += 1
             elif node_name:
                 # Node from a different strategy (e.g. baseline ManualGenerationNode)
                 node_counts.setdefault(node_name, 0)
                 node_counts[node_name] += 1
                 node_targets.setdefault(node_name, 1)
+                external_total += 1
+
+        # Second pass: compute per-node targets.
+        # For MinTrials with `use_all_trials_in_exp=True`, the threshold is
+        # measured against the whole experiment, so a node's *own* budget is
+        # threshold minus whatever was already committed before it (external
+        # + upstream strategy nodes). For node-local MinTrials, the threshold
+        # is the budget as-is.
+        running = external_total
+        allocated = 0
+        for node in gs._nodes:
+            kind_tc = node_raw_tc.get(node.name)
+            target: int | None
+            if kind_tc is None:
+                target = None
+            else:
+                kind, tc = kind_tc
+                if kind == "auto":
+                    target = 1
+                else:
+                    thresh = int(tc.threshold)
+                    if getattr(tc, "use_all_trials_in_exp", False):
+                        target = max(0, thresh - running)
+                    else:
+                        target = thresh
+            node_targets[node.name] = target
+            if target is not None:
+                running += target
+                allocated += target
+        # Last node (usually MBM) gets remaining budget from max_trials.
+        last_node = gs._nodes[-1].name if gs._nodes else None
+        if last_node and node_targets.get(last_node) is None and max_trials > 0:
+            node_targets[last_node] = max_trials - allocated - external_total
+
+        # Reorder: put "baseline" first if present so the dashboard shows it
+        # at the start of the generation strategy pane.
+        if "baseline" in node_counts:
+            node_counts = {"baseline": node_counts["baseline"],
+                           **{k: v for k, v in node_counts.items() if k != "baseline"}}
+            node_targets = {"baseline": node_targets.get("baseline"),
+                            **{k: v for k, v in node_targets.items() if k != "baseline"}}
 
         has_model = False
         model_type = None

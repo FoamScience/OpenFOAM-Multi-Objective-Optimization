@@ -97,6 +97,22 @@ tr.trial-detail td { background:rgba(0,212,170,0.03);border-top:none }
   .panel-6, .panel-4, .panel-3, .panel-8 { grid-column: span 12; }
 }
 
+/* Objectives tab: single flex row for per-objective stat cards.
+   Fits N objectives on one row regardless of count. */
+.obj-stat-row {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.obj-stat-row > .stat-card {
+  flex: 1 1 0;
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  .obj-stat-row { flex-wrap: wrap; }
+  .obj-stat-row > .stat-card { flex: 1 1 45%; }
+}
+
 /* Stat grid */
 .stat-grid {
   display: grid;
