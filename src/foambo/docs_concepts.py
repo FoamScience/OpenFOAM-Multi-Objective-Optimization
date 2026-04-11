@@ -299,7 +299,80 @@ The generation strategy controls how new trial parameterizations are chosen.
 - Supports ``exclude_transforms`` (e.g. skip ``BilogY`` for non-negative objectives)
 - Full control over Sobol seeds, transition thresholds, and model configuration
 
+**Seeding from prior data (``SeedDataNode``):**
+- Add a node with a ``file_path`` key to seed the experiment with completed
+  trials from a CSV or a foamBO JSON state file before BO starts
+- Supports ``filter`` (per-parameter value+tolerance, directions: both/left/right)
+  and ``drop_params`` (strip params not present in the target search space)
+- Enables robust→non-robust workflows: run a robust MARS study, then continue
+  with a non-robust focused run seeded on the Pareto-filtered robust data
+- See concept: ``SeedDataNode``
+
 The Overview tab shows per-node trial counts and the currently active node.""",
+    },
+
+    "concept.seed_data_node": {
+        "category": "Concept",
+        "content": """\
+``SeedDataNode`` is a generation node that loads pre-existing trial data into
+the experiment before optimization starts. It replaces the old ``existing_trials``
+top-level section (removed in v1.3).
+
+**Why a node, not a top-level section?**
+- Composable in ``trial_generation.generation_nodes`` — visible in the strategy printout
+- Follows the same ``next_node`` transition chain as other nodes
+- Supports filtering and parameter dropping for cross-experiment workflows
+  (e.g. robust study → non-robust focused study on the Pareto front)
+
+**Sources:**
+- **CSV** — same format as the legacy ``existing_trials`` loader: columns for
+  parameters and metrics, scalar metrics or ``(mean, sem)`` tuples. Rows with
+  identical parameter values are grouped as progressions of one trial.
+- **foamBO JSON state** — a full saved Client state, loaded via ``FoamBO.load``.
+  Completed trials are iterated, filtered, and re-attached to the current client.
+
+**Configuration keys:**
+- ``file_path`` (required): path to the CSV or JSON file
+- ``next_node`` (required): generation node to transition to after seeding
+- ``filter`` (optional): per-parameter filter dict. Scalar form is exact match;
+  dict form ``{value, tolerance, direction}`` supports ``both`` (default),
+  ``left``, and ``right`` one-sided ranges around the anchor value.
+- ``drop_params`` (optional): list of parameter names to remove from imported
+  data. The target experiment MUST NOT contain these parameters in its search
+  space — otherwise ``attach_trial`` will reject the row as missing a required
+  parameter.
+
+**Runtime flow:**
+1. During strategy setup, foamBO scans the strategy for ``SeedDataNode`` instances
+   and pre-loads their data into the client (attaches completed trials).
+2. When the scheduler reaches the node, ``gen()`` emits an empty ``GeneratorRun``
+   and ``AutoTransitionAfterGen`` immediately advances to ``next_node``.
+
+**Budget caveat:**
+Seeded trials are real Ax trials and count toward experiment-wide ``MaxTrials``
+/ ``MinTrials`` transition criteria on downstream nodes. Reduce downstream node
+budgets accordingly when seeding. There is no per-origin trial accounting today.
+
+**Example — robust to non-robust handoff:**
+
+```yaml
+trial_generation:
+  method: custom
+  generation_nodes:
+    - file_path: "./artifacts/robust_study.json"
+      drop_params: ["c"]           # c was a context dim in the robust run
+      filter:
+        c: {value: 350, tolerance: 5, direction: both}
+      next_node: mbm
+    - node_name: mbm
+      generator_specs:
+        - generator_enum: BOTORCH_MODULAR
+      transition_criteria: []
+```
+
+The non-robust experiment here has a smaller search space (no ``c``), and only
+trials from the robust run with ``T`` near 350 K are re-attached before BO
+resumes on the reduced space.""",
     },
 
     "concept.warm_starting_moo": {

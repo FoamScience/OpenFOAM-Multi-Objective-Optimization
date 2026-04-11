@@ -344,6 +344,25 @@ def get_config_docs() -> Dict[str, Any]:
             Each node is either a:
             - {get_ax_path("GenerationNode", "ax/generation_strategy/generation_node.py", [85, 119])}
             - {get_ax_path("CenterGenerationNode", "ax/generation_strategy/center_generation_node.py", [26, 27])}
+            - ``SeedDataNode`` (foamBO-specific): seeds the experiment with
+              pre-existing trials from a CSV or a saved foamBO JSON state.
+              Detected by the presence of a ``file_path`` key on the node dict.
+
+            Example seeding from a prior foamBO JSON run, then continuing with BO:
+            ```yaml
+            trial_generation:
+                method: custom
+                generation_nodes:
+                    -   file_path: ./artifacts/prior_run.json
+                        drop_params: [c]            # c not in current search space
+                        filter:
+                            T: {{value: 350, tolerance: 5, direction: both}}
+                        next_node: mbm
+                    -   node_name: mbm
+                        generator_specs:
+                            -   generator_enum: BOTORCH_MODULAR
+                        transition_criteria: []
+            ```
 
             Transition options are listed in
             {get_ax_path("transition_criterion.py", "ax/generation_strategy/transition_criterion.py", [117, 844])}
