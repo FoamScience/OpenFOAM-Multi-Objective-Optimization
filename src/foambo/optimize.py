@@ -98,9 +98,9 @@ def optimize(cfg, debug=False):
     _ax_encoder._object_to_json = _patched_object_to_json
     from .analysis import compute_analysis_cards, plot_pareto_frontier
     from .orchestrate import (
-        ExistingTrialsOptions, ExperimentOptions, OptimizationOptions,
+        ExperimentOptions, OptimizationOptions,
         ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
-        FoamBOConfig, TrialDependency, EventDrivenOrchestrator,
+        FoamBOConfig, TrialDependency, EventDrivenOrchestrator, SeedDataNode,
     )
     from ax.api.client import MultiObjective, Orchestrator, db_settings_from_storage_config
     import pandas as pd
@@ -207,7 +207,7 @@ def optimize(cfg, debug=False):
         for o in _obj.objectives:
             direction = "minimize" if o.minimize else "maximize"
             obj_lines.append(f"  {o.metric.name} ({direction})")
-        log.info("Objectives (multi):\n%s", ", ".join(obj_lines))
+        log.info("Objectives (multi): %s", ", ".join(obj_lines))
     else:
         direction = "minimize" if _obj.minimize else "maximize"
         log.info("Objective: %s (%s)", _obj.metric.name, direction)
@@ -286,8 +286,13 @@ def optimize(cfg, debug=False):
             log.warning(f"Early stopping strategy references metric(s) {no_stream} that have no "
                         f"'progress' command configured. Early stopping will not trigger for these.")
 
-    data_attacher = ExistingTrialsOptions.model_validate(dict(raw_cfg["existing_trials"]))
-    data_attacher.load_data(client)
+    # Pre-load seed data: any SeedDataNode in the generation strategy attaches
+    # its declared data to the client here. The node itself then emits an empty
+    # GeneratorRun and AutoTransitionAfterGen advances to `next_node`.
+    if client._generation_strategy is not None:
+        for _node in client._generation_strategy._nodes:
+            if isinstance(_node, SeedDataNode):
+                _node.load_into(client)
 
     _dim_reduction_done = False
     _dim_reduction_attempts = 0

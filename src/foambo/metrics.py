@@ -783,7 +783,7 @@ class FoamJobRunner(IRunner):
             def _signal_exit(p, ev, tidx):
                 p.wait()
                 ev.set()
-                log.info("Subprocess %d exited — push event fired for trial %d", p.pid, tidx)
+                log.debug("Subprocess %d exited — push event fired for trial %d", p.pid, tidx)
             threading.Thread(target=_signal_exit, args=(proc, push_ev, trial_index),
                              daemon=True).start()
         if dep_meta:
@@ -842,7 +842,7 @@ class FoamJobRunner(IRunner):
             push_ev = getattr(self, '_push_event', None)
             if push_ev is not None:
                 push_ev.set()
-                log.info("Trial %d status → %s — push event fired", trial_index, status.name)
+                log.debug("Trial %d status → %s — push event fired", trial_index, status.name)
         # Log status transitions to event log
         api_state = getattr(self, '_api_state', None)
         if api_state is not None:

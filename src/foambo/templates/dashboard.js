@@ -353,7 +353,7 @@ function app(){return{
     });
   },
   gcfg(){const g={};for(const f of this.cs){const s=f.path.split('.')[0];if(!g[s])g[s]=[];g[s].push(f)}
-    const order=['experiment','optimization','trial_generation','orchestration_settings','store','baseline','trial_dependencies','existing_trials'];
+    const order=['experiment','optimization','trial_generation','orchestration_settings','store','baseline','trial_dependencies'];
     const sorted={};for(const k of order){if(g[k])sorted[k]=g[k]}for(const k in g){if(!sorted[k])sorted[k]=g[k]}return sorted},
   isComplex(v){return v!==null&&typeof v==='object'},
   _rv(v,mutable,indent){

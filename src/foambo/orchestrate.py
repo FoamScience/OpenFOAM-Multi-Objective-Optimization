@@ -102,11 +102,12 @@ class RobustOptimizationConfig(FoamBOBaseModel):
     """
     context_groups: List[str] = Field(
         description="Parameter group names treated as context (environmental) variables")
-    risk_measure: str = Field(default="cvar", description=(
+    risk_measure: str = Field(default="auto", description=(
         "Risk measure for robust acquisition. "
-        "'cvar' (default, Conditional Value at Risk — avg of worst alpha fraction). "
-        "For multi-objective: ParEGO-style Chebyshev scalarization is applied "
-        "before CVaR automatically."
+        "'auto' (default) selects MARS for multi-objective, CVaR for single-objective. "
+        "'cvar': Conditional Value at Risk — avg of worst alpha fraction. "
+        "'mars': MVaR Approximation via Random Scalarizations — proper joint risk "
+        "guarantee for multi-objective via VaR of Chebyshev scalarizations (Daulton 2022)."
     ))
     robustness: float = Field(default=0.5, ge=0.0, le=1.0, description=(
         "Robustness level on a 0-1 scale. "
@@ -139,7 +140,7 @@ class RobustOptimizationConfig(FoamBOBaseModel):
             return self.context_samples
         return len(self.context_points)
 
-    _VALID_RISK_MEASURES = {"auto", "cvar"}
+    _VALID_RISK_MEASURES = {"auto", "cvar", "mars"}
 
     @model_validator(mode="after")
     def _validate(self):
@@ -394,7 +395,7 @@ class EventDrivenOrchestrator(Orchestrator):
                     idle_callback(self)
                 except Exception:
                     pass
-            get_logger(__name__).info("Entering event wait (timeout=%.0fs, pending=%d)", seconds, len(self.pending_trials))
+            get_logger(__name__).debug("Entering event wait (timeout=%.0fs, pending=%d)", seconds, len(self.pending_trials))
             self._push_event.clear()
             triggered = self._push_event.wait(timeout=seconds)
             if triggered:
@@ -403,7 +404,7 @@ class EventDrivenOrchestrator(Orchestrator):
             else:
                 prev = seconds
                 seconds = min(seconds * self.options.seconds_between_polls_backoff_factor, 120)
-                get_logger(__name__).info("Poll loop timeout (%.0fs) — next in %.0fs", prev, seconds)
+                get_logger(__name__).debug("Poll loop timeout (%.0fs) — next in %.0fs", prev, seconds)
 
         if idle_callback is not None:
             idle_callback(self)
@@ -697,6 +698,205 @@ class ManualGenerationNode(GenerationNode):
         )
 
 
+class SeedDataNodeConfig(FoamBOBaseModel):
+    """Config for a SeedDataNode: loads trial data from CSV or foamBO JSON state."""
+    file_path: str = Field(description=(
+        "Path to a CSV or foamBO JSON state file. "
+        "CSV columns are parameters + metrics (scalar or `(mean, sem)`). "
+        "JSON is a foamBO-saved Ax Client state (loaded via ``FoamBO.load``)."
+    ))
+    filter: Dict[str, Any] | None = Field(default=None, description=(
+        "Optional per-parameter filter. Short form (scalar) = exact match. "
+        "Long form: ``{value, tolerance, direction}`` where direction is "
+        "``both`` (default), ``left`` or ``right``."
+    ))
+    drop_params: List[str] | None = Field(default=None, description=(
+        "Parameter names to drop from imported data. The target experiment "
+        "must NOT contain these parameters in its search space."
+    ))
+    next_node: str = Field(description="Name of the next generation node to transition to after seeding")
+
+    def to_generation_node(self) -> GenerationNode:
+        return SeedDataNode(
+            file_path=self.file_path,
+            filter=self.filter,
+            drop_params=self.drop_params,
+            next_node=self.next_node,
+        )
+
+
+class SeedDataNode(GenerationNode):
+    """Generation node that seeds the experiment with pre-existing trial data.
+
+    Data is attached to the Client during strategy setup (via ``load_into``).
+    The node's ``gen()`` emits an empty GeneratorRun and immediately transitions
+    to ``next_node`` via ``AutoTransitionAfterGen``.
+    """
+    def __init__(self, file_path: str, filter=None, drop_params=None, next_node=None):
+        if not next_node:
+            raise ValueError("SeedDataNode requires `next_node`")
+        super().__init__(
+            name="seed_data",
+            generator_specs=[],
+            transition_criteria=[AutoTransitionAfterGen(transition_to=next_node)],
+        )
+        self._file_path = file_path
+        self._filter = dict(filter) if filter else {}
+        self._drop_params = list(drop_params or [])
+        self._next_node = next_node
+        self._loaded = False
+
+    def gen(self, *, experiment, pending_observations, skip_fit=False, data=None, **gs_gen_kwargs):
+        return GeneratorRun(
+            arms=[],
+            optimization_config=experiment.optimization_config,
+            search_space=experiment.search_space,
+        )
+
+    def load_into(self, client: Client):
+        """Attach seed trial data to ``client``. Idempotent."""
+        if self._loaded:
+            return
+        from pathlib import Path
+        path = Path(self._file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"SeedDataNode: {self._file_path} not found")
+        if path.suffix.lower() == ".json":
+            self._load_foambo_json(client, path)
+        else:
+            self._load_csv(client, path)
+        self._loaded = True
+
+    def _load_csv(self, client: Client, path):
+        import pandas as pd
+        df = pd.read_csv(path, header=0)
+        df = self._filter_rows_df(df)
+        if self._drop_params:
+            df = df.drop(columns=self._drop_params, errors="ignore")
+        metrics = list(client._experiment.metrics.keys())
+        params = [p for p in client._experiment.parameters.keys() if p not in self._drop_params]
+        missing_metrics = [c for c in metrics if c not in df.columns]
+        missing_params = [c for c in params if c not in df.columns]
+        if missing_params or missing_metrics:
+            raise ValueError(
+                f"SeedDataNode: missing columns in {path} — "
+                f"parameters: {missing_params}, metrics: {missing_metrics}"
+            )
+        if df.empty:
+            raise ValueError(f"SeedDataNode: no rows survive filter in {path}")
+        n_trials = client._experiment.fetch_data().df.shape[0]
+        new_trial_idx = n_trials - 1
+        grouped = df.groupby(params) if params else [(None, df)]
+        for _, group_df in grouped:
+            new_trial_idx += 1
+            progressions = group_df.shape[0]
+            idx_in_grp = -1
+            for _, row in group_df.iterrows():
+                idx_in_grp += 1
+                row_params = row[params].to_dict()
+                row_metrics = {k: parse_outcome_for_metric(v, k) for k, v in row[metrics].to_dict().items()}
+                if idx_in_grp == 0:
+                    client.attach_trial(parameters=row_params, arm_name=f"{new_trial_idx}_seed")
+                if idx_in_grp == progressions - 1:
+                    client.complete_trial(trial_index=new_trial_idx, raw_data=row_metrics, progression=idx_in_grp)
+                    continue
+                client.attach_data(trial_index=new_trial_idx, raw_data=row_metrics, progression=idx_in_grp)
+        log.info(f"SeedDataNode loaded {new_trial_idx - n_trials + 1} trials from CSV {path}")
+
+    def _load_foambo_json(self, client: Client, path):
+        from .api import FoamBO
+        saved_name = get_experiment_name()
+        try:
+            result = FoamBO.load(name=path.stem, artifacts=str(path.parent), backend="json")
+            src_client = result.client
+        finally:
+            set_experiment_name(saved_name)
+        src_exp = src_client._experiment
+        tgt_params = [p for p in client._experiment.parameters.keys() if p not in self._drop_params]
+        metrics = list(client._experiment.metrics.keys())
+        n_trials = client._experiment.fetch_data().df.shape[0]
+        new_trial_idx = n_trials - 1
+        attached = 0
+        for trial in src_exp.trials.values():
+            if not trial.status.is_completed:
+                continue
+            arm = trial.arm
+            if arm is None:
+                continue
+            full_params = dict(arm.parameters)
+            if not self._row_passes_filter(full_params):
+                continue
+            row_params = {k: v for k, v in full_params.items() if k not in self._drop_params}
+            missing = [p for p in tgt_params if p not in row_params]
+            if missing:
+                raise ValueError(
+                    f"SeedDataNode: JSON trial {trial.index} missing target params {missing}"
+                )
+            try:
+                data_df = trial.fetch_data().df
+            except Exception as e:
+                log.warning(f"SeedDataNode: skipping trial {trial.index}, fetch_data failed: {e}")
+                continue
+            row_metrics: Dict[str, Any] = {}
+            for m in metrics:
+                m_rows = data_df[data_df["metric_name"] == m]
+                if m_rows.empty:
+                    continue
+                last = m_rows.iloc[-1]
+                sem = float(last["sem"]) if "sem" in last and last["sem"] == last["sem"] else 0.0
+                row_metrics[m] = (float(last["mean"]), sem)
+            if not row_metrics:
+                continue
+            new_trial_idx += 1
+            client.attach_trial(parameters=row_params, arm_name=f"{new_trial_idx}_seed")
+            client.complete_trial(trial_index=new_trial_idx, raw_data=row_metrics)
+            attached += 1
+        if attached == 0:
+            raise ValueError(f"SeedDataNode: no trials survived filter in {path}")
+        log.info(f"SeedDataNode loaded {attached} trials from foamBO JSON {path}")
+
+    def _filter_rows_df(self, df):
+        if not self._filter:
+            return df
+        import pandas as pd
+        mask = pd.Series([True] * len(df), index=df.index)
+        for key, spec in self._filter.items():
+            val, tol, direction = self._parse_filter_spec(spec)
+            col = df[key].astype(float)
+            if direction == "both":
+                mask &= (col >= val - tol) & (col <= val + tol)
+            elif direction == "left":
+                mask &= (col >= val - tol) & (col <= val)
+            elif direction == "right":
+                mask &= (col >= val) & (col <= val + tol)
+            else:
+                raise ValueError(f"SeedDataNode: unknown filter direction {direction}")
+        return df[mask]
+
+    def _row_passes_filter(self, params: dict) -> bool:
+        if not self._filter:
+            return True
+        for key, spec in self._filter.items():
+            if key not in params:
+                return False
+            val, tol, direction = self._parse_filter_spec(spec)
+            v = float(params[key])
+            if direction == "both" and not (val - tol <= v <= val + tol):
+                return False
+            if direction == "left" and not (val - tol <= v <= val):
+                return False
+            if direction == "right" and not (val <= v <= val + tol):
+                return False
+        return True
+
+    @staticmethod
+    def _parse_filter_spec(spec):
+        if isinstance(spec, dict | DictConfig):
+            s = dict(spec)
+            return float(s["value"]), float(s.get("tolerance", 0.0)), s.get("direction", "both")
+        return float(spec), 0.0, "both"
+
+
 class TrialGenerationOptions(FoamBOBaseModel):
     """Controls over trial generation methods."""
     method: Literal["fast", "random_search", "custom"] = Field(description=(
@@ -724,7 +924,9 @@ class TrialGenerationOptions(FoamBOBaseModel):
         for item in v:
             if isinstance(item, dict | DictConfig):
                 item = dict(item)
-                if "next_node_name" in item:
+                if "file_path" in item:
+                    nodes.append(SeedDataNodeConfig.model_validate(item).to_generation_node())
+                elif "next_node_name" in item:
                     nodes.append(CenterGenerationNode(**item))
                 elif "next_node" in item:
                     nodes.append(CenterGenerationNodeConfig.model_validate(item).to_generation_node())
@@ -998,61 +1200,6 @@ class StoreOptions(FoamBOBaseModel):
         return state.get("foambo_config")
 
 
-class ExistingTrialsOptions(FoamBOBaseModel):
-    """Load pre-existing trial data from a CSV file."""
-    file_path: str = Field(description=(
-        "Path to a CSV with columns for parameters and metrics. "
-        "Metrics can be scalars or `(mean, sem)` pairs. "
-        "Rows with the same parameter set are treated as progressions of the same trial."
-    ), examples=[""])
-    def load_data(self, client: Client):
-        """
-        Expected format of CSV filename (column order is flexible):
-        obj1,obj2,param1,param2,param3
-        mean,mean,p11,p12,p13
-        "(mean,sem)","(mean,sem)",p21,p22,p23
-        run_metadata columns, eg case_path can be specified
-        """
-        import pandas as pd
-        if (not self.file_path) or (self.file_path == "none"):
-            return
-        n_trials = client._experiment.fetch_data().df.shape[0]
-        df = pd.read_csv(self.file_path, header=0)
-        metrics = client._experiment.metrics.keys()
-        params = client._experiment.parameters.keys()
-        missing_metrics = [col for col in metrics if col not in df.columns]
-        missing_params = [col for col in params if col not in df.columns]
-
-        if missing_params or missing_metrics:
-            raise ValueError(
-                f"Missing columns while loaded existing trial data from {self.file_path}"
-                f" — Parameters: {missing_params}, Metrics: {missing_metrics}\n"
-            )
-
-        grouped_by_params = df.groupby(list(params))
-        new_trial_idx = n_trials-1
-        for _, group_df in grouped_by_params:
-            new_trial_idx += 1
-            progressions = group_df.shape[0]
-            idx_in_grp = -1
-            for idx, row in group_df.iterrows():
-                idx_in_grp += 1
-                row_params = row[params].to_dict()
-                row_metrics = {k: parse_outcome_for_metric(v, k) for k, v in row[metrics].to_dict().items()}
-                if idx_in_grp == 0:
-                    trial_index = client.attach_trial(parameters=row_params, arm_name=f"{new_trial_idx}_supplied")
-                if idx_in_grp == progressions-1:
-                    client.complete_trial(trial_index=new_trial_idx,
-                                          raw_data=row_metrics,
-                                          progression=idx_in_grp)
-                    continue
-                client.attach_data(trial_index=new_trial_idx,
-                                      raw_data=row_metrics,
-                                      progression=idx_in_grp)
-        if not client._experiment.fetch_data().df.empty:
-            log.info(f"Loaded existing trial data:\n{client._experiment.fetch_data().df.to_string(index=False)}")
-
-
 class TrialSelector(FoamBOBaseModel):
     """How to pick the source trial for a dependency."""
     strategy: Literal["best", "nearest", "latest", "baseline", "by_index", "matching_group", "custom"] = Field(
@@ -1181,7 +1328,6 @@ class FoamBOConfig(FoamBOBaseModel):
 
     experiment: ExperimentOptions = Field(description="Experiment name, parameters, and search space")
     trial_generation: TrialGenerationOptions = Field(description="How to generate new parameterizations")
-    existing_trials: ExistingTrialsOptions = Field(description="Pre-existing trial data to load from CSV")
     baseline: BaselineOptions = Field(description="Baseline parameter set for comparison")
     optimization: OptimizationOptions = Field(description="Objectives, metrics, constraints, and case runner")
     orchestration_settings: ConfigOrchestratorOptions = Field(description="Timeouts, polling, stopping strategies")

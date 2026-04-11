@@ -94,7 +94,6 @@ class FoamBO:
         self._file_subst: list[dict] = []
         self._baseline: dict | None = None
         self._trial_gen: dict = {"method": "fast"}
-        self._existing_trials: str = ""
         self._dependencies: list[dict] = []
         self._transforms: list[str] | None = None
         self._exclude_transforms: list[str] | None = None
@@ -526,6 +525,30 @@ class FoamBO:
         self._trial_gen = {"method": method, **kwargs}
         return self
 
+    def generation_strategy(self, nodes: list[dict]) -> FoamBO:
+        """Use a custom generation strategy composed of explicit nodes.
+
+        Overrides any prior ``.generation()`` call. Each entry in ``nodes``
+        is a dict matching the YAML schema for ``trial_generation.generation_nodes``.
+
+        Supported node kinds (dispatched by key):
+
+        - ``file_path`` → ``SeedDataNode`` (seeds from CSV or foamBO JSON state)
+        - ``next_node`` → ``CenterGenerationNode``
+        - otherwise → regular ``GenerationNodeConfig``
+
+        Example::
+
+            foambo.generation_strategy(nodes=[
+                {"file_path": "./artifacts/robust.json",
+                 "drop_params": ["c"], "next_node": "mbm"},
+                {"node_name": "mbm",
+                 "generator_specs": [{"generator_enum": "BOTORCH_MODULAR"}]},
+            ])
+        """
+        self._trial_gen = {"method": "custom", "generation_nodes": list(nodes)}
+        return self
+
     @staticmethod
     def cross_validate(client) -> list[dict]:
         """Run leave-one-out cross-validation on the fitted surrogate model.
@@ -766,7 +789,6 @@ class FoamBO:
                 "parameter_constraints": self._param_constraints,
             },
             "trial_generation": self._trial_gen,
-            "existing_trials": {"file_path": self._existing_trials},
             "baseline": {"parameters": self._baseline},
             "optimization": {
                 "metrics": self._metrics,

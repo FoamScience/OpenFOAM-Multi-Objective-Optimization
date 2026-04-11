@@ -92,12 +92,11 @@ def harvest_defaults(models_with_paths: list[tuple[type, str]]) -> Dict[str, Any
 def _get_root_models():
     from .orchestrate import (
         ConfigOrchestratorOptions, ExperimentOptions, TrialGenerationOptions,
-        OptimizationOptions, BaselineOptions, StoreOptions, ExistingTrialsOptions,
+        OptimizationOptions, BaselineOptions, StoreOptions,
     )
     return [
         (ExperimentOptions,          "experiment"),
         (TrialGenerationOptions,     "trial_generation"),
-        (ExistingTrialsOptions,      "existing_trials"),
         (BaselineOptions,            "baseline"),
         (OptimizationOptions,        "optimization"),
         (ConfigOrchestratorOptions,  "orchestration_settings"),
@@ -109,8 +108,9 @@ def _get_doc_models():
     from .orchestrate import (
         ConfigOrchestratorOptions, ExperimentOptions, TrialGenerationOptions,
         ModelSpecConfig, GenerationNodeConfig, CenterGenerationNodeConfig,
+        SeedDataNodeConfig,
         OptimizationOptions, FoamJobRunnerOptions, VariableSubstOptions,
-        FileSubstOptions, BaselineOptions, StoreOptions, ExistingTrialsOptions,
+        FileSubstOptions, BaselineOptions, StoreOptions,
         TrialSelector, TrialAction, TrialDependency,
         DimensionalityReductionOptions,
     )
@@ -121,7 +121,7 @@ def _get_doc_models():
         (ModelSpecConfig,            "trial_generation.generation_nodes[].generator_specs[]"),
         (GenerationNodeConfig,       "trial_generation.generation_nodes[]"),
         (CenterGenerationNodeConfig, "trial_generation.generation_nodes[] (center)"),
-        (ExistingTrialsOptions,      "existing_trials"),
+        (SeedDataNodeConfig,         "trial_generation.generation_nodes[] (seed_data)"),
         (BaselineOptions,            "baseline"),
         (OptimizationOptions,        "optimization"),
         (LocalJobMetric,             "optimization.metrics[]"),

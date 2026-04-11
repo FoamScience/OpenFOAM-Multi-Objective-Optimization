@@ -32,7 +32,6 @@ function configBuilder() {
           { id: 'advanced.robust', label: 'Robust Optimization' },
           { id: 'advanced.dimred', label: 'Dimensionality Reduction' },
           { id: 'advanced.deps', label: 'Trial Dependencies' },
-          { id: 'advanced.existing', label: 'Existing Trials' },
         ]
       },
     ],
@@ -50,9 +49,6 @@ function configBuilder() {
         initialization_budget: null,
         initialize_with_center: true,
         generation_nodes: [],
-      },
-      existing_trials: {
-        file_path: '',
       },
       baseline: {
         parameters: {},
@@ -312,11 +308,6 @@ function configBuilder() {
       if (!cfg.trial_generation.initialize_with_center) tg.initialize_with_center = false;
       out.trial_generation = tg;
 
-      // Existing trials
-      if (cfg.existing_trials.file_path) {
-        out.existing_trials = { file_path: cfg.existing_trials.file_path };
-      }
-
       // Baseline
       const blKeys = Object.keys(cfg.baseline.parameters).filter(k => cfg.baseline.parameters[k] !== '' && cfg.baseline.parameters[k] != null);
       if (blKeys.length) {
@@ -460,7 +451,7 @@ function configBuilder() {
         case 'optimization': return !!this.config.optimization.objective;
         case 'orchestration': return this.config.orchestration_settings.max_trials !== 50;
         case 'store': return this.config.store.save_to !== 'json' || this.config.store.read_from !== 'nowhere';
-        case 'advanced': return this.robustEnabled || this.config.trial_dependencies?.length > 0 || !!this.config.existing_trials.file_path;
+        case 'advanced': return this.robustEnabled || this.config.trial_dependencies?.length > 0;
         default: return false;
       }
     },
@@ -636,11 +627,6 @@ function configBuilder() {
             return { type: key, value: typeof tc[key] === 'number' ? tc[key] : 0 };
           }),
         }));
-      }
-
-      // Existing trials
-      if (data.existing_trials) {
-        this.config.existing_trials.file_path = data.existing_trials.file_path || '';
       }
 
       // Baseline
