@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>foamBO Config Builder</title>
+<link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2/css/pico.min.css">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/config_builder.css">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+<div x-data="configBuilder()" x-init="init()">
+
+  <!-- Header -->
+  <header class="app-header">
+    <h1>foamBO <small style="font-weight:300;color:var(--pico-secondary)">Config Builder</small></h1>
+    <div class="header-actions">
+      <button class="btn" @click="showConcepts = true; loadDocs()">Concepts</button>
+      <label class="btn" style="cursor:pointer">
+        Load YAML
+        <input type="file" accept=".yaml,.yml" @change="loadYaml($event)" hidden>
+      </label>
+      <button class="btn btn-accent" @click="exportYaml()">Export YAML</button>
+    </div>
+  </header>
+
+  <!-- Main layout: sidebar + form + preview -->
+  <div class="builder-layout">
+
+    <!-- Sidebar -->
+    <nav class="builder-sidebar">
+      <template x-for="s in sections" :key="s.id">
+        <div>
+          <button
+            :class="{ active: activeSection === s.id, 'has-data': sectionHasData(s.id) }"
+            @click="setSection(s.id)"
+            x-text="s.label">
+          </button>
+          <!-- Advanced sub-items -->
+          <template x-if="s.children">
+            <div class="sidebar-children" x-show="activeSection === s.id || activeSection?.startsWith?.(s.id + '.')">
+              <template x-for="c in s.children" :key="c.id">
+                <button
+                  class="child"
+                  :class="{ active: activeSection === c.id }"
+                  @click="setSection(c.id)"
+                  x-text="c.label">
+                </button>
+              </template>
+            </div>
+          </template>
+        </div>
+      </template>
+    </nav>
+
+    <!-- Form area -->
+    <main class="builder-form">
+      <!-- Section: Experiment -->
+      <section x-show="activeSection === 'experiment'">
+        <h5>Experiment</h5>
+        <div class="form-group">
+          <label data-hint="experiment.name">Name <span class="required">*</span></label>
+          <input type="text" x-model="config.experiment.name" placeholder="e.g. Cavity" required>
+        </div>
+        <div class="form-group">
+          <label data-hint="experiment.description">Description</label>
+          <textarea x-model="config.experiment.description" rows="2" placeholder="Optional description"></textarea>
+        </div>
+
+        <!-- Parameters -->
+        <div class="form-group">
+          <div class="section-header">
+            <label data-hint="experiment.parameters">Parameters</label>
+            <button class="btn" @click="addParameter()">+ Add</button>
+          </div>
+          <template x-for="(p, idx) in config.experiment.parameters" :key="idx">
+            <article class="param-card">
+              <div class="param-card-header">
+                <span class="param-name" x-text="p.name || '(unnamed)'"></span>
+                <button class="btn btn-danger btn-sm" @click="removeParameter(idx)">&times;</button>
+              </div>
+              <div class="param-grid">
+                <div class="form-group">
+                  <label>Name</label>
+                  <input type="text" x-model="p.name" placeholder="paramName">
+                </div>
+                <div class="form-group">
+                  <label>Kind</label>
+                  <select x-model="p.kind">
+                    <option value="range">Range</option>
+                    <option value="choice">Choice</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Data type</label>
+                  <select x-model="p.parameter_type">
+                    <option value="float">float</option>
+                    <option value="int">int</option>
+                    <option value="str" x-show="p.kind === 'choice'">str</option>
+                  </select>
+                </div>
+              </div>
+              <!-- Range: bounds + scaling -->
+              <div class="param-grid" x-show="p.kind === 'range'">
+                <div class="form-group">
+                  <label>Lower bound</label>
+                  <input type="number" x-model.number="p.bounds_lower" step="any">
+                </div>
+                <div class="form-group">
+                  <label>Upper bound</label>
+                  <input type="number" x-model.number="p.bounds_upper" step="any">
+                </div>
+                <div class="form-group">
+                  <label>Scaling</label>
+                  <select x-model="p.scaling">
+                    <option value="">linear</option>
+                    <option value="log">log</option>
+                  </select>
+                </div>
+                <div class="form-group" x-show="p.parameter_type === 'int'">
+                  <label>Step size</label>
+                  <input type="number" x-model.number="p.step_size" step="1" min="1">
+                </div>
+              </div>
+              <!-- Choice: values list -->
+              <div class="form-group" x-show="p.kind === 'choice'">
+                <label>Values (comma-separated)</label>
+                <input type="text" :value="(p.values||[]).join(', ')" @change="p.values = $event.target.value.split(',').map(s=>s.trim()).filter(Boolean)">
+              </div>
+              <!-- Groups (optional, for robust opt / matching_group) -->
+              <div class="form-group">
+                <label data-hint="experiment.parameters.groups">Groups (comma-separated, optional)</label>
+                <input type="text" :value="(p.groups||[]).join(', ')" @change="p.groups = $event.target.value.split(',').map(s=>s.trim()).filter(Boolean)" placeholder="e.g. context, mesh">
+              </div>
+            </article>
+          </template>
+        </div>
+
+        <!-- Parameter constraints -->
+        <div class="form-group">
+          <label data-hint="experiment.parameter_constraints">Parameter Constraints</label>
+          <div class="tag-input">
+            <template x-for="(c, ci) in config.experiment.parameter_constraints" :key="ci">
+              <span class="tag">
+                <span x-text="c"></span>
+                <button @click="config.experiment.parameter_constraints.splice(ci, 1)">&times;</button>
+              </span>
+            </template>
+            <input type="text" placeholder="e.g. x1 <= 2*x2 (Enter to add)" @keydown.enter.prevent="addConstraint($event)">
+          </div>
+        </div>
+      </section>
+
+      <!-- Section: Trial Generation -->
+      <section x-show="activeSection === 'trial_generation'">
+        <h5>Trial Generation</h5>
+        <div class="form-group">
+          <label data-hint="trial_generation.method">Method</label>
+          <select x-model="config.trial_generation.method">
+            <option value="fast">fast</option>
+            <option value="random_search">random_search</option>
+            <option value="custom">custom</option>
+          </select>
+        </div>
+        <div class="form-group" x-show="config.trial_generation.method !== 'custom'">
+          <label data-hint="trial_generation.initialization_budget">Initialization Budget</label>
+          <input type="number" x-model.number="config.trial_generation.initialization_budget" min="0">
+        </div>
+        <div class="form-group">
+          <label class="toggle-label">
+            <input type="checkbox" x-model="config.trial_generation.initialize_with_center" role="switch">
+            Initialize with center point
+          </label>
+        </div>
+
+        <!-- Custom generation nodes -->
+        <div x-show="config.trial_generation.method === 'custom'">
+          <div class="section-header" style="margin-top:1rem">
+            <label>Generation Nodes</label>
+            <button class="btn" @click="addGenNode()">+ Add Node</button>
+          </div>
+          <template x-for="(node, ni) in config.trial_generation.generation_nodes" :key="ni">
+            <article class="param-card">
+              <div class="param-card-header">
+                <span class="param-name" x-text="node.node_name || '(unnamed node)'"></span>
+                <button class="btn btn-danger btn-sm" @click="config.trial_generation.generation_nodes.splice(ni, 1)">&times;</button>
+              </div>
+              <div class="form-group">
+                <label>Node name</label>
+                <input type="text" x-model="node.node_name" placeholder="e.g. Sobol, BO">
+              </div>
+
+              <!-- Generator specs -->
+              <div class="section-header">
+                <label>Generators</label>
+                <button class="btn" @click="addGenSpec(node)">+ Add</button>
+              </div>
+              <template x-for="(spec, si) in node.generator_specs" :key="si">
+                <div class="param-card" style="margin:0.3rem 0;padding:0.5rem">
+                  <div class="param-grid">
+                    <div class="form-group">
+                      <label>Algorithm</label>
+                      <select x-model="spec.generator_enum">
+                        <option value="SOBOL">SOBOL</option>
+                        <option value="BOTORCH_MODULAR">BOTORCH_MODULAR</option>
+                        <option value="SAASBO">SAASBO</option>
+                        <option value="SAAS_MTGP">SAAS_MTGP</option>
+                        <option value="THOMPSON">THOMPSON</option>
+                        <option value="LEGACY_BOTORCH">LEGACY_BOTORCH</option>
+                        <option value="EMPIRICAL_BAYES_THOMPSON">EB_THOMPSON</option>
+                        <option value="EB_ASHR">EB_ASHR</option>
+                        <option value="UNIFORM">UNIFORM</option>
+                        <option value="FACTORIAL">FACTORIAL</option>
+                        <option value="ST_MTGP">ST_MTGP</option>
+                        <option value="BO_MIXED">BO_MIXED</option>
+                        <option value="CONTEXT_SACBO">CONTEXT_SACBO</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <button class="btn btn-danger btn-sm" @click="node.generator_specs.splice(si, 1)" style="margin-top:1.2rem">&times;</button>
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label>Model kwargs (JSON, optional)</label>
+                    <input type="text" :value="spec.model_kwargs ? JSON.stringify(spec.model_kwargs) : ''" @change="spec.model_kwargs = tryParseJson($event.target.value, null) || null" placeholder='e.g. {"seed": 42}'>
+                  </div>
+                </div>
+              </template>
+
+              <!-- Transition criteria -->
+              <div class="section-header" style="margin-top:0.5rem">
+                <label>Transition Criteria</label>
+                <button class="btn" @click="addTransition(node)">+ Add</button>
+              </div>
+              <template x-for="(tc, ti) in node.transition_criteria" :key="ti">
+                <div class="kv-row">
+                  <select x-model="tc.type" class="kv-key">
+                    <option value="max_trials">max_trials</option>
+                    <option value="min_trials">min_trials</option>
+                    <option value="auto_transition_after_gen">auto_transition_after_gen</option>
+                  </select>
+                  <input type="number" x-model.number="tc.value" class="kv-val" placeholder="value" x-show="tc.type !== 'auto_transition_after_gen'" min="1">
+                  <button class="btn btn-danger btn-sm" @click="node.transition_criteria.splice(ti, 1)">&times;</button>
+                </div>
+              </template>
+            </article>
+          </template>
+        </div>
+      </section>
+
+      <!-- Section: Baseline -->
+      <section x-show="activeSection === 'baseline'">
+        <h5 data-hint="baseline.parameters">Baseline</h5>
+        <p class="hint">Set baseline values for each parameter. Keys auto-populated from experiment parameters.</p>
+        <template x-for="p in config.experiment.parameters" :key="'bl-'+p.name">
+          <div class="form-group baseline-row" x-show="p.name">
+            <label x-text="p.name"></label>
+            <input
+              :type="p.parameter_type === 'str' ? 'text' : 'number'"
+              :step="p.parameter_type === 'float' ? 'any' : '1'"
+              x-model="config.baseline.parameters[p.name]"
+              :placeholder="'baseline for ' + p.name">
+          </div>
+        </template>
+      </section>
+
+      <!-- Section: Optimization -->
+      <section x-show="activeSection === 'optimization'">
+        <h5>Optimization</h5>
+        <div class="form-group">
+          <label data-hint="optimization.objective">Objective expression</label>
+          <input type="text" x-model="config.optimization.objective" placeholder="e.g. -F1, F2">
+          <small class="hint">Prefix with - to minimize. Comma-separate for multi-objective.</small>
+        </div>
+
+        <!-- Outcome constraints -->
+        <div class="form-group">
+          <label data-hint="optimization.outcome_constraints">Outcome Constraints</label>
+          <div class="tag-input">
+            <template x-for="(oc, oci) in config.optimization.outcome_constraints" :key="oci">
+              <span class="tag">
+                <span x-text="oc"></span>
+                <button @click="config.optimization.outcome_constraints.splice(oci, 1)">&times;</button>
+              </span>
+            </template>
+            <input type="text" placeholder="e.g. metric >= 1.1*baseline (Enter)" @keydown.enter.prevent="addOutcomeConstraint($event)">
+          </div>
+        </div>
+
+        <!-- Objective thresholds -->
+        <div class="form-group">
+          <label data-hint="optimization.objective_thresholds">Objective Thresholds (MOO)</label>
+          <div class="tag-input">
+            <template x-for="(ot, oti) in config.optimization.objective_thresholds" :key="oti">
+              <span class="tag">
+                <span x-text="ot"></span>
+                <button @click="config.optimization.objective_thresholds.splice(oti, 1)">&times;</button>
+              </span>
+            </template>
+            <input type="text" placeholder="e.g. metric >= 5.0 (Enter)" @keydown.enter.prevent="addObjThreshold($event)">
+          </div>
+        </div>
+
+        <!-- Metrics -->
+        <div class="form-group">
+          <div class="section-header">
+            <label data-hint="optimization.metrics">Metrics</label>
+            <button class="btn" @click="addMetric()">+ Add</button>
+          </div>
+          <template x-for="(m, mi) in config.optimization.metrics" :key="mi">
+            <article class="param-card">
+              <div class="param-card-header">
+                <span class="param-name" x-text="m.name || '(unnamed)'"></span>
+                <button class="btn btn-danger btn-sm" @click="config.optimization.metrics.splice(mi, 1)">&times;</button>
+              </div>
+              <div class="param-grid">
+                <div class="form-group">
+                  <label>Name</label>
+                  <input type="text" x-model="m.name">
+                </div>
+                <div class="form-group">
+                  <label class="toggle-label">
+                    <input type="checkbox" x-model="m.lower_is_better" role="switch">
+                    Lower is better
+                  </label>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Command (JSON array)</label>
+                <input type="text" :value="JSON.stringify(m.command)" @change="m.command = tryParseJson($event.target.value, m.command)">
+              </div>
+              <div class="form-group">
+                <label>Progress command (JSON array, empty for none)</label>
+                <input type="text" :value="JSON.stringify(m.progress)" @change="m.progress = tryParseJson($event.target.value, m.progress)">
+              </div>
+            </article>
+          </template>
+        </div>
+
+        <!-- Case Runner -->
+        <h6 class="subsection-title" data-hint="optimization.case_runner">Case Runner</h6>
+        <div class="param-grid">
+          <div class="form-group">
+            <label data-hint="optimization.case_runner.template_case">Template case</label>
+            <input type="text" x-model="config.optimization.case_runner.template_case" placeholder="./cavity">
+          </div>
+          <div class="form-group">
+            <label data-hint="optimization.case_runner.mode">Mode</label>
+            <select x-model="config.optimization.case_runner.mode">
+              <option value="local">local</option>
+              <option value="remote">remote</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label data-hint="optimization.case_runner.runner">Runner command</label>
+          <input type="text" x-model="config.optimization.case_runner.runner" placeholder="./Allrun">
+        </div>
+        <div class="param-grid">
+          <div class="form-group">
+            <label>Trial destination</label>
+            <input type="text" x-model="config.optimization.case_runner.trial_destination" placeholder="/tmp/data/trials">
+          </div>
+          <div class="form-group">
+            <label>Artifacts folder</label>
+            <input type="text" x-model="config.optimization.case_runner.artifacts_folder" placeholder="./artifacts">
+          </div>
+        </div>
+        <!-- Remote-only fields -->
+        <template x-if="config.optimization.case_runner.mode === 'remote'">
+          <div>
+            <div class="form-group">
+              <label>Remote status query</label>
+              <input type="text" x-model="config.optimization.case_runner.remote_status_query">
+            </div>
+            <div class="form-group">
+              <label>Remote early stop command</label>
+              <input type="text" x-model="config.optimization.case_runner.remote_early_stop">
+            </div>
+          </div>
+        </template>
+
+        <!-- Variable substitution -->
+        <div class="form-group">
+          <div class="section-header">
+            <label>Variable Substitution</label>
+            <button class="btn" @click="addVarSubst()">+ Add</button>
+          </div>
+          <template x-for="(vs, vsi) in config.optimization.case_runner.variable_substitution" :key="vsi">
+            <article class="param-card">
+              <div class="param-card-header">
+                <span class="param-name" x-text="vs.file || '(no file)'"></span>
+                <button class="btn btn-danger btn-sm" @click="config.optimization.case_runner.variable_substitution.splice(vsi, 1)">&times;</button>
+              </div>
+              <div class="form-group">
+                <label>File</label>
+                <input type="text" x-model="vs.file" placeholder="/0.orig/U">
+              </div>
+              <div class="form-group">
+                <label>Parameter scopes</label>
+                <template x-for="(val, key) in vs.parameter_scopes" :key="'ps-'+vsi+'-'+key">
+                  <div class="kv-row">
+                    <input type="text" :value="key" disabled class="kv-key">
+                    <input type="text" :value="val" @change="vs.parameter_scopes[key] = $event.target.value" class="kv-val" placeholder="foam.path">
+                    <button class="btn btn-danger btn-sm" @click="delete vs.parameter_scopes[key]">&times;</button>
+                  </div>
+                </template>
+                <div class="kv-row" x-data="{ newKey: '', newVal: '' }">
+                  <select x-model="newKey" class="kv-key">
+                    <option value="">-- parameter --</option>
+                    <template x-for="p in config.experiment.parameters.filter(p => p.name && !(p.name in vs.parameter_scopes))" :key="'opt-'+p.name">
+                      <option :value="p.name" x-text="p.name"></option>
+                    </template>
+                  </select>
+                  <input type="text" x-model="newVal" class="kv-val" placeholder="foam.path"
+                    @keydown.enter.prevent="if(newKey){ vs.parameter_scopes[newKey] = newVal; newKey=''; newVal=''; }">
+                  <button class="btn btn-sm" @click="if(newKey){ vs.parameter_scopes[newKey] = newVal; newKey=''; newVal=''; }">+</button>
+                </div>
+              </div>
+            </article>
+          </template>
+        </div>
+
+        <!-- File substitution -->
+        <div class="form-group">
+          <div class="section-header">
+            <label>File Substitution</label>
+            <button class="btn" @click="addFileSubst()">+ Add</button>
+          </div>
+          <template x-for="(fs, fsi) in config.optimization.case_runner.file_substitution" :key="fsi">
+            <div class="kv-row">
+              <select x-model="fs.parameter" class="kv-key">
+                <option value="">-- parameter --</option>
+                <template x-for="p in config.experiment.parameters.filter(p => p.name)" :key="'fs-'+p.name">
+                  <option :value="p.name" x-text="p.name"></option>
+                </template>
+              </select>
+              <input type="text" x-model="fs.file_path" placeholder="file path" class="kv-val">
+              <button class="btn btn-danger btn-sm" @click="config.optimization.case_runner.file_substitution.splice(fsi, 1)">&times;</button>
+            </div>
+          </template>
+        </div>
+      </section>
+
+      <!-- Section: Orchestration -->
+      <section x-show="activeSection === 'orchestration'">
+        <h5>Orchestration Settings</h5>
+        <div class="param-grid">
+          <div class="form-group">
+            <label data-hint="orchestration_settings.max_trials">Max trials <span class="required">*</span></label>
+            <input type="number" x-model.number="config.orchestration_settings.max_trials" min="1">
+          </div>
+          <div class="form-group">
+            <label data-hint="orchestration_settings.parallelism">Parallelism</label>
+            <input type="number" x-model.number="config.orchestration_settings.parallelism" min="1">
+          </div>
+          <div class="form-group">
+            <label>Timeout (hours)</label>
+            <input type="number" x-model.number="config.orchestration_settings.timeout_hours" min="0" step="any">
+          </div>
+          <div class="form-group">
+            <label>TTL per trial (sec)</label>
+            <input type="number" x-model.number="config.orchestration_settings.ttl_seconds_for_trials" min="0">
+          </div>
+        </div>
+        <div class="param-grid">
+          <div class="form-group">
+            <label data-hint="orchestration_settings.tolerated_trial_failure_rate">Failure tolerance (0-1)</label>
+            <input type="range" x-model.number="config.orchestration_settings.tolerated_trial_failure_rate" min="0" max="1" step="0.05">
+            <small x-text="config.orchestration_settings.tolerated_trial_failure_rate"></small>
+          </div>
+          <div class="form-group">
+            <label>Initial poll interval (sec)</label>
+            <input type="number" x-model.number="config.orchestration_settings.initial_seconds_between_polls" min="1">
+          </div>
+          <div class="form-group">
+            <label>Poll backoff factor</label>
+            <input type="number" x-model.number="config.orchestration_settings.seconds_between_polls_backoff_factor" min="1" step="0.1">
+          </div>
+        </div>
+
+        <!-- Global stopping -->
+        <h6 class="subsection-title" data-hint="orchestration_settings.global_stopping_strategy">Global Stopping Strategy</h6>
+        <div class="param-grid">
+          <div class="form-group">
+            <label>Min trials</label>
+            <input type="number" x-model.number="config.orchestration_settings.global_stopping_strategy.min_trials" min="0">
+          </div>
+          <div class="form-group">
+            <label>Window size</label>
+            <input type="number" x-model.number="config.orchestration_settings.global_stopping_strategy.window_size" min="1">
+          </div>
+          <div class="form-group">
+            <label>Improvement bar</label>
+            <input type="number" x-model.number="config.orchestration_settings.global_stopping_strategy.improvement_bar" step="0.01" min="0">
+          </div>
+        </div>
+
+        <!-- Early stopping strategy (recursive tree) -->
+        <h6 class="subsection-title" data-hint="orchestration_settings.early_stopping_strategy">Early Stopping Strategy</h6>
+        <div x-html="renderEsNode(config.orchestration_settings.early_stopping_strategy, 'config.orchestration_settings.early_stopping_strategy')"></div>
+      </section>
+
+      <!-- Section: Store -->
+      <section x-show="activeSection === 'store'">
+        <h5 data-hint="store.backend_options">Store</h5>
+        <div class="param-grid">
+          <div class="form-group">
+            <label>Save to</label>
+            <select x-model="config.store.save_to">
+              <option value="json">json</option>
+              <option value="sql">sql</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Read from</label>
+            <select x-model="config.store.read_from">
+              <option value="json">json</option>
+              <option value="sql">sql</option>
+              <option value="nowhere">nowhere</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group" x-show="config.store.save_to === 'sql' || config.store.read_from === 'sql'">
+          <label>SQL URL</label>
+          <input type="text" x-model="config.store.backend_options.url" placeholder="sqlite:///experiment.db">
+        </div>
+      </section>
+
+      <!-- Section: Advanced - Robust Optimization -->
+      <section x-show="activeSection === 'advanced.robust'">
+        <h5>Robust Optimization</h5>
+        <div class="form-group">
+          <label class="toggle-label">
+            <input type="checkbox" x-model="robustEnabled" role="switch">
+            Enable robust optimization
+          </label>
+        </div>
+        <template x-if="robustEnabled">
+          <div>
+            <div class="param-grid">
+              <div class="form-group">
+                <label>Risk measure</label>
+                <select x-model="config.robust_optimization.risk_measure">
+                  <option value="CVaR">CVaR</option>
+                  <option value="MARS">MARS</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Robustness</label>
+                <input type="number" x-model.number="config.robust_optimization.robustness" step="0.01">
+              </div>
+              <div class="form-group">
+                <label>Context points</label>
+                <input type="number" x-model.number="config.robust_optimization.context_points" min="1">
+              </div>
+            </div>
+          </div>
+        </template>
+      </section>
+
+      <!-- Section: Advanced - Dimensionality Reduction -->
+      <section x-show="activeSection === 'advanced.dimred'">
+        <h5 data-hint="orchestration_settings.dimensionality_reduction">Dimensionality Reduction</h5>
+        <p class="hint">Automatically fix low-importance parameters based on Sobol sensitivity analysis, shrinking the search space after enough trials are run.</p>
+        <div class="form-group">
+          <label class="toggle-label">
+            <input type="checkbox" x-model="config.orchestration_settings.dimensionality_reduction.enabled" role="switch">
+            Enable dimensionality reduction
+          </label>
+        </div>
+        <div x-show="config.orchestration_settings.dimensionality_reduction.enabled">
+          <div class="param-grid">
+            <div class="form-group">
+              <label data-hint="orchestration_settings.dimensionality_reduction.after_trials">After trials</label>
+              <input type="number" min="1" x-model.number="config.orchestration_settings.dimensionality_reduction.after_trials">
+            </div>
+            <div class="form-group">
+              <label data-hint="orchestration_settings.dimensionality_reduction.min_importance">Min importance</label>
+              <input type="number" min="0" max="1" step="0.01" x-model.number="config.orchestration_settings.dimensionality_reduction.min_importance">
+            </div>
+          </div>
+          <div class="param-grid">
+            <div class="form-group">
+              <label data-hint="orchestration_settings.dimensionality_reduction.fix_at">Fix at</label>
+              <select x-model="config.orchestration_settings.dimensionality_reduction.fix_at">
+                <option value="best">best</option>
+                <option value="center">center</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label data-hint="orchestration_settings.dimensionality_reduction.max_fix_fraction">Max fix fraction</label>
+              <input type="number" min="0" max="1" step="0.05" x-model.number="config.orchestration_settings.dimensionality_reduction.max_fix_fraction">
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section: Advanced - Trial Dependencies -->
+      <section x-show="activeSection === 'advanced.deps'">
+        <h5 data-hint="trial_dependencies[]">Trial Dependencies</h5>
+        <div class="section-header">
+          <p class="hint">Define trial-to-trial dependencies (warm start, mesh inheritance, etc.)</p>
+          <button class="btn" @click="addTrialDep()">+ Add Dependency</button>
+        </div>
+        <template x-for="(dep, di) in config.trial_dependencies" :key="di">
+          <article class="param-card">
+            <div class="param-card-header">
+              <span class="param-name" x-text="dep.name || '(unnamed)'"></span>
+              <div style="display:flex;gap:0.3rem;align-items:center">
+                <label class="toggle-label" style="font-size:0.7rem">
+                  <input type="checkbox" x-model="dep.enabled" role="switch"> On
+                </label>
+                <button class="btn btn-danger btn-sm" @click="config.trial_dependencies.splice(di, 1)">&times;</button>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Name</label>
+              <input type="text" x-model="dep.name" placeholder="e.g. warm_start">
+            </div>
+
+            <!-- Source selector -->
+            <h6 class="subsection-title" style="margin-top:0.5rem">Source Trial</h6>
+            <div class="param-grid">
+              <div class="form-group">
+                <label>Strategy</label>
+                <select x-model="dep.source.strategy">
+                  <option value="best">best</option>
+                  <option value="nearest">nearest</option>
+                  <option value="latest">latest</option>
+                  <option value="baseline">baseline</option>
+                  <option value="by_index">by_index</option>
+                  <option value="matching_group">matching_group</option>
+                  <option value="custom">custom</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Fallback</label>
+                <select x-model="dep.source.fallback">
+                  <option value="skip">skip</option>
+                  <option value="error">error</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group" x-show="dep.source.strategy === 'by_index'">
+              <label>Trial index</label>
+              <input type="number" x-model.number="dep.source.index" min="0">
+            </div>
+            <div class="form-group" x-show="dep.source.strategy === 'matching_group'">
+              <label>Group name</label>
+              <input type="text" x-model="dep.source.group" placeholder="e.g. context">
+            </div>
+            <div class="form-group" x-show="dep.source.strategy === 'nearest'">
+              <label>Similarity threshold (optional, 0-1)</label>
+              <input type="number" x-model.number="dep.source.similarity_threshold" min="0" max="2" step="0.1">
+            </div>
+            <div class="form-group" x-show="dep.source.strategy === 'custom'">
+              <label>Command</label>
+              <input type="text" x-model="dep.source.command" placeholder="script that prints trial index">
+            </div>
+
+            <!-- Actions -->
+            <div class="section-header" style="margin-top:0.5rem">
+              <h6 class="subsection-title" style="margin:0">Actions</h6>
+              <button class="btn" @click="addTrialAction(dep)">+ Add</button>
+            </div>
+            <template x-for="(act, ai) in dep.actions" :key="ai">
+              <div class="param-card" style="margin:0.3rem 0;padding:0.5rem">
+                <div class="param-grid">
+                  <div class="form-group">
+                    <label>Phase</label>
+                    <select x-model="act.phase">
+                      <option value="immediate">immediate</option>
+                      <option value="pre_init">pre_init</option>
+                      <option value="pre_mesh">pre_mesh</option>
+                      <option value="pre_solve">pre_solve</option>
+                      <option value="post_solve">post_solve</option>
+                    </select>
+                  </div>
+                  <div class="form-group" style="flex:0 0 auto">
+                    <button class="btn btn-danger btn-sm" @click="dep.actions.splice(ai, 1)" style="margin-top:1.2rem">&times;</button>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label>Command</label>
+                  <input type="text" x-model="act.command" placeholder="e.g. cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0">
+                </div>
+              </div>
+            </template>
+          </article>
+        </template>
+      </section>
+
+      <!-- Section: Advanced - Existing Trials -->
+      <section x-show="activeSection === 'advanced.existing'">
+        <h5>Existing Trials</h5>
+        <div class="form-group">
+          <label>CSV file path (leave empty for none)</label>
+          <input type="text" x-model="config.existing_trials.file_path" placeholder="path/to/trials.csv">
+        </div>
+      </section>
+    </main>
+
+    <!-- YAML Preview -->
+    <aside class="builder-preview">
+      <div class="preview-header">
+        <h6>YAML Preview</h6>
+        <button class="btn btn-sm" @click="copyYaml()" x-text="copied ? 'Copied!' : 'Copy'"></button>
+      </div>
+      <pre class="yaml-output"><code x-text="yamlOutput"></code></pre>
+    </aside>
+
+  </div>
+
+  <!-- Footer action bar -->
+  <footer class="action-bar">
+    <div class="action-bar-left">
+      <span class="validation-msg" x-show="validationErrors.length" x-text="validationErrors.length + ' issue(s)'"></span>
+      <template x-for="(e, ei) in validationErrors" :key="ei">
+        <span class="validation-error" x-text="e"></span>
+      </template>
+    </div>
+    <div class="action-bar-right">
+      <button class="btn" @click="runPreflight()" :disabled="preflightRunning">
+        <span x-text="preflightRunning ? 'Running...' : 'Preflight Check'"></span>
+      </button>
+      <button class="btn" @click="runDryRun()" :disabled="dryRunRunning">
+        <span x-text="dryRunRunning ? 'Running...' : 'Dry Run (1 trial)'"></span>
+      </button>
+      <button class="btn btn-accent" @click="exportYaml()">Export YAML</button>
+    </div>
+  </footer>
+
+  <!-- Preflight results modal -->
+  <div class="modal-overlay" x-show="preflightResults" @click.self="preflightResults = null">
+    <div class="modal-content">
+      <h5>Preflight Results</h5>
+      <template x-for="(r, ri) in preflightResults?.checks || []" :key="ri">
+        <div class="preflight-check" :class="'check-' + r.status">
+          <span class="check-icon" x-text="r.status === 'PASS' ? '\u2713' : r.status === 'WARN' ? '\u26A0' : '\u2717'"></span>
+          <span x-text="r.name"></span>
+          <small x-text="r.detail" style="color:var(--pico-muted-color)"></small>
+        </div>
+      </template>
+      <button class="btn" @click="preflightResults = null" style="margin-top:1rem">Close</button>
+    </div>
+  </div>
+
+  <!-- Floating tooltip (populated via JS on hover of [data-hint] elements) -->
+  <div id="foambo-tooltip" x-cloak></div>
+
+  <!-- Concepts modal -->
+  <div class="modal-overlay" x-show="showConcepts" @click.self="showConcepts = false" x-cloak>
+    <div class="modal-content" style="max-width:800px;max-height:85vh">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+        <h5 style="margin:0">Concepts &amp; Tutorials</h5>
+        <button class="btn btn-sm" @click="showConcepts = false">&times;</button>
+      </div>
+      <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap">
+        <button class="btn btn-sm" :class="docsFilter === 'all' && 'btn-accent'"
+          @click="docsFilter = 'all'">All</button>
+        <button class="btn btn-sm" :class="docsFilter === 'concept' && 'btn-accent'"
+          @click="docsFilter = 'concept'">Concepts</button>
+        <button class="btn btn-sm" :class="docsFilter === 'tutorial' && 'btn-accent'"
+          @click="docsFilter = 'tutorial'">Tutorials</button>
+      </div>
+      <template x-if="docsLoading">
+        <p style="color:var(--pico-muted-color);font-size:0.8rem">Loading docs...</p>
+      </template>
+      <template x-for="(entry, ei) in filteredDocs()" :key="ei">
+        <details class="docs-entry" style="margin-bottom:0.5rem">
+          <summary style="font-size:0.8rem;cursor:pointer;color:var(--accent)" x-text="entry.title"></summary>
+          <div class="docs-content" x-html="renderMd(entry.content)" style="font-size:0.78rem;padding:0.5rem 0.75rem;line-height:1.6"></div>
+        </details>
+      </template>
+      <template x-if="!docsLoading && filteredDocs().length === 0">
+        <p style="color:var(--pico-muted-color);font-size:0.8rem">No entries found.</p>
+      </template>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4/dist/js-yaml.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script src="/static/config_builder.js"></script>
+</body>
+</html>
