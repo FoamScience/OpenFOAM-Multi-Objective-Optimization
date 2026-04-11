@@ -630,6 +630,18 @@ condition but 0.40 at another. A robust design might score 0.80 everywhere.
 - **MOO → MARS** (automatic): proper joint risk guarantee, theoretically sound
 - **MOO + CVaR** (manual override): simpler, if MARS causes issues
 
+**Compatible generators (robust mode):**
+- ``BOTORCH_MODULAR`` — default, standard GP with point-estimate hyperparameters
+- ``BO_MIXED`` — mixed continuous/categorical search spaces
+- ``SAASBO`` — fully-Bayesian GP with HMC-sampled lengthscales. Useful for
+  high-dimensional robust problems (15+ design dims) where a standard GP's
+  lengthscales are unreliable. **Expect ~10-100× wall-clock cost per BO step**:
+  SAASBO runs NUTS for hyperparameter inference on every fit, and robust MARS
+  further multiplies work by ``n_w`` (perturbation scenarios).
+- ``SAAS_MTGP`` is **not** compatible: its task-feature dimension collides
+  with the context-feature indexing used by the fixed-features cycling.
+- ``SOBOL`` / ``UNIFORM`` / ``FACTORIAL`` are unaffected (no acqf step).
+
 **Constraints under robust optimization:**
 - Geometry-only constraints work normally (handled by Ax)
 - Context-only constraints filter which context points are used

@@ -335,7 +335,17 @@ def _wire_robust_optimization(client, exp_cfg, robust_cfg, log):
     patch_optimize_acqf_robust(initial_ff)
 
     # --- 5. For MOO: qLogEI + best_f injection (ParEGO scalarizes to single obj) ---
-    _BO_GENERATORS = {Generators.BOTORCH_MODULAR, Generators.BO_MIXED}
+    # SAASBO is included: same ModularBoTorchGenerator pipeline, only the surrogate
+    # differs (fully-Bayesian MCMC). Input transforms apply before the MCMC broadcast,
+    # baseline_Y caching works via the 1D train_targets path, and the qLogEI input
+    # constructor patch is keyed on the acqf class so it applies uniformly.
+    # SAAS_MTGP is deliberately excluded: its task-feature dim collides with the
+    # context-feature indexing used by fixed_features cycling.
+    _BO_GENERATORS = {
+        Generators.BOTORCH_MODULAR,
+        Generators.BO_MIXED,
+        Generators.SAASBO,
+    }
     if is_moo:
         for node in client._generation_strategy._nodes:
             for spec in node.generator_specs:
@@ -344,7 +354,7 @@ def _wire_robust_optimization(client, exp_cfg, robust_cfg, log):
                             Generators.SOBOL, Generators.UNIFORM, Generators.FACTORIAL)):
                     log.warning(
                         "Robust MOO is not compatible with generator '%s'. "
-                        "Only BOTORCH_MODULAR and BO_MIXED are supported.",
+                        "Only BOTORCH_MODULAR, BO_MIXED, and SAASBO are supported.",
                         spec.generator_enum.name)
 
         # qLogNoisyExpectedImprovement concatenates baseline+candidate then splits
