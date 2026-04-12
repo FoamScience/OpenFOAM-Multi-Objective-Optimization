@@ -60,48 +60,23 @@
         <div class="stat-card" style="margin-bottom:0.75rem"><div class="value" x-text="(state.status?.trials_total||0)+' / '+(state.experiment?.max_trials||'?')"></div><div class="label">Budget</div><div class="label" x-text="budgetPct()"></div></div>
         <div class="stat-card"><div class="value" :style="{color: state.status?.model_fitted ? '#22c55e' : 'var(--pico-muted-color)'}" x-text="state.status?.model_fitted ? 'Yes' : 'No'"></div><div class="label">Model Fitted</div></div>
       </div>
+      <div class="chart-card panel-4" x-show="state.status?.timing" style="font-size:0.75rem;line-height:1.9">
+        <h6>Execution Timing</h6>
+        <template x-if="state.status?.timing">
+          <div>
+            <div><span style="color:var(--pico-muted-color)">Total:</span> <b x-text="fmtTime(state.status.timing.total_s)"></b></div>
+            <div><span style="color:var(--pico-muted-color)">Trial execution:</span> <span style="color:#22c55e" x-text="fmtTime(state.status.timing.trial_execution_s)"></span> <span style="color:var(--pico-muted-color);font-size:0.65rem" x-text="'('+state.status.timing.trials_completed+' trials, '+Math.round(100*state.status.timing.trial_execution_s/Math.max(state.status.timing.total_s,0.1))+'%)'"></span></div>
+            <div><span style="color:var(--pico-muted-color)">Generation:</span> <span style="color:#f59e0b" x-text="fmtTime(state.status.timing.generation_s)"></span> <span style="color:var(--pico-muted-color);font-size:0.65rem" x-text="'('+Math.round(100*state.status.timing.generation_s/Math.max(state.status.timing.total_s,0.1))+'%)'"></span></div>
+            <div><span style="color:var(--pico-muted-color)">Overhead:</span> <span x-text="fmtTime(state.status.timing.overhead_s)"></span></div>
+          </div>
+        </template>
+      </div>
 
       <!-- DR + Compute Efficiency side by side -->
       <div class="chart-card panel-6" x-show="state.experiment?.dimensionality_reduction?.enabled">
         <h6>Dimensionality Reduction</h6>
         <p style="font-size:0.75rem;color:var(--pico-secondary)" x-text="'after_trials=' + (state.experiment?.dimensionality_reduction?.after_trials||'?') + '  min_importance=' + (state.experiment?.dimensionality_reduction?.min_importance||'?')"></p>
         <p style="font-size:0.8rem;color:var(--pico-muted-color)">Monitored via generation strategy</p>
-      </div>
-      <div class="chart-card panel-6" x-show="state.experiment?.robust_optimization">
-        <h6>Robust Optimization (CVaR)</h6>
-        <div style="font-size:0.75rem;line-height:1.8">
-          <div><span style="color:var(--pico-muted-color)">Context groups:</span> <span x-text="(state.experiment?.robust_optimization?.context_groups||[]).join(', ')"></span></div>
-          <div><span style="color:var(--pico-muted-color)">Robustness:</span> <span style="color:var(--accent)" x-text="state.experiment?.robust_optimization?.robustness"></span> <span style="color:var(--pico-muted-color);font-size:0.65rem" x-text="'(CVaR \u03b1=' + (state.experiment?.robust_optimization?.alpha?.toFixed(2)||'?') + ')'"></span></div>
-          <div><span style="color:var(--pico-muted-color)">Context points:</span> <span x-text="(state.experiment?.robust_optimization?.n_w||state.experiment?.robust_optimization?.context_samples||'?')"></span></div>
-          <template x-if="state.experiment?.robust_optimization?.context_param_names">
-            <div><span style="color:var(--pico-muted-color)">Context params:</span> <span style="color:#3b82f6" x-text="(state.experiment?.robust_optimization?.context_param_names||[]).join(', ')"></span></div>
-          </template>
-          <template x-if="state.experiment?.robust_optimization?.context_constraints?.length">
-            <div><span style="color:var(--pico-muted-color)">Context constraints:</span> <span style="font-size:0.7rem" x-text="(state.experiment?.robust_optimization?.context_constraints||[]).join('; ')"></span></div>
-          </template>
-        </div>
-        <template x-if="state.experiment?.robust_optimization?.context_points">
-          <div style="margin-top:0.5rem;max-height:120px;overflow-y:auto">
-            <table style="font-size:0.65rem;width:100%">
-              <thead><tr>
-                <th style="padding:0.2rem 0.4rem">#</th>
-                <template x-for="cn in (state.experiment?.robust_optimization?.context_param_names||Object.keys(state.experiment?.robust_optimization?.context_points?.[0]||{}))" :key="'rh-'+cn">
-                  <th style="padding:0.2rem 0.4rem" x-text="cn"></th>
-                </template>
-              </tr></thead>
-              <tbody>
-                <template x-for="(pt,i) in (state.experiment?.robust_optimization?.context_points||[])" :key="'rp-'+i">
-                  <tr>
-                    <td style="padding:0.2rem 0.4rem;color:var(--pico-muted-color)" x-text="i"></td>
-                    <template x-for="cn in (state.experiment?.robust_optimization?.context_param_names||Object.keys(pt))" :key="'rv-'+i+'-'+cn">
-                      <td style="padding:0.2rem 0.4rem" x-text="typeof pt[cn]==='number'?pt[cn].toPrecision(4):pt[cn]"></td>
-                    </template>
-                  </tr>
-                </template>
-              </tbody>
-            </table>
-          </div>
-        </template>
       </div>
       <div class="chart-card panel-6">
         <h6>Compute Efficiency</h6>
@@ -360,21 +335,8 @@
         <h6>Group Interactions</h6>
         <div id="anl-gint" style="height:280px"></div>
       </div>
-      <!-- Robustness Profile (CVaR mode only) -->
-      <div class="chart-card panel" x-show="anlRobust">
-        <h6>Robustness Profile <span style="font-size:0.6rem;color:var(--pico-muted-color);text-transform:none" x-text="anlRobust?'(Trial #'+anlRobust.best_trial+', \u03b1='+anlRobust.alpha?.toFixed(2)+')':''"></span></h6>
-        <div id="anl-robust" style="height:300px"></div>
-        <div x-show="anlRobust?.cvar" style="margin-top:0.5rem;display:flex;gap:1rem;flex-wrap:wrap">
-          <template x-for="(v,k) in (anlRobust?.cvar||{})" :key="'cvar-'+k">
-            <div class="stat-card" style="padding:0.4rem 0.6rem">
-              <div class="value" style="font-size:1rem" x-text="typeof v==='number'?v.toPrecision(4):v"></div>
-              <div class="label" x-text="'CVaR('+k+')'"></div>
-            </div>
-          </template>
-        </div>
-      </div>
     </div>
-    <p x-show="!anlSens&&!anlCV&&!anlPC&&!anlContour&&!anlSearch&&!anlInsights&&!anlHealth&&!anlGroupSens&&!anlGroupInt&&!anlRobust&&!anlLoading" style="text-align:center;color:var(--pico-muted-color);padding:2rem">Click "Generate Insights" to compute model-based analyses. Requires a fitted model.</p>
+    <p x-show="!anlSens&&!anlCV&&!anlPC&&!anlContour&&!anlSearch&&!anlInsights&&!anlHealth&&!anlGroupSens&&!anlGroupInt&&!anlLoading" style="text-align:center;color:var(--pico-muted-color);padding:2rem">Click "Generate Insights" to compute model-based analyses. Requires a fitted model.</p>
   </div>
 
   <!-- STREAMING -->

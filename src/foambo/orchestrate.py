@@ -93,65 +93,6 @@ class DimensionalityReductionOptions(FoamBOBaseModel):
     ))
 
 
-class RobustOptimizationConfig(FoamBOBaseModel):
-    """Robust optimization across environmental/context variables.
-
-    Declares some parameter groups as 'context' (environmental variables the design
-    must tolerate but cannot control) and optimizes the remaining 'design' parameters
-    for robustness across context variations using a configurable risk measure.
-    """
-    context_groups: List[str] = Field(
-        description="Parameter group names treated as context (environmental) variables")
-    risk_measure: str = Field(default="auto", description=(
-        "Risk measure for robust acquisition. "
-        "'auto' (default) selects MARS for multi-objective, CVaR for single-objective. "
-        "'cvar': Conditional Value at Risk — avg of worst alpha fraction. "
-        "'mars': MVaR Approximation via Random Scalarizations — proper joint risk "
-        "guarantee for multi-objective via VaR of Chebyshev scalarizations (Daulton 2022)."
-    ))
-    robustness: float = Field(default=0.5, ge=0.0, le=1.0, description=(
-        "Robustness level on a 0-1 scale. "
-        "1 = most robust (optimizes for worst-case conditions). "
-        "0 = risk-neutral (optimizes for average across conditions). "
-        "Maps to alpha = max(1 - robustness, 0.05) for CVaR/VaR. "
-        "Ignored by worst_case and expectation."
-    ))
-    context_points: List[Dict[str, float]] | None = Field(default=None, description=(
-        "Discrete operating points to evaluate robustness over. "
-        "If omitted, auto-generated via Sobol from context parameter bounds."
-    ))
-    context_samples: int = Field(default=10, ge=2, description=(
-        "Number of Sobol samples to generate when context_points is omitted."
-    ))
-    context_constraints: List[str] = Field(default=[], description=(
-        "Inequality constraints on context params only (e.g. 'x1 - 0.5*x2 >= 0'). "
-        "Used to pre-filter context_points (explicit or auto-generated)."
-    ))
-
-    @property
-    def alpha(self) -> float:
-        """CVaR alpha — fraction of worst outcomes to average over."""
-        return max(1.0 - self.robustness, 0.05)
-
-    @property
-    def n_w(self) -> int:
-        """Number of context samples (resolved after auto-generation)."""
-        if self.context_points is None:
-            return self.context_samples
-        return len(self.context_points)
-
-    _VALID_RISK_MEASURES = {"auto", "cvar", "mars"}
-
-    @model_validator(mode="after")
-    def _validate(self):
-        if self.risk_measure not in self._VALID_RISK_MEASURES:
-            raise ValueError(
-                f"risk_measure must be one of {self._VALID_RISK_MEASURES}, got '{self.risk_measure}'")
-        if self.context_points is not None and len(self.context_points) < 2:
-            raise ValueError("context_points must have at least 2 entries")
-        return self
-
-
 class ConfigOrchestratorOptions(FoamBOBaseModel):
     """Controls for timeouts, poll times, early-stopping and convergence criteria."""
     max_trials: int = Field(description="Maximum number of trials to run, baseline included", examples=[20])
@@ -238,20 +179,14 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
         "Allow uploading and running pvpython visualization scripts from the web dashboard. "
         "Set to false to disable script upload/execution for security."
     ))
-    legacy_poll: bool = Field(default=False, description=(
-        "When True, use the legacy polling loop. When False (default), use event-driven "
-        "mode where trials push status and metrics to the API server. "
-        "For remote runners, api_host must be set to an address reachable by all compute nodes "
-        "(e.g. the login node hostname, or 0.0.0.0 to bind all interfaces). "
-        "Note: stale jobs from crashed runs may push to a new foamBO instance — "
-        "FOAMBO_API_ENDPOINT includes a session ID to identify the originating process."
-    ))
-    poll_streaming_metrics: bool = Field(default=True, description=(
-        "When True, foamBO actively polls streaming metrics by running the configured "
-        "progress commands each poll cycle. When False, streaming metrics are only "
-        "received via push (trials must POST to the API). "
-        "Set to False when using OpenFOAM function objects or Allrun scripts that push "
-        "metrics directly. Process status polling (alive/dead) is always active regardless."
+    run_progress_commands_each_poll: bool = Field(default=True, description=(
+        "When True, foamBO runs the configured progress commands each poll cycle "
+        "to actively pull streaming metric values. When False, streaming metrics "
+        "are only received via HTTP push (trials must POST to "
+        "``/api/v1/trials/{idx}/push/metrics``). "
+        "Set to False when using OpenFOAM function objects or Allrun scripts that "
+        "push metrics directly — avoids redundant subprocess spawns. Process "
+        "status polling (alive/dead) is always active regardless."
     ))
     dimensionality_reduction: DimensionalityReductionOptions = Field(
         default_factory=lambda: DimensionalityReductionOptions(enabled=False),
@@ -341,74 +276,23 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
         )
 
 
-import threading
+import time as _time
 from ax.api.client import Orchestrator
 
-class EventDrivenOrchestrator(Orchestrator):
-    """Orchestrator that waits on threading.Event instead of sleeping.
+class TimedOrchestrator(Orchestrator):
+    """Orchestrator that tracks wall-clock time spent in candidate generation.
 
-    When trials push data to the API, the event wakes the orchestrator
-    immediately. Falls back to timeout-based polling.
+    ``_gen_time_s`` accumulates the total seconds spent inside
+    ``_prepare_trials`` (model fitting + acquisition function optimization).
+    Read it after ``run_all_trials`` to get the generation overhead.
     """
-    _push_event: threading.Event | None = None
+    _gen_time_s: float = 0.0
 
-    def _sleep_if_too_early_to_poll(self) -> None:
-        """Override Ax's sleep-based polling with event-based wake.
-
-        Instead of unconditionally sleeping, wait on the push event so that
-        trial completions (signalled by the runner or API) wake us immediately.
-        Falls back to timeout if no event fires.
-        """
-        if self._push_event is None:
-            return super()._sleep_if_too_early_to_poll()
-
-        from ax.utils.common.timeutils import current_timestamp_in_millis
-        get_logger(__name__).debug("EventDriven _sleep_if_too_early_to_poll called")
-        if self._latest_trial_start_timestamp is not None:
-            seconds_since = round(
-                (current_timestamp_in_millis()
-                 - self._latest_trial_start_timestamp) / 1000
-            )
-            remaining = self.options.min_seconds_before_poll - seconds_since
-            if remaining > 0:
-                self._push_event.clear()
-                triggered = self._push_event.wait(timeout=remaining)
-                if triggered:
-                    get_logger(__name__).debug(
-                        "Push event received — waking immediately (skipped %.0fs sleep)", remaining)
-                else:
-                    get_logger(__name__).debug(
-                        "Poll timeout (%.0fs) — no push event", remaining)
-
-    def wait_for_completed_trials_and_report_results(self, idle_callback=None, force_refit=False):
-        """Override main polling loop: event.wait instead of sleep."""
-        get_logger(__name__).debug("EventDriven wait_for entered (push_event=%s, pending=%d)",
-                                  self._push_event is not None, len(self.pending_trials))
-        if self._push_event is None:
-            return super().wait_for_completed_trials_and_report_results(
-                idle_callback=idle_callback, force_refit=force_refit)
-
-        seconds = self.options.init_seconds_between_polls or 10
-        while len(self.pending_trials) > 0 and not self.poll_and_process_results():
-            if idle_callback is not None:
-                try:
-                    idle_callback(self)
-                except Exception:
-                    pass
-            get_logger(__name__).debug("Entering event wait (timeout=%.0fs, pending=%d)", seconds, len(self.pending_trials))
-            self._push_event.clear()
-            triggered = self._push_event.wait(timeout=seconds)
-            if triggered:
-                get_logger(__name__).info("Push event received — waking poll loop immediately")
-                seconds = self.options.init_seconds_between_polls or 10
-            else:
-                prev = seconds
-                seconds = min(seconds * self.options.seconds_between_polls_backoff_factor, 120)
-                get_logger(__name__).debug("Poll loop timeout (%.0fs) — next in %.0fs", prev, seconds)
-
-        if idle_callback is not None:
-            idle_callback(self)
-        return self.report_results(force_refit=force_refit)
+    def _prepare_trials(self, *args, **kwargs):
+        t0 = _time.perf_counter()
+        result = super()._prepare_trials(*args, **kwargs)
+        self._gen_time_s += _time.perf_counter() - t0
+        return result
 
 
 class ExperimentOptions(FoamBOBaseModel):
@@ -471,22 +355,6 @@ class ExperimentOptions(FoamBOBaseModel):
         """Return parameter names belonging to a given group."""
         return [name for name, groups in self.get_parameter_groups().items()
                 if group in groups]
-
-    def get_context_param_names(self, robust_cfg: "RobustOptimizationConfig") -> list[str]:
-        """Ordered list of parameter names belonging to context_groups."""
-        pg = self.get_parameter_groups()
-        return [p.name for p in self.parameters
-                if any(g in robust_cfg.context_groups for g in pg.get(p.name, []))]
-
-    def get_design_param_names(self, robust_cfg: "RobustOptimizationConfig") -> list[str]:
-        """All parameter names NOT in context_groups."""
-        ctx = set(self.get_context_param_names(robust_cfg))
-        return [p.name for p in self.parameters if p.name not in ctx]
-
-    def get_context_dim_indices(self, robust_cfg: "RobustOptimizationConfig") -> list[int]:
-        """Integer indices of context params in the full parameter list."""
-        all_names = [p.name for p in self.parameters]
-        return [all_names.index(n) for n in self.get_context_param_names(robust_cfg)]
 
     @classmethod
     def generate_parameter_space(cls, params_cfg):
@@ -1333,23 +1201,12 @@ class FoamBOConfig(FoamBOBaseModel):
     orchestration_settings: ConfigOrchestratorOptions = Field(description="Timeouts, polling, stopping strategies")
     store: StoreOptions = Field(description="Where to save/load experiment state")
     trial_dependencies: List[TrialDependency] = Field(default=[], description="Trial-to-trial dependency definitions")
-    robust_optimization: RobustOptimizationConfig | None = Field(default=None, description=(
-        "CVaR robust optimization config. When present, context_groups are treated as "
-        "environmental variables and design params are optimized for robustness."
-    ))
 
     @field_validator("trial_dependencies", mode="before")
     @classmethod
     def parse_trial_deps(cls, v):
         if v and isinstance(v[0], dict | DictConfig):
             return [TrialDependency.model_validate(dict(d)) for d in v]
-        return v
-
-    @field_validator("robust_optimization", mode="before")
-    @classmethod
-    def parse_robust_opt(cls, v):
-        if isinstance(v, dict | DictConfig):
-            return RobustOptimizationConfig.model_validate(dict(v))
         return v
 
     # Store raw input before validators transform it (for OmegaConf roundtrip)

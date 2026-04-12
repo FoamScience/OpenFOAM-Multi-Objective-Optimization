@@ -774,18 +774,6 @@ class FoamJobRunner(IRunner):
         api_state = getattr(self, '_api_state', None)
         if api_state is not None:
             api_state.log_event(trial_index, "trial.dispatched", case_path)
-        # Background thread fires push_event when subprocess exits (independent of API)
-        push_ev = getattr(self, '_push_event', None)
-        pid = meta.get("job_id")
-        if push_ev is not None and pid and pid > 0 and pid in jobs:
-            import threading
-            proc = jobs[pid]
-            def _signal_exit(p, ev, tidx):
-                p.wait()
-                ev.set()
-                log.debug("Subprocess %d exited — push event fired for trial %d", p.pid, tidx)
-            threading.Thread(target=_signal_exit, args=(proc, push_ev, trial_index),
-                             daemon=True).start()
         if dep_meta:
             meta["dependencies"] = dep_meta
         return meta
@@ -799,6 +787,31 @@ class FoamJobRunner(IRunner):
     def poll_trial(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> TrialStatus:
         if not trial_metadata or 'job_id' not in trial_metadata:
             return TrialStatus.COMPLETED
+        # Push API fast path: remote runners (SLURM/SSH) post completion via
+        # POST /api/v1/trials/{idx}/push/status — consume status overrides and
+        # pushed streaming metrics before falling through to local subprocess poll.
+        api_state = getattr(self, '_api_state', None)
+        if api_state is not None:
+            pushed = api_state.trial_status_overrides.pop(trial_index, None)
+            if pushed == "completed":
+                return TrialStatus.COMPLETED
+            if pushed == "failed":
+                return TrialStatus.FAILED
+            pushed_metrics = api_state.trial_pushed_metrics.pop(trial_index, [])
+            if pushed_metrics and self._streaming_client is not None:
+                for entry in pushed_metrics:
+                    for metric_name, value in entry["metrics"].items():
+                        step = entry.get("step")
+                        if step is None:
+                            continue
+                        try:
+                            self._streaming_client.attach_data(
+                                trial_index=trial_index,
+                                raw_data={metric_name: (float(value), None)},
+                                progression={metric_name: step},
+                            )
+                        except Exception as e:
+                            log.debug(f"Failed to attach pushed metric: {e}")
         status = self.status_query[self.mode](trial_metadata['job_id'], self.cfg, trial_metadata)
         # Check trial timeout (absolute seconds or N*baseline)
         if status == TrialStatus.RUNNING:
@@ -826,25 +839,19 @@ class FoamJobRunner(IRunner):
                         except Exception as e:
                             log.warning(f"Failed to kill timed-out trial {trial_index}: {e}")
                         status = TrialStatus.FAILED
-        # Attach streaming data during poll so it's visible to early stopping
-        # Skip if poll_streaming_metrics is disabled (metrics arrive via push instead)
+        # Attach streaming data during poll so it's visible to early stopping.
+        # Skip if run_progress_commands_each_poll is disabled (metrics arrive via push instead).
         if (status == TrialStatus.RUNNING
-                and getattr(self, '_poll_streaming_metrics', True)
+                and getattr(self, '_run_progress_commands_each_poll', True)
                 and self._streaming_client is not None
                 and self._streaming_cfg is not None):
             try:
                 streaming_metric(self._streaming_client, self._streaming_cfg)
             except Exception:
                 pass
-        # Fire push event on status change to non-RUNNING (wakes orchestrator instantly)
+        # Track status transitions for event logging only
         prev = self._last_poll_status.get(trial_index)
-        if prev != status and status != TrialStatus.RUNNING:
-            push_ev = getattr(self, '_push_event', None)
-            if push_ev is not None:
-                push_ev.set()
-                log.debug("Trial %d status → %s — push event fired", trial_index, status.name)
         # Log status transitions to event log
-        api_state = getattr(self, '_api_state', None)
         if api_state is not None:
             if prev != status and status != TrialStatus.RUNNING:
                 event_type = f"trial.{status.name.lower()}"
@@ -864,65 +871,6 @@ class FoamJobRunner(IRunner):
         if api_state is not None:
             api_state.log_event(trial_index, "trial.killed", f"{self.mode} mode")
         return self.kill_job[self.mode](trial_metadata['job_id'], self.cfg, trial_metadata)
-
-class EventDrivenRunner(FoamJobRunner):
-    """FoamJobRunner that checks API push state before polling subprocesses."""
-
-    _api_state: Any = None
-    _api_host: str = "127.0.0.1"
-    _api_port: int = 8098
-
-    def run_trial(self, trial_index: int, parameterization: TParameterization) -> dict[str, Any]:
-        meta = super().run_trial(trial_index, parameterization)
-        if self._api_state:
-            self._api_state.log_event(trial_index, "trial.dispatched",
-                                       meta.get("case_path", ""))
-            # Start background thread that fires push_event when subprocess exits
-            pid = meta.get("pid")
-            if pid and pid in jobs:
-                import threading
-                push_event = self._api_state.trial_push_event
-                proc = jobs[pid]
-                def _signal_exit(p, ev, tidx):
-                    p.wait()
-                    ev.set()
-                    log.debug("Subprocess %d exited — push event fired for trial %d", p.pid, tidx)
-                threading.Thread(target=_signal_exit, args=(proc, push_event, trial_index),
-                                 daemon=True).start()
-        return meta
-
-    def poll_trial(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> TrialStatus:
-        # Check push queue first
-        if self._api_state is not None:
-            pushed = self._api_state.trial_status_overrides.pop(trial_index, None)
-            if pushed == "completed":
-                return TrialStatus.COMPLETED
-            elif pushed == "failed":
-                return TrialStatus.FAILED
-
-            # Process pushed streaming metrics
-            pushed_metrics = self._api_state.trial_pushed_metrics.pop(trial_index, [])
-            if pushed_metrics and self._streaming_client is not None:
-                for entry in pushed_metrics:
-                    for metric_name, value in entry["metrics"].items():
-                        step = entry.get("step")
-                        if step is not None:
-                            try:
-                                self._streaming_client.attach_data(
-                                    trial_index=trial_index,
-                                    raw_data={metric_name: (float(value), None)},
-                                    progression={metric_name: step},
-                                )
-                            except Exception as e:
-                                log.debug(f"Failed to attach pushed metric: {e}")
-
-        # Fallback: normal subprocess poll (parent logs event with actual exit time)
-        status = super().poll_trial(trial_index, trial_metadata)
-        # Fire push event when subprocess exits so EventDrivenOrchestrator wakes immediately
-        if status != TrialStatus.RUNNING and self._api_state is not None:
-            self._api_state.trial_push_event.set()
-        return status
-
 
 ### JSON serialize/deserialize
 
@@ -945,9 +893,6 @@ CORE_ENCODER_REGISTRY[DictConfig] = config_to_dict
 
 CORE_ENCODER_REGISTRY[FoamJobRunner] = runner_to_dict;
 CORE_DECODER_REGISTRY["FoamJobRunner"] = FoamJobRunner
-
-CORE_ENCODER_REGISTRY[EventDrivenRunner] = runner_to_dict;
-CORE_DECODER_REGISTRY["EventDrivenRunner"] = EventDrivenRunner
 register_runner(FoamJobRunner)
 
 CORE_ENCODER_REGISTRY[FoamJobMetric] = metric_to_dict

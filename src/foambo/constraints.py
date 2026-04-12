@@ -131,13 +131,11 @@ def build_nonlinear_constraints(
 
 
 # ---------------------------------------------------------------------------
-# Monkey-patch optimize_acqf to inject nonlinear constraints and/or
-# fixed_features (for CVaR robust optimization) at call time.
+# Monkey-patch optimize_acqf to inject nonlinear constraints at call time.
 # This avoids storing non-serializable callables in Ax's GenerationStrategy.
 # ---------------------------------------------------------------------------
 
 _active_nl_constraints: list[tuple[Callable[[torch.Tensor], torch.Tensor], bool]] | None = None
-_active_fixed_features: dict[int, float] | None = None
 _orig_optimize_acqf = None
 _batch_size: int = 1
 _candidate_cache: list = []
@@ -147,15 +145,11 @@ _compile_acqf: bool = False
 def _patched_optimize_acqf(*args, **kwargs):
     global _candidate_cache
 
-    # --- Inject constraints / fixed_features ---
+    # --- Inject nonlinear constraints ---
     if _active_nl_constraints and "nonlinear_inequality_constraints" not in kwargs:
         kwargs["nonlinear_inequality_constraints"] = _active_nl_constraints
         log.debug("Injected %d nonlinear constraint(s) into optimize_acqf",
                   len(_active_nl_constraints))
-    if _active_fixed_features and "fixed_features" not in kwargs:
-        kwargs["fixed_features"] = _active_fixed_features
-        log.debug("Injected %d fixed_feature(s) into optimize_acqf",
-                  len(_active_fixed_features))
 
     # --- Return cached candidate from previous batch ---
     if _candidate_cache:
@@ -174,10 +168,6 @@ def _patched_optimize_acqf(*args, **kwargs):
                 kwargs['acq_function'] = compiled_acq
             elif args:
                 args = (compiled_acq,) + args[1:]
-
-    # Batch generation (q>1) not viable for CVaR + mixed discrete params:
-    # optimize_acqf_mixed loops over discrete combos, each running q*d-dim
-    # joint SLSQP with q*n_w GP evals per step. Intractable at scale.
 
     return _orig_optimize_acqf(*args, **kwargs)
 
@@ -201,18 +191,6 @@ def patch_optimize_acqf(
     """
     global _active_nl_constraints
     _active_nl_constraints = nl_constraints
-    _ensure_patched()
-
-
-def set_fixed_features(fixed: dict[int, float] | None) -> None:
-    """Update active fixed_features for context dims. Called per-trial for round-robin."""
-    global _active_fixed_features
-    _active_fixed_features = fixed
-
-
-def patch_optimize_acqf_robust(fixed_features: dict[int, float]) -> None:
-    """Ensure patch is applied and set initial fixed_features for robust optimization."""
-    set_fixed_features(fixed_features)
     _ensure_patched()
 
 

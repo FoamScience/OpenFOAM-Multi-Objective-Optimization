@@ -66,7 +66,6 @@ def _apply_objective_thresholds(client, expressions: list[str], log=None,
         log.info(f"Objective thresholds set: {summary}")
 
 
-from foambo.robustness import _param_bounds, _resolve_context_points, _wire_robust_optimization  # noqa: F401
 
 
 
@@ -100,7 +99,7 @@ def optimize(cfg, debug=False):
     from .orchestrate import (
         ExperimentOptions, OptimizationOptions,
         ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
-        FoamBOConfig, TrialDependency, EventDrivenOrchestrator, SeedDataNode,
+        FoamBOConfig, TrialDependency, SeedDataNode, TimedOrchestrator,
     )
     from ax.api.client import MultiObjective, Orchestrator, db_settings_from_storage_config
     import pandas as pd
@@ -245,15 +244,6 @@ def optimize(cfg, debug=False):
         nl_callables = build_nonlinear_constraints(nl_exprs, param_names)
         patch_optimize_acqf(nl_callables)
         log.info("Nonlinear parameter constraints active: %s", nl_exprs)
-
-    # Inject CVaR robust optimization if configured
-    robust_cfg = getattr(foambo_cfg, 'robust_optimization', None) if foambo_cfg else None
-    if robust_cfg is None and isinstance(cfg, DictConfig) and 'robust_optimization' in cfg and cfg['robust_optimization']:
-        from foambo.orchestrate import RobustOptimizationConfig
-        robust_cfg = RobustOptimizationConfig.model_validate(dict(cfg['robust_optimization']))
-    if robust_cfg is not None:
-        _resolve_context_points(robust_cfg, exp_cfg, log)
-        _wire_robust_optimization(client, exp_cfg, robust_cfg, log)
 
     client.set_early_stopping_strategy(orch_cfg.early_stopping_strategy)
 
@@ -426,15 +416,14 @@ def optimize(cfg, debug=False):
             port=orch_cfg.api_port,
         )
         _update_api = update_api_state
-        # Wire event-driven mode onto the runner
-        if not orch_cfg.legacy_poll:
-            from .api_server import _state as _api_state
-            runner._api_state = _api_state
-            runner._api_host = orch_cfg.api_host
-            runner._api_port = _api_state._actual_port
-            runner._push_event = _api_state.trial_push_event
-            log.info("Event-driven orchestration enabled (push endpoints active)")
-        runner._poll_streaming_metrics = orch_cfg.poll_streaming_metrics
+        # Wire API state onto the runner so remote trials can push status/metrics
+        # via POST /api/v1/trials/{idx}/push/*. FoamJobRunner.poll_trial consumes
+        # trial_status_overrides and trial_pushed_metrics during Ax's poll cycle.
+        from .api_server import _state as _api_state
+        runner._api_state = _api_state
+        runner._api_host = orch_cfg.api_host
+        runner._api_port = _api_state._actual_port
+        runner._run_progress_commands_each_poll = orch_cfg.run_progress_commands_each_poll
 
     def _log_trial_failure(trial_index: int, case_path: str | None, log: Logger):
         """Log the tail of a failed trial's runner log."""
@@ -456,6 +445,30 @@ def optimize(cfg, debug=False):
         else:
             log.warning(f"Trial {trial_index} FAILED — case: {case_path} (no log.runner found)")
 
+    def _compute_timing(sched, client, wall_start):
+        """Compute execution time breakdown for logging and API."""
+        import time as _t
+        from ax.core.base_trial import TrialStatus as _TS
+        total_s = _t.time() - wall_start
+        gen_s = getattr(sched, '_gen_time_s', 0.0)
+        trial_s = 0.0
+        n_completed = 0
+        for trial in client._experiment.trials.values():
+            if trial.status in (_TS.COMPLETED, _TS.EARLY_STOPPED):
+                dispatch = (trial.run_metadata or {}).get("dispatch_time")
+                completed = trial.time_completed
+                if dispatch is not None and completed is not None:
+                    trial_s += completed.timestamp() - dispatch
+                    n_completed += 1
+        overhead_s = max(total_s - gen_s - trial_s, 0.0)
+        return {
+            "total_s": round(total_s, 1),
+            "generation_s": round(gen_s, 1),
+            "trial_execution_s": round(trial_s, 1),
+            "overhead_s": round(overhead_s, 1),
+            "trials_completed": n_completed,
+        }
+
     def callback(sched: Orchestrator):
         store_cfg.save(client)
         _maybe_reduce_dimensions()
@@ -474,9 +487,14 @@ def optimize(cfg, debug=False):
             if trial.status == _TS.FAILED and tidx not in _reported_failures:
                 _reported_failures.add(tidx)
                 _log_trial_failure(tidx, case_path, log)
-        # Refresh API server state
+        # Refresh API server state + live timing
         if orch_cfg.api_port != 0:
             _update_api(client)
+            try:
+                from .api_server import _state as _cb_api
+                _cb_api._timing = _compute_timing(sched, client, _opt_wall_start)
+            except Exception:
+                pass
         from .analysis import plot_streaming_metrics
         plot_streaming_metrics(raw_cfg, client)
 
@@ -502,6 +520,10 @@ def optimize(cfg, debug=False):
             index=False
         )
 
+    import time as _opt_start_time_mod
+    _opt_wall_start = _opt_start_time_mod.time()
+    _baseline_gen_time = 0.0
+
     if not has_experiment and baseline_cfg.parameters:
         log.info("=============== Running Baseline ================")
         baseline_index = 0 if len(client._experiment._trials) == 0 else max(client._experiment._trials.keys()) + 1
@@ -514,23 +536,14 @@ def optimize(cfg, debug=False):
             nodes=[ManualGenerationNode(node_name="baseline", parameters=baseline_cfg.parameters)])
         _bl_db = (db_settings_from_storage_config(client._storage_config)
                   if client._storage_config is not None else None)
-        if not orch_cfg.legacy_poll and orch_cfg.api_port != 0:
-            from .api_server import _state as _api_state
-            scheduler = EventDrivenOrchestrator(
-                experiment=client._experiment,
-                generation_strategy=_bl_gs,
-                options=orch_cfg.to_scheduler_options(),
-                db_settings=_bl_db,
-            )
-            scheduler._push_event = _api_state.trial_push_event
-        else:
-            scheduler = Orchestrator(
-                experiment=client._experiment,
-                generation_strategy=_bl_gs,
-                options=orch_cfg.to_scheduler_options(),
-                db_settings=_bl_db,
-            )
+        scheduler = TimedOrchestrator(
+            experiment=client._experiment,
+            generation_strategy=_bl_gs,
+            options=orch_cfg.to_scheduler_options(),
+            db_settings=_bl_db,
+        )
         scheduler.run_n_trials(max_trials=1, timeout_hours=orch_cfg.timeout_hours, idle_callback=callback)
+        _baseline_gen_time = scheduler._gen_time_s
         # Record baseline execution time for trial_timeout
         _bl_trial = client._experiment.trials[baseline_index]
         _bl_dispatch = (_bl_trial.run_metadata or {}).get("dispatch_time")
@@ -552,23 +565,14 @@ def optimize(cfg, debug=False):
 
     _db_settings = (db_settings_from_storage_config(client._storage_config)
                      if client._storage_config is not None else None)
-    if not orch_cfg.legacy_poll and orch_cfg.api_port != 0:
-        from .api_server import _state as _api_state
-        scheduler = EventDrivenOrchestrator(
-            experiment=client._experiment,
-            generation_strategy=client._generation_strategy_or_choose(),
-            options=orch_cfg.to_scheduler_options(),
-            db_settings=_db_settings,
-        )
-        scheduler._push_event = _api_state.trial_push_event
-        log.info("Using EventDrivenOrchestrator (push-event wake)")
-    else:
-        scheduler = Orchestrator(
-            experiment=client._experiment,
-            generation_strategy=client._generation_strategy_or_choose(),
-            options=orch_cfg.to_scheduler_options(),
-            db_settings=_db_settings,
-        )
+    scheduler = TimedOrchestrator(
+        experiment=client._experiment,
+        generation_strategy=client._generation_strategy_or_choose(),
+        options=orch_cfg.to_scheduler_options(),
+        db_settings=_db_settings,
+    )
+    scheduler._gen_time_s = _baseline_gen_time  # carry over baseline gen time
+    log.info("Using Ax Orchestrator (poll-based)")
     def _stop_running_trials(sched: Orchestrator):
         """Stop all running trials and save state on interrupt."""
         from ax.core.base_trial import TrialStatus as AxTrialStatus
@@ -595,6 +599,22 @@ def optimize(cfg, debug=False):
         log.info("State saved. Exiting.")
         return
     store_cfg.save(client)
+
+    # --- Execution timing summary ---
+    timing = _compute_timing(scheduler, client, _opt_wall_start)
+    log.info("============= Execution Timing ==================")
+    log.info("  Total wall time:      %8.1fs", timing["total_s"])
+    log.info("  Generation:           %8.1fs  (%.0f%%)", timing["generation_s"],
+             100.0 * timing["generation_s"] / max(timing["total_s"], 0.1))
+    log.info("  Trial execution:      %8.1fs  (%d trials, %.0f%%)", timing["trial_execution_s"],
+             timing["trials_completed"],
+             100.0 * timing["trial_execution_s"] / max(timing["total_s"], 0.1))
+    log.info("  Overhead (poll/save): %8.1fs", timing["overhead_s"])
+    log.info("=================================================")
+    # Store on API state for dashboard
+    if orch_cfg.api_port != 0:
+        from .api_server import _state as _api_state
+        _api_state._timing = timing
 
     log.info("=========== Best set of parameters ==============")
     best_parameters, prediction = None, None
@@ -915,34 +935,6 @@ def main():
                 log.info("GP model fitted from scratch (no cache)")
         except Exception as e:
             log.warning("Model pre-warm failed: %s", e)
-        # Attach AppendFeatures for robust optimization (CVaR context awareness)
-        if 'robust_optimization' in cfg and cfg['robust_optimization']:
-            try:
-                from .orchestrate import RobustOptimizationConfig, ExperimentOptions
-                robust_cfg = RobustOptimizationConfig.model_validate(dict(cfg['robust_optimization']))
-                exp_cfg = ExperimentOptions.model_validate(dict(cfg['experiment']))
-                _resolve_context_points(robust_cfg, exp_cfg, log)
-                # Attach AppendFeatures to the already-fitted model
-                import torch, numpy as np
-                context_names = exp_cfg.get_context_param_names(robust_cfg)
-                param_map = {p.name: p for p in exp_cfg.parameters}
-                bounds_lo = np.array([_param_bounds(param_map[cn])[0] for cn in context_names])
-                bounds_hi = np.array([_param_bounds(param_map[cn])[1] for cn in context_names])
-                raw = np.array([[pt[cn] for cn in context_names] for pt in robust_cfg.context_points])
-                normalized = (raw - bounds_lo) / (bounds_hi - bounds_lo + 1e-12)
-                feature_set = torch.tensor(normalized, dtype=torch.double)
-                from botorch.models.transforms.input import AppendFeatures
-                surr = gs.adapter.generator.surrogate
-                if surr.model is not None:
-                    af = AppendFeatures(feature_set=feature_set,
-                                        transform_on_train=False, transform_on_eval=True)
-                    surr.model.input_transform = af
-                    log.debug("Attached AppendFeatures(n_w=%d) for robust predict", robust_cfg.n_w)
-                if runner is not None:
-                    runner._robust_cfg = robust_cfg
-                    runner._context_param_names = context_names
-            except Exception as e:
-                log.warning("Robust optimization setup failed in --no-opt: %s", e)
         from .api_server import start_api_server, stop_api_server
         thread = start_api_server(
             client=client, raw_cfg=cfg, orch_cfg=orch_cfg,

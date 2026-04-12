@@ -418,32 +418,45 @@ This reuses the mesh when geometry matches AND warm-starts solver fields from
 the nearest trial — two independent dependencies working together.""",
     },
 
-    "concept.event_driven_orchestration": {
+    "concept.orchestration": {
         "category": "Concept",
         "content": """\
-Event-driven orchestration replaces polling with push-based trial notifications.
+foamBO uses Ax's native poll-based orchestrator (``ax.api.client.Orchestrator``)
+to dispatch, monitor, and harvest trials. The main loop dispatches up to
+``parallelism`` trials, then repeatedly sleeps and polls each runner for
+completion. Completed trials have their metrics fetched and are handed to the
+generation strategy for the next round of proposals.
 
-**Legacy polling** (``legacy_poll: true``): foamBO sleeps between poll cycles,
-periodically checking subprocess status and fetching metrics. Latency = poll interval.
+**Harvest latency** = ``init_seconds_between_polls`` (Ax scheduler option).
+For OpenFOAM trials lasting minutes, a small interval (1–5s) adds negligible
+overhead while keeping the model responsive.
 
-**Event-driven** (``legacy_poll: false``, default): trials push status and metrics
-to the API server. The orchestrator wakes immediately on push, reducing latency
-from seconds/minutes to milliseconds. Falls back to timeout-based polling if no
-push arrives.
+**Remote runner push integration:**
 
-**How it works:**
-- Every trial subprocess receives ``FOAMBO_API_ENDPOINT``, ``FOAMBO_TRIAL_INDEX``,
-  and ``FOAMBO_SESSION_ID`` as environment variables
-- Trials can POST to the API to report status changes and streaming metrics
-- The orchestrator waits on a ``threading.Event`` instead of sleeping
-- When a push arrives, the event fires and the orchestrator processes immediately
+For local subprocess runners, ``FoamJobRunner.poll_trial`` checks the child
+process directly — nothing special is needed. For remote runners (SLURM, SSH),
+the local runner has no direct visibility into the remote job state, so trials
+notify completion by POSTing to the live REST API. The runner's ``poll_trial``
+consumes the push queue at the top of each poll cycle:
 
-**Push endpoints:**
+1. Trial script POSTs to ``/api/v1/trials/{idx}/push/status`` on completion.
+2. The endpoint writes to ``_state.trial_status_overrides[idx]``.
+3. On the next Ax poll cycle, ``FoamJobRunner.poll_trial`` pops the override
+   and returns ``TrialStatus.COMPLETED`` / ``FAILED`` immediately.
+4. Ax fetches metrics and proceeds normally.
+
+**Push endpoints (optional, for remote runners):**
 - ``POST /api/v1/trials/{idx}/push/status`` — report completion or failure
 - ``POST /api/v1/trials/{idx}/push/metrics`` — push streaming metric values
 - ``POST /api/v1/trials/{idx}/push/heartbeat`` — signal the trial is alive
+- ``GET  /api/v1/events`` — dashboard-facing event feed (last 500 events)
 
-**Allrun integration example:**
+**Environment variables** injected into every trial subprocess:
+- ``FOAMBO_API_ENDPOINT`` — full API URL (e.g. ``http://login01:8098/api/v1``)
+- ``FOAMBO_TRIAL_INDEX`` — the trial number
+- ``FOAMBO_SESSION_ID`` — unique ID for this foamBO instance
+
+**Allrun integration example (remote runner):**
 ```bash
 #!/bin/bash
 blockMesh
@@ -460,7 +473,9 @@ curl -s -X POST "$FOAMBO_API_ENDPOINT/trials/$FOAMBO_TRIAL_INDEX/push/status" \\
   -d "{\\\"status\\\":\\\"completed\\\",\\\"exit_code\\\":$EXIT_CODE,\\\"session_id\\\":\\\"$FOAMBO_SESSION_ID\\\"}"
 ```
 
-**OpenFOAM function object** for streaming metrics:
+**OpenFOAM function object** for streaming metrics (pushed values are attached
+to the Ax client via ``_streaming_client.attach_data`` during the next poll
+cycle, enabling early stopping on remote trials):
 ```bash
 # Called from controlDict writeInterval, e.g. via a coded function object
 curl -s -X POST "$FOAMBO_API_ENDPOINT/trials/$FOAMBO_TRIAL_INDEX/push/metrics" \\
@@ -468,12 +483,13 @@ curl -s -X POST "$FOAMBO_API_ENDPOINT/trials/$FOAMBO_TRIAL_INDEX/push/metrics" \
   -d "{\\\"metrics\\\":{\\\"continuityErrors\\\":$VALUE},\\\"step\\\":$TIME,\\\"session_id\\\":\\\"$FOAMBO_SESSION_ID\\\"}"
 ```
 
-**Local mode:** The runner automatically detects subprocess completion —
-Allrun curl is optional (useful for sub-phase notifications like "meshing done").
+**Local mode:** The runner detects subprocess completion automatically —
+Allrun curl is optional (useful for sub-phase notifications like "meshing done"
+that show up on the dashboard event feed).
 
-**Remote mode (SLURM, SSH):** The Allrun curl is essential for fast status
-updates. Without it, foamBO falls back to the (slow) SSH-based polling.
-``api_host`` must be set to an address reachable by all compute nodes
+**Remote mode (SLURM, SSH):** The Allrun curl is essential — without it, a
+remote trial's exit would only be detected via the (slow) SSH-based status
+probe. ``api_host`` must be set to an address reachable by all compute nodes
 (e.g. the login node hostname). Example: ``api_host: login01.cluster.local``
 or ``api_host: 0.0.0.0`` to bind all interfaces.
 
@@ -484,169 +500,8 @@ is available as ``FOAMBO_SESSION_ID`` in the trial environment.
 
 **Event log:** All orchestration events are timestamped and stored:
 trial dispatched, streaming metrics, completion, failure, early stopping,
-objective values. The log is serialized with the client JSON and available
-in ``--no-opt`` mode via ``GET /api/v1/events``.""",
+objective values. The log drives the dashboard's live event feed and is
+available via ``GET /api/v1/events``.""",
     },
 
-    "concept.robustness_and_risk_measures": {
-        "category": "Concept",
-        "content": """\
-Robust optimization finds designs that perform well across a SET of conditions,
-not just one. foamBO selects the risk measure automatically based on the problem:
-
-- **Single-objective**: CVaR (Conditional Value at Risk)
-- **Multi-objective**: MARS (MVaR Approximation via Random Scalarizations, Daulton 2022)
-
-The ``risk_measure`` setting can override this: ``"auto"`` (default), ``"cvar"``, or ``"mars"``.
-
-**The problem with standard BO:**
-Standard Bayesian Optimization finds the best design for a single operating
-condition. But real systems face varying conditions — a design optimal at one
-condition may fail at another.
-
-**Context parameters:**
-Some parameters represent environmental conditions the design must tolerate but
-cannot control (temperature, load, speed). These are *context parameters*.
-Design parameters (geometry, material) are what the optimizer controls.
-
-**YAML configuration:**
-```yaml
-robust_optimization:
-  context_groups: [operating_point]   # group name(s) to treat as context
-  risk_measure: auto                  # auto, cvar, or mars
-  robustness: 0.5                     # 0=risk-neutral, 1=most robust
-  context_points:                     # explicit, or omit for Sobol auto-generation
-    - {temperature: 300, load: 50}
-    - {temperature: 400, load: 80}
-    - {temperature: 350, load: 65}
-```
-
-**Fluent API:**
-```python
-from foambo import FoamBO
-
-client = (
-    FoamBO("MyOptimization")
-    .parameter("x1", bounds=[0.0, 1.0], group="design")
-    .parameter("temp", bounds=[300, 500], group="operating")
-    .minimize("loss", fn=my_function)
-    .robust(
-        context_groups=["operating"],
-        risk_measure="auto",        # MARS for MOO, CVaR for SOO
-        robustness=0.7,             # focus on worst 30% of contexts
-        context_points=[...],       # or omit for Sobol auto-generation
-        context_samples=10,         # number of Sobol samples if auto
-        context_constraints=["temp >= 350"],  # filter context space
-    )
-    .run()
-)
-```
-
-If ``context_points`` is omitted, foamBO generates them via Sobol sampling from
-the parameter bounds (controlled by ``context_samples``). Context constraints
-filter out infeasible context combinations.
-
-**CVaR (single-objective):**
-
-CVaR averages the worst alpha-fraction of outcomes across context points.
-The ``robustness`` parameter controls how much of the tail to focus on:
-``alpha = max(1 - robustness, 0.05)``. ``robustness=1`` → alpha=0.05
-(most robust, focuses on worst 5%), ``robustness=0`` → alpha=1.0 (risk-neutral,
-averages all outcomes).
-
-**MARS (multi-objective, default):**
-
-MARS provides a proper joint risk guarantee for multi-objective problems via
-MVaR (Multivariate Value at Risk). The key insight (Theorem 5.1, Daulton 2022):
-there is a bijection between MVaR points and VaR of Chebyshev scalarizations
-with different weight vectors. MARS exploits this by:
-
-1. Sampling random Chebyshev weights from the simplex (uniform)
-2. Applying VaR to the Chebyshev-scalarized objectives
-3. Using the result as a single-output acquisition objective (qLogEI)
-
-Each iteration uses different weights, exploring different trade-offs on the
-robust Pareto front. Unlike per-objective CVaR (which ignores correlations),
-MARS captures the joint distribution of objectives under context uncertainty.
-
-**ParEGO-style CVaR (legacy MOO path):**
-
-When ``risk_measure="cvar"`` is explicitly set for MOO, foamBO uses
-ParEGO-style Chebyshev scalarization before CVaR. This is simpler but lacks
-the theoretical guarantees of MARS — it optimizes a risk measure on a
-scalarized proxy, not the true multivariate risk.
-
-**How it works mechanically:**
-
-1. The GP model trains on ALL data (design + context dimensions) — no info loss
-2. At acquisition time, ``SubstituteContextFeatures`` replaces context dims with
-   ALL context points. A candidate ``[x1, x2, w1, w2]`` with 3 context points
-   becomes 3 evaluations with different context values.
-3. The risk measure aggregates predictions across context points:
-   - **CVaR**: sorts and averages the worst alpha-fraction
-   - **MARS**: normalizes objectives using the Pareto front bounds, applies
-     Chebyshev scalarization with random weights, then takes VaR
-4. ``fixed_features`` prevents optimizing context dims — the optimizer searches
-   only over design parameters
-5. For MOO: the acquisition function uses qLogEI. Random Chebyshev weights
-   change each iteration to explore different regions of the robust Pareto front.
-
-**Concrete example (single-objective, CVaR):**
-3 design params, 2 context params, 5 context points.
-Candidate design ``[d1=3.2, d2=1.5, d3=7.0]``:
-
-- Context 0: temp=300, load=50 → efficiency = 0.85
-- Context 1: temp=400, load=80 → efficiency = 0.61  ← worst
-- Context 2: temp=350, load=65 → efficiency = 0.78
-- Context 3: temp=300, load=80 → efficiency = 0.71
-- Context 4: temp=400, load=50 → efficiency = 0.82
-
-With ``robustness=0.2`` (alpha=0.80), CVaR averages worst 80%:
-sorted = [0.61, 0.71, 0.78, 0.82, 0.85], worst 80% = [0.61, 0.71, 0.78, 0.82]
-CVaR = 0.73. The harsh condition drags the score down — optimizer steers toward
-designs that don't collapse under stress.
-
-**Concrete example (multi-objective, MARS):**
-Same setup but 2 objectives: efficiency↑, cost↓. MARS draws random weights
-(e.g. ``w = [0.6, 0.4]``), normalizes objectives to [0,1] using the current
-Pareto front bounds, then computes the augmented Chebyshev scalarization at
-each context point. VaR at alpha=0.3 takes the 30th percentile of the
-scalarized values (the threshold below which only 30% of contexts fall).
-The optimizer maximizes this — finding designs whose worst-case Chebyshev
-trade-off is as good as possible. Next iteration, different weights
-(e.g. ``w = [0.3, 0.7]``) explore a different region of the robust Pareto front.
-
-**Trial execution:**
-Each trial runs ONE simulation. Context points are assigned round-robin during
-BO. During initialization (Sobol), both design and context are sampled freely.
-
-**The robustness trade-off:**
-Robust designs sacrifice peak performance at any single condition for consistent
-performance across all conditions. A non-robust design might score 0.95 at one
-condition but 0.40 at another. A robust design might score 0.80 everywhere.
-
-**When to use which risk measure:**
-- **SOO → CVaR** (automatic): well-understood, differentiable, one objective
-- **MOO → MARS** (automatic): proper joint risk guarantee, theoretically sound
-- **MOO + CVaR** (manual override): simpler, if MARS causes issues
-
-**Compatible generators (robust mode):**
-- ``BOTORCH_MODULAR`` — default, standard GP with point-estimate hyperparameters
-- ``BO_MIXED`` — mixed continuous/categorical search spaces
-- ``SAASBO`` — fully-Bayesian GP with HMC-sampled lengthscales. Useful for
-  high-dimensional robust problems (15+ design dims) where a standard GP's
-  lengthscales are unreliable. **Expect ~10-100× wall-clock cost per BO step**:
-  SAASBO runs NUTS for hyperparameter inference on every fit, and robust MARS
-  further multiplies work by ``n_w`` (perturbation scenarios).
-- ``SAAS_MTGP`` is **not** compatible: its task-feature dimension collides
-  with the context-feature indexing used by the fixed-features cycling.
-- ``SOBOL`` / ``UNIFORM`` / ``FACTORIAL`` are unaffected (no acqf step).
-
-**Constraints under robust optimization:**
-- Geometry-only constraints work normally (handled by Ax)
-- Context-only constraints filter which context points are used
-- Cross-group constraints become *soft* — a simulation that fails at an
-  infeasible design×context combination produces bad metrics, and the risk
-  measure naturally steers away from such designs""",
-    },
 }

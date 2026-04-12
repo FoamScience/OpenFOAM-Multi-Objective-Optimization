@@ -789,25 +789,21 @@ def get_config_docs() -> Dict[str, Any]:
         """).strip(),
     }
 
-    harvested["orchestration_settings.legacy_poll"] = {
+    harvested["orchestration_settings.api_host"] = {
         "category": "Config",
         "content": textwrap.dedent("""
-            Controls whether foamBO uses legacy polling or event-driven orchestration.
-
-            **Event-driven mode** (``legacy_poll: false``, default):
-            Trials push status and metrics to the API server via ``FOAMBO_API_ENDPOINT``.
-            The orchestrator wakes immediately on push — no wasted sleep cycles.
-
-            **Legacy polling** (``legacy_poll: true``):
-            foamBO sleeps between poll cycles and checks subprocess status periodically.
-            Use this if the API server is unreachable from compute nodes.
+            foamBO uses Ax's native poll-based orchestration. Ax sleeps between
+            poll cycles and checks subprocess status via the configured runner.
+            Remote trials (SLURM/SSH) that can't be polled locally notify
+            completion by POSTing to the live REST API. The runner's
+            ``poll_trial`` consumes push state on Ax's next poll cycle.
 
             **Remote runner configuration:**
             For SLURM or SSH-based runners, ``api_host`` must be set to an address
-            reachable by all compute nodes (e.g. the login node hostname):
+            reachable by all compute nodes (e.g. the login node hostname, or
+            ``0.0.0.0`` to bind all interfaces):
             ```yaml
             orchestration_settings:
-              legacy_poll: false
               api_host: login01.cluster.local   # reachable by compute nodes
               api_port: 8098
             ```
@@ -817,19 +813,24 @@ def get_config_docs() -> Dict[str, Any]:
             - ``FOAMBO_TRIAL_INDEX`` — the trial number
             - ``FOAMBO_SESSION_ID`` — unique ID for this foamBO instance (for rogue job detection)
 
-            **Allrun completion notification:**
+            **Allrun completion notification** (POST sets status override that
+            ``FoamJobRunner.poll_trial`` consumes on next poll cycle):
             ```bash
             curl -s -X POST "$FOAMBO_API_ENDPOINT/trials/$FOAMBO_TRIAL_INDEX/push/status" \\
               -H "Content-Type: application/json" \\
               -d '{"status":"completed","exit_code":'$?',"session_id":"'$FOAMBO_SESSION_ID'"}'
             ```
 
-            **Streaming metrics from OpenFOAM function objects:**
+            **Streaming metrics from OpenFOAM function objects** (attached via
+            the push queue for early-stopping decisions):
             ```bash
             curl -s -X POST "$FOAMBO_API_ENDPOINT/trials/$FOAMBO_TRIAL_INDEX/push/metrics" \\
               -H "Content-Type: application/json" \\
               -d '{"metrics":{"continuityErrors":'$VALUE'},"step":'$TIME',"session_id":"'$FOAMBO_SESSION_ID'"}'
             ```
+
+            Harvest latency is bounded by ``init_seconds_between_polls`` in the
+            Ax scheduler options.
         """).strip(),
     }
 

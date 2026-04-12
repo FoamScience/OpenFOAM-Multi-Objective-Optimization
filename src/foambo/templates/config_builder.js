@@ -8,7 +8,6 @@ function configBuilder() {
   return {
     activeSection: 'experiment',
     copied: false,
-    robustEnabled: false,
     preflightRunning: false,
     dryRunRunning: false,
     preflightResults: null,
@@ -29,7 +28,6 @@ function configBuilder() {
       {
         id: 'advanced', label: 'Advanced',
         children: [
-          { id: 'advanced.robust', label: 'Robust Optimization' },
           { id: 'advanced.dimred', label: 'Dimensionality Reduction' },
           { id: 'advanced.deps', label: 'Trial Dependencies' },
         ]
@@ -100,24 +98,9 @@ function configBuilder() {
         backend_options: { url: null },
       },
       trial_dependencies: [],
-      robust_optimization: {
-        risk_measure: 'CVaR',
-        robustness: 0.5,
-        context_points: 5,
-        context_groups: {},
-        context_constraints: [],
-      },
     },
 
     init() {
-      // Watch robustEnabled toggle
-      this.$watch('robustEnabled', (val) => {
-        if (!val) this.config.robust_optimization = null;
-        else this.config.robust_optimization = {
-          risk_measure: 'CVaR', robustness: 0.5,
-          context_points: 5, context_groups: {}, context_constraints: [],
-        };
-      });
       // Load field hints for tooltips
       this.loadFieldHints();
       // Re-apply tooltips when switching sections (new labels become visible)
@@ -429,11 +412,6 @@ function configBuilder() {
         });
       }
 
-      // Robust optimization
-      if (cfg.robust_optimization) {
-        out.robust_optimization = cfg.robust_optimization;
-      }
-
       return out;
     },
 
@@ -451,7 +429,7 @@ function configBuilder() {
         case 'optimization': return !!this.config.optimization.objective;
         case 'orchestration': return this.config.orchestration_settings.max_trials !== 50;
         case 'store': return this.config.store.save_to !== 'json' || this.config.store.read_from !== 'nowhere';
-        case 'advanced': return this.robustEnabled || this.config.trial_dependencies?.length > 0;
+        case 'advanced': return this.config.trial_dependencies?.length > 0;
         default: return false;
       }
     },
@@ -714,11 +692,6 @@ function configBuilder() {
         }));
       }
 
-      // Robust optimization
-      if (data.robust_optimization) {
-        this.robustEnabled = true;
-        this.config.robust_optimization = data.robust_optimization;
-      }
     },
 
     copyYaml() {

@@ -13,7 +13,7 @@
     1. Copy this file to your case's system/ directory
     2. Add to controlDict:  #include "foamboStreamMetrics"
     3. Customize the metric computation section below
-    4. Set orchestration_settings.poll_streaming_metrics: false in foamBO config
+    4. Set orchestration_settings.run_progress_commands_each_poll: false in foamBO config
 \*---------------------------------------------------------------------------*/
 
 foamboStreamMetrics

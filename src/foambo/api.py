@@ -118,9 +118,6 @@ class FoamBO:
         self._global_stop: dict | None = None
         self._early_stop: dict | None = None
 
-        # Robust optimization
-        self._robust: dict | None = None
-
         # Store
         self._save_to: str = "json"
         self._read_from: str = "nowhere"
@@ -352,45 +349,6 @@ class FoamBO:
             "fix_at": fix_at,
             "max_fix_fraction": max_fix_fraction,
         }
-        return self
-
-    def robust(
-        self,
-        context_groups: list[str],
-        risk_measure: str = "auto",
-        robustness: float = 0.5,
-        context_points: list[dict[str, float]] | None = None,
-        context_samples: int = 10,
-        context_constraints: list[str] | None = None,
-    ) -> FoamBO:
-        """Enable robust optimization across context (environmental) variables.
-
-        Optimizes design parameters for robustness across uncontrollable context
-        variations using a risk measure (MARS for MOO, CVaR for SOO by default).
-
-        Args:
-            context_groups: Parameter group names treated as context variables.
-                Each parameter must have a ``group=`` matching one of these names.
-            risk_measure: ``"auto"`` (default: MARS for MOO, CVaR for SOO),
-                ``"mars"`` (MVaR via random scalarizations), or ``"cvar"``.
-            robustness: 0-1 scale. Higher = more conservative.
-                Maps to alpha = max(1 - robustness, 0.05).
-            context_points: Explicit discrete operating points. If omitted,
-                auto-generated via Sobol from context parameter bounds.
-            context_samples: Number of Sobol samples when context_points is omitted.
-            context_constraints: Inequality constraints on context params
-                (e.g. ``"temp - 0.5*pressure >= 0"``).
-        """
-        self._robust = {
-            "context_groups": context_groups,
-            "risk_measure": risk_measure,
-            "robustness": robustness,
-            "context_samples": context_samples,
-        }
-        if context_points is not None:
-            self._robust["context_points"] = context_points
-        if context_constraints:
-            self._robust["context_constraints"] = context_constraints
         return self
 
     def transforms(self, only: list[str] | None = None,
@@ -815,7 +773,6 @@ class FoamBO:
                 "backend_options": {"url": self._backend_url},
             },
             "trial_dependencies": self._dependencies,
-            "robust_optimization": self._robust,
         }
 
 

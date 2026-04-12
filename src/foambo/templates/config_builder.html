@@ -128,7 +128,7 @@
                 <label>Values (comma-separated)</label>
                 <input type="text" :value="(p.values||[]).join(', ')" @change="p.values = $event.target.value.split(',').map(s=>s.trim()).filter(Boolean)">
               </div>
-              <!-- Groups (optional, for robust opt / matching_group) -->
+              <!-- Groups (optional, for matching_group / group analysis) -->
               <div class="form-group">
                 <label data-hint="experiment.parameters.groups">Groups (comma-separated, optional)</label>
                 <input type="text" :value="(p.groups||[]).join(', ')" @change="p.groups = $event.target.value.split(',').map(s=>s.trim()).filter(Boolean)" placeholder="e.g. context, mesh">
@@ -526,38 +526,6 @@
           <label>SQL URL</label>
           <input type="text" x-model="config.store.backend_options.url" placeholder="sqlite:///experiment.db">
         </div>
-      </section>
-
-      <!-- Section: Advanced - Robust Optimization -->
-      <section x-show="activeSection === 'advanced.robust'">
-        <h5>Robust Optimization</h5>
-        <div class="form-group">
-          <label class="toggle-label">
-            <input type="checkbox" x-model="robustEnabled" role="switch">
-            Enable robust optimization
-          </label>
-        </div>
-        <template x-if="robustEnabled">
-          <div>
-            <div class="param-grid">
-              <div class="form-group">
-                <label>Risk measure</label>
-                <select x-model="config.robust_optimization.risk_measure">
-                  <option value="CVaR">CVaR</option>
-                  <option value="MARS">MARS</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label>Robustness</label>
-                <input type="number" x-model.number="config.robust_optimization.robustness" step="0.01">
-              </div>
-              <div class="form-group">
-                <label>Context points</label>
-                <input type="number" x-model.number="config.robust_optimization.context_points" min="1">
-              </div>
-            </div>
-          </div>
-        </template>
       </section>
 
       <!-- Section: Advanced - Dimensionality Reduction -->

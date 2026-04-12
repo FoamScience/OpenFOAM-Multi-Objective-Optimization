@@ -100,7 +100,6 @@ class ExperimentResponse(BaseModel):
     poll_interval: float
     early_stopping: Optional[dict] = None
     dimensionality_reduction: Optional[dict] = None
-    robust_optimization: Optional[dict] = None
     dependency_rules: List[dict]
 
 class TrialDetail(BaseModel):
@@ -217,9 +216,8 @@ class _ApiState:
         self.last_callback: float = time.time()
         self.callback_seq: int = 0
 
-        # Event-driven orchestration state
-        self.event_log: list[dict] = []  # timestamped events
-        self.trial_push_event = threading.Event()
+        # Push-based remote runner state (consumed by FoamJobRunner.poll_trial)
+        self.event_log: list[dict] = []  # timestamped events (dashboard feed)
         self.trial_status_overrides: dict[int, str] = {}  # trial_idx -> "completed"/"failed"
         self.trial_pushed_metrics: dict[int, list] = {}  # trial_idx -> [{metrics, step, ts}]
         self.trial_heartbeats: dict[int, float] = {}
@@ -489,35 +487,6 @@ def _get_experiment_info() -> dict:
                 "max_fix_fraction": dr.max_fix_fraction,
             }
 
-        robust_dict = None
-        raw = _state.raw_cfg
-        if raw and 'robust_optimization' in raw and raw['robust_optimization']:
-            rc = raw['robust_optimization']
-            # Resolved risk measure from wiring (auto→cvar), fallback to config
-            resolved_rm = rc.get("risk_measure", "auto")
-            robust_dict = {
-                "context_groups": list(rc.get("context_groups", [])),
-                "risk_measure_config": rc.get("risk_measure", "auto"),
-                "robustness": rc.get("robustness", 0.5),
-                "alpha": max(1.0 - rc.get("robustness", 0.5), 0.05),
-                "context_samples": rc.get("context_samples", 10),
-                "context_constraints": list(rc.get("context_constraints", [])),
-            }
-            # Include resolved context_points and risk_measure from runner
-            if hasattr(exp.runner, '_robust_cfg') and exp.runner._robust_cfg:
-                rcfg = exp.runner._robust_cfg
-                if hasattr(rcfg, '_resolved_risk_measure'):
-                    resolved_rm = rcfg._resolved_risk_measure
-                if rcfg.context_points:
-                    robust_dict["context_points"] = rcfg.context_points
-                    robust_dict["n_w"] = len(rcfg.context_points)
-                if hasattr(exp.runner, '_context_param_names'):
-                    robust_dict["context_param_names"] = exp.runner._context_param_names
-                    robust_dict["design_param_names"] = [
-                        p for p in param_groups if p not in exp.runner._context_param_names]
-            robust_dict["risk_measure"] = resolved_rm
-            robust_dict["is_moo"] = hasattr(opt_config.objective, 'objectives')
-
         dep_rules = []
         runner = exp.runner
         if hasattr(runner, 'trial_dependencies') and runner.trial_dependencies:
@@ -547,7 +516,6 @@ def _get_experiment_info() -> dict:
             "early_stopping": es_dict,
             "es_thresholds": es_thresholds,
             "dimensionality_reduction": dr_dict,
-            "robust_optimization": robust_dict,
             "dependency_rules": dep_rules,
             "parameter_groups": param_groups,
         }
@@ -1035,46 +1003,6 @@ def _get_generation() -> dict:
         }
 
 
-def _get_robust_info():
-    """Return robust config if active, else None. Must be called under _state.lock."""
-    client = _state.client
-    if client is None:
-        return None
-    runner = client._experiment.runner
-    robust_cfg = getattr(runner, '_robust_cfg', None)
-    if robust_cfg is None or not robust_cfg.context_points:
-        return None
-    context_names = getattr(runner, '_context_param_names', [])
-    # Build minimize map
-    opt_config = client._experiment.optimization_config
-    minimize_map = {}
-    if hasattr(opt_config.objective, 'objectives'):
-        for obj in opt_config.objective.objectives:
-            for mn in obj.metric_names:
-                minimize_map[mn] = obj.minimize
-    else:
-        for mn in opt_config.objective.metric_names:
-            minimize_map[mn] = opt_config.objective.minimize
-    return {
-        "cfg": robust_cfg,
-        "context_names": context_names,
-        "context_points": robust_cfg.context_points,
-        "alpha": robust_cfg.alpha,
-        "robustness": robust_cfg.robustness,
-        "minimize_map": minimize_map,
-        "design_params": [p for p in client._experiment.search_space.parameters
-                          if p not in context_names],
-    }
-
-
-def _aggregate_cvar(values: list, alpha: float, minimize: bool) -> float:
-    """CVaR aggregation: mean of worst-alpha fraction."""
-    import numpy as np
-    sorted_vals = sorted(values, reverse=not minimize)
-    k = max(1, int(np.ceil(alpha * len(sorted_vals))))
-    return float(np.mean(sorted_vals[:k]))
-
-
 def _get_pareto(use_model: bool) -> dict:
     """Compute Pareto frontier under lock."""
     import warnings
@@ -1187,7 +1115,7 @@ def _get_pareto(use_model: bool) -> dict:
 
 
 def _do_predict(parameters: dict, context_point: dict | None = None) -> dict:
-    """Run model prediction under lock. Context-aware when robust mode active."""
+    """Run model prediction under lock."""
     with _state.lock:
         client = _state.client
         if client is None:
@@ -1214,66 +1142,18 @@ def _do_predict(parameters: dict, context_point: dict | None = None) -> dict:
 
         try:
             from ax.core.observation import ObservationFeatures
-            robust = _get_robust_info()
-
-            # Non-robust or specific context_point → single prediction
-            if robust is None or context_point is not None:
-                params = dict(parameters)
-                if context_point:
-                    params.update(context_point)
-                obs = [ObservationFeatures(parameters=params)]
-                means, sems = gs.adapter.predict(obs)
-                result = {}
-                for metric_name in means:
-                    result[metric_name] = {
-                        "mean": _extract_float(means[metric_name]),
-                        "sem": _extract_float(sems.get(metric_name, 0)),
-                    }
-                return {"predictions": result}
-
-            # Robust mode, no specific context → predict at ALL context points + aggregate
-            obs_list = []
-            for ctx_pt in robust["context_points"]:
-                params = dict(parameters)
-                for cn in robust["context_names"]:
-                    params[cn] = ctx_pt[cn]
-                obs_list.append(ObservationFeatures(parameters=params))
-
-            means, sems = gs.adapter.predict(obs_list)
-
-            per_context = []
-            for i, ctx_pt in enumerate(robust["context_points"]):
-                metrics = {}
-                for metric in means:
-                    cov_row = sems.get(metric, {})
-                    sem_vals = cov_row.get(metric, 0) if isinstance(cov_row, dict) else cov_row
-                    metrics[metric] = {
-                        "mean": _extract_float(means[metric][i] if isinstance(means[metric], list) else means[metric]),
-                        "sem": abs(_extract_float(sem_vals[i] if isinstance(sem_vals, list) else sem_vals)) ** 0.5,
-                    }
-                per_context.append({"context_point": ctx_pt, "predictions": metrics})
-
-            # CVaR aggregation
-            aggregated = {}
-            for metric in means:
-                vals = [pc["predictions"][metric]["mean"] for pc in per_context]
-                minimize = robust["minimize_map"].get(metric, False)
-                aggregated[metric] = {
-                    "mean": float(sum(vals) / len(vals)),
-                    "cvar": _aggregate_cvar(vals, robust["alpha"], minimize),
-                    "worst": min(vals) if minimize else max(vals),
-                    "best": max(vals) if minimize else min(vals),
+            params = dict(parameters)
+            if context_point:
+                params.update(context_point)
+            obs = [ObservationFeatures(parameters=params)]
+            means, sems = gs.adapter.predict(obs)
+            result = {}
+            for metric_name in means:
+                result[metric_name] = {
+                    "mean": _extract_float(means[metric_name]),
+                    "sem": _extract_float(sems.get(metric_name, 0)),
                 }
-
-            # Also return a simple predictions dict (CVaR values) for backward compat
-            predictions = {m: {"mean": aggregated[m]["cvar"], "sem": 0.0} for m in aggregated}
-
-            return {
-                "predictions": predictions,
-                "per_context": per_context,
-                "aggregated": aggregated,
-                "robust_mode": True,
-            }
+            return {"predictions": result}
         except Exception as e:
             raise HTTPException(503, f"Prediction failed: {e}")
 
@@ -1567,7 +1447,7 @@ def predict(req: PredictRequest):
 
 def _do_sweep(base_params: dict, sweep_params: list[str], n_points: int = 25,
               context_point: dict | None = None) -> dict:
-    """Sweep each param across its bounds. Context-aware when robust mode active."""
+    """Sweep each param across its bounds."""
     import numpy as np
     with _state.lock:
         client = _state.client
@@ -1582,13 +1462,8 @@ def _do_sweep(base_params: dict, sweep_params: list[str], n_points: int = 25,
             raise HTTPException(503, "Model not fitted yet")
 
         exp = client._experiment
-        robust = _get_robust_info()
         from ax.core.observation import ObservationFeatures
         from ax.core.parameter import ChoiceParameter
-
-        # Filter out context params from sweep if robust and not explicitly requested
-        if robust:
-            sweep_params = [p for p in sweep_params if p not in robust["context_names"]]
 
         def _build_obs(base, pname, xs):
             obs = []
@@ -1606,108 +1481,48 @@ def _do_sweep(base_params: dict, sweep_params: list[str], n_points: int = 25,
             except (TypeError, ValueError):
                 return 0.0
 
-        def _sweep_single(base):
-            """Sweep all params for a single base parameter set."""
-            all_obs = []
-            sweep_meta = []
-            for pname in sweep_params:
-                param = exp.search_space.parameters.get(pname)
-                if param is None or isinstance(param, ChoiceParameter):
-                    continue
-                lo, hi = param.lower, param.upper
-                if param.parameter_type.name == "INT":
-                    xs = np.unique(np.linspace(lo, hi, n_points).astype(int)).tolist()
-                else:
-                    xs = np.linspace(lo, hi, n_points).tolist()
-                start = len(all_obs)
-                all_obs.extend(_build_obs(base, pname, xs))
-                sweep_meta.append((pname, xs, start, len(xs)))
+        params = dict(base_params)
+        if context_point:
+            params.update(context_point)
 
-            base_idx = len(all_obs)
-            all_obs.append(ObservationFeatures(parameters=base))
+        all_obs = []
+        sweep_meta = []
+        for pname in sweep_params:
+            param = exp.search_space.parameters.get(pname)
+            if param is None or isinstance(param, ChoiceParameter):
+                continue
+            lo, hi = param.lower, param.upper
+            if param.parameter_type.name == "INT":
+                xs = np.unique(np.linspace(lo, hi, n_points).astype(int)).tolist()
+            else:
+                xs = np.linspace(lo, hi, n_points).tolist()
+            start = len(all_obs)
+            all_obs.extend(_build_obs(params, pname, xs))
+            sweep_meta.append((pname, xs, start, len(xs)))
 
-            means, sems = gs.adapter.predict(all_obs)
+        base_idx = len(all_obs)
+        all_obs.append(ObservationFeatures(parameters=params))
 
-            curves = []
-            for pname, xs, start, count in sweep_meta:
-                preds = {}
-                for metric in means:
-                    m_means = [_val(means[metric], start + i) for i in range(count)]
-                    cov_row = sems.get(metric, {})
-                    m_sems_raw = cov_row.get(metric, 0) if isinstance(cov_row, dict) else cov_row
-                    m_sems = [_val(m_sems_raw, start + i) for i in range(count)]
-                    preds[metric] = {"mean": m_means, "sem": m_sems}
-                curves.append({"param_name": pname, "x_values": xs, "predictions": preds})
+        means, sems = gs.adapter.predict(all_obs)
 
-            base_preds = {}
+        curves = []
+        for pname, xs, start, count in sweep_meta:
+            preds = {}
             for metric in means:
-                base_preds[metric] = {
-                    "mean": _val(means[metric], base_idx),
-                    "sem": _val(sems.get(metric, {}).get(metric, 0) if isinstance(sems.get(metric), dict) else sems.get(metric, 0), base_idx),
-                }
-            return curves, base_preds
+                m_means = [_val(means[metric], start + i) for i in range(count)]
+                cov_row = sems.get(metric, {})
+                m_sems_raw = cov_row.get(metric, 0) if isinstance(cov_row, dict) else cov_row
+                m_sems = [_val(m_sems_raw, start + i) for i in range(count)]
+                preds[metric] = {"mean": m_means, "sem": m_sems}
+            curves.append({"param_name": pname, "x_values": xs, "predictions": preds})
 
-        # Non-robust or specific context → single sweep
-        if robust is None or context_point is not None:
-            params = dict(base_params)
-            if context_point:
-                params.update(context_point)
-            curves, base_preds = _sweep_single(params)
-            return {"curves": curves, "base_predictions": base_preds}
-
-        # Robust mode → sweep at each context point, then aggregate
-        all_context_curves = []  # list of (ctx_pt, curves, base_preds)
-        for ctx_pt in robust["context_points"]:
-            params = dict(base_params)
-            for cn in robust["context_names"]:
-                params[cn] = ctx_pt[cn]
-            curves, base_preds = _sweep_single(params)
-            all_context_curves.append((ctx_pt, curves, base_preds))
-
-        # Aggregate: CVaR across contexts for each sweep point
-        n_ctx = len(robust["context_points"])
-        aggregated_curves = []
-        # Use first context's structure as template
-        template_curves = all_context_curves[0][1]
-        for ci, tmpl in enumerate(template_curves):
-            pname = tmpl["param_name"]
-            xs = tmpl["x_values"]
-            agg_preds = {}
-            for metric in tmpl["predictions"]:
-                minimize = robust["minimize_map"].get(metric, False)
-                agg_means = []
-                for xi in range(len(xs)):
-                    ctx_vals = [all_context_curves[j][1][ci]["predictions"][metric]["mean"][xi]
-                                for j in range(n_ctx)]
-                    agg_means.append(_aggregate_cvar(ctx_vals, robust["alpha"], minimize))
-                agg_preds[metric] = {"mean": agg_means, "sem": [0.0] * len(xs)}
-            aggregated_curves.append({"param_name": pname, "x_values": xs, "predictions": agg_preds})
-
-        # Aggregate base predictions
-        agg_base = {}
-        for metric in all_context_curves[0][2]:
-            minimize = robust["minimize_map"].get(metric, False)
-            ctx_vals = [all_context_curves[j][2][metric]["mean"] for j in range(n_ctx)]
-            agg_base[metric] = {
-                "mean": _aggregate_cvar(ctx_vals, robust["alpha"], minimize),
-                "sem": 0.0,
+        base_preds = {}
+        for metric in means:
+            base_preds[metric] = {
+                "mean": _val(means[metric], base_idx),
+                "sem": _val(sems.get(metric, {}).get(metric, 0) if isinstance(sems.get(metric), dict) else sems.get(metric, 0), base_idx),
             }
-
-        # Per-context curves for detailed view
-        context_curves = []
-        for ctx_pt, curves, base_preds in all_context_curves:
-            context_curves.append({
-                "context_point": ctx_pt,
-                "curves": curves,
-                "base_predictions": base_preds,
-            })
-
-        return {
-            "curves": aggregated_curves,
-            "base_predictions": agg_base,
-            "context_curves": context_curves,
-            "robust_mode": True,
-        }
+        return {"curves": curves, "base_predictions": base_preds}
 
 
 @app.post("/api/v1/predict/sweep")
@@ -1776,6 +1591,7 @@ def get_status():
         "trials_running": running,
         "trials_total": total,
         "model_fitted": has_model,
+        "timing": getattr(_state, '_timing', None),
     })
 
 
@@ -1936,22 +1752,13 @@ def _compute_ax_healthcheck(analysis_cls, **kwargs) -> dict:
 
 @app.post("/api/v1/analysis/sensitivity")
 def post_analysis_sensitivity(request_body: dict):
-    """Sobol sensitivity analysis via Ax. Defaults to design-only params when robust."""
+    """Sobol sensitivity analysis via Ax."""
     metric = request_body.get("metric")
     top_k = request_body.get("top_k", 10)
-    include_context = request_body.get("include_context", False)
     try:
-        with _state.lock:
-            robust = _get_robust_info()
-        # If robust and not including context, filter param list via top_k on design only
-        if robust and not include_context:
-            top_k = min(top_k, len(robust["design_params"]))
         from ax.analysis.plotly.sensitivity import SensitivityAnalysisPlot
         result = _compute_ax_analysis(
             SensitivityAnalysisPlot, metric_name=metric, top_k=top_k)
-        # Tag context params in result for dashboard to distinguish
-        if robust and not include_context:
-            result["excluded_context_params"] = robust["context_names"]
         return SafeJSONResponse(content=result)
     except HTTPException:
         raise
@@ -1987,29 +1794,21 @@ def post_analysis_cross_validation(request_body: dict = {}):
 
 @app.post("/api/v1/analysis/contour")
 def post_analysis_contour(request_body: dict):
-    """Contour / response surface plot via Ax. Defaults to design-only param pairs when robust."""
+    """Contour / response surface plot via Ax."""
     metric = request_body.get("metric")
-    include_context = request_body.get("include_context", False)
     try:
         from ax.analysis.plotly.surface.contour import ContourPlot
         with _state.lock:
             client = _state.client
             if client is None:
                 raise HTTPException(503, "Optimizer not initialized")
-            robust = _get_robust_info()
-            all_params = [p for p in client._experiment.search_space.parameters
-                          if hasattr(client._experiment.search_space.parameters[p], 'lower')]
-            if robust and not include_context:
-                params = [p for p in all_params if p not in robust["context_names"]]
-            else:
-                params = all_params
+            params = [p for p in client._experiment.search_space.parameters
+                      if hasattr(client._experiment.search_space.parameters[p], 'lower')]
         if len(params) < 2:
             return SafeJSONResponse(content={"error": "Need at least 2 range parameters for contour"}, status_code=400)
         top_k = min(3, len(params) * (len(params) - 1) // 2)
         from ax.analysis.plotly.top_surfaces import TopSurfacesAnalysis
         result = _compute_ax_analysis(TopSurfacesAnalysis, metric_name=metric, top_k=top_k)
-        if robust and not include_context:
-            result["excluded_context_params"] = robust["context_names"]
         return SafeJSONResponse(content=result)
     except HTTPException:
         raise
@@ -2104,18 +1903,8 @@ def post_group_sensitivity(request_body: dict):
                 for g in groups:
                     group_scores[g] = group_scores.get(g, 0.0) + float(first_order[i])
 
-        # Flag context groups
-        context_names = set(getattr(exp.runner, '_context_param_names', []))
-        context_groups = {}
-        if context_names:
-            for g in group_scores:
-                # A group is a "context group" if ALL its params are context params
-                g_params = [n for n, gs in param_groups.items() if g in gs]
-                context_groups[g] = all(p in context_names for p in g_params) if g_params else False
-
         return SafeJSONResponse(content={
             "groups": group_scores, "metric": metric,
-            "context_groups": context_groups,
         })
     except HTTPException:
         raise
@@ -2263,113 +2052,6 @@ def post_group_interactions(request_body: dict):
         return SafeJSONResponse(content={"error": str(e)}, status_code=500)
 
 
-@app.post("/api/v1/analysis/robustness-profile")
-def post_robustness_profile(request_body: dict = {}):
-    """Predict best design's performance at each context point (robust mode only)."""
-    try:
-        with _state.lock:
-            client = _state.client
-            if client is None:
-                raise HTTPException(503, "Not initialized")
-            exp = client._experiment
-            runner = exp.runner
-            robust_cfg = getattr(runner, '_robust_cfg', None)
-            if robust_cfg is None or not robust_cfg.context_points:
-                return SafeJSONResponse(content={"error": "Robust optimization not configured"}, status_code=400)
-
-            _ensure_model_fitted()
-            gs = client._generation_strategy
-
-            # Find best trial (by primary objective)
-            from ax.core.base_trial import TrialStatus
-            opt_config = exp.optimization_config
-            obj_metrics = list(opt_config.objective.metric_names)
-            minimize_map = {}
-            if hasattr(opt_config.objective, 'objectives'):
-                for obj in opt_config.objective.objectives:
-                    for mn in obj.metric_names:
-                        minimize_map[mn] = obj.minimize
-            else:
-                for mn in obj_metrics:
-                    minimize_map[mn] = opt_config.objective.minimize
-
-            data = exp.lookup_data()
-            df = data.df if hasattr(data, 'df') else data
-            primary = obj_metrics[0]
-            best_idx, best_val = None, None
-            for idx, trial in exp.trials.items():
-                if trial.status != TrialStatus.COMPLETED:
-                    continue
-                mdf = df[(df["trial_index"] == idx) & (df["metric_name"] == primary)]
-                if mdf.empty:
-                    continue
-                val = float(mdf.iloc[-1]["mean"])
-                if best_val is None or (minimize_map[primary] and val < best_val) or \
-                   (not minimize_map[primary] and val > best_val):
-                    best_val = val
-                    best_idx = idx
-            if best_idx is None:
-                return SafeJSONResponse(content={"error": "No completed trials"}, status_code=400)
-
-            best_params = dict(exp.trials[best_idx].arm.parameters)
-            context_names = getattr(runner, '_context_param_names', [])
-
-            # Predict at each context point using the best design params
-            from ax.core.observation import ObservationFeatures
-            obs_list = []
-            for ctx_pt in robust_cfg.context_points:
-                params = dict(best_params)
-                for cn in context_names:
-                    params[cn] = ctx_pt[cn]
-                obs_list.append(ObservationFeatures(parameters=params))
-
-            means, sems = gs.adapter.predict(obs_list)
-
-            # Build per-context-point results
-            def _val(v, i):
-                if isinstance(v, list):
-                    return float(v[i]) if i < len(v) else 0.0
-                return float(v)
-
-            per_context = []
-            for i, ctx_pt in enumerate(robust_cfg.context_points):
-                metrics = {}
-                for metric in means:
-                    cov_row = sems.get(metric, {})
-                    sem_vals = cov_row.get(metric, 0) if isinstance(cov_row, dict) else cov_row
-                    metrics[metric] = {
-                        "mean": _val(means[metric], i),
-                        "sem": abs(_val(sem_vals, i)) ** 0.5,
-                    }
-                per_context.append({
-                    "context_point": ctx_pt,
-                    "predictions": metrics,
-                })
-
-            # Compute CVaR for each metric
-            import numpy as np
-            alpha = robust_cfg.alpha
-            cvar_values = {}
-            for metric in means:
-                vals = [pc["predictions"][metric]["mean"] for pc in per_context]
-                sorted_vals = sorted(vals, reverse=not minimize_map.get(metric, False))
-                k = max(1, int(np.ceil(alpha * len(sorted_vals))))
-                cvar_values[metric] = float(np.mean(sorted_vals[:k]))
-
-        return SafeJSONResponse(content={
-            "best_trial": best_idx,
-            "best_design_params": {k: v for k, v in best_params.items() if k not in context_names},
-            "per_context": per_context,
-            "cvar": cvar_values,
-            "alpha": alpha,
-            "robustness": robust_cfg.robustness,
-        })
-    except HTTPException:
-        raise
-    except Exception as e:
-        return SafeJSONResponse(content={"error": str(e)}, status_code=500)
-
-
 # Push endpoints (event-driven orchestration)
 
 @app.post("/api/v1/trials/{trial_index}/push/status")
@@ -2392,7 +2074,6 @@ def push_trial_status(trial_index: int, request_body: dict):
         _state.trial_heartbeats[trial_index] = time.time()
         _state.log_event(trial_index, f"trial.{status}",
                          request_body.get("message", ""))
-    _state.trial_push_event.set()
     _state.bump("trials")
     return SafeJSONResponse(content={"ok": True})
 
