@@ -304,7 +304,7 @@ The generation strategy controls how new trial parameterizations are chosen.
   trials from a CSV or a foamBO JSON state file before BO starts
 - Supports ``filter`` (per-parameter value+tolerance, directions: both/left/right)
   and ``drop_params`` (strip params not present in the target search space)
-- Enables robust→non-robust workflows: run a robust MARS study, then continue
+- Enables robust→non-robust workflows: run a robust CVaR study, then continue
   with a non-robust focused run seeded on the Pareto-filtered robust data
 - See concept: ``SeedDataNode``
 

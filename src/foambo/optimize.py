@@ -95,6 +95,18 @@ def optimize(cfg, debug=False):
         return _orig_object_to_json(obj, **kwargs)
     _ax_encoder.object_to_json = _patched_object_to_json
     _ax_encoder._object_to_json = _patched_object_to_json
+
+    # Register custom BoTorch classes so Ax's JSON serializer can handle them
+    from ax.storage.botorch_modular_registry import (
+        CLASS_TO_REGISTRY, CLASS_TO_REVERSE_REGISTRY,
+        register_acquisition,
+    )
+    from botorch.models.transforms.input import InputTransform
+    from .robustness import SubstituteContextFeatures, RobustAcquisition
+    CLASS_TO_REGISTRY[InputTransform][SubstituteContextFeatures] = "SubstituteContextFeatures"
+    CLASS_TO_REVERSE_REGISTRY[InputTransform]["SubstituteContextFeatures"] = SubstituteContextFeatures
+    register_acquisition(RobustAcquisition)
+
     from .analysis import compute_analysis_cards, plot_pareto_frontier
     from .orchestrate import (
         ExperimentOptions, OptimizationOptions,
@@ -121,6 +133,15 @@ def optimize(cfg, debug=False):
         store_cfg = cfg.store
         baseline_cfg = cfg.baseline
         trial_deps = cfg.trial_dependencies
+        robust_cfg = None
+        if cfg.robust_optimization is not None:
+            from foambo.robustness import RobustOptimizationConfig
+            raw_robust = cfg.robust_optimization
+            if not isinstance(raw_robust, RobustOptimizationConfig):
+                robust_cfg = RobustOptimizationConfig.model_validate(
+                    dict(raw_robust) if hasattr(raw_robust, 'items') else raw_robust)
+            else:
+                robust_cfg = raw_robust
     elif isinstance(cfg, DictConfig):
         raw_cfg = cfg
         foambo_cfg = None
@@ -130,6 +151,10 @@ def optimize(cfg, debug=False):
         orch_cfg = ConfigOrchestratorOptions.model_validate(dict(cfg['orchestration_settings']))
         store_cfg = StoreOptions.model_validate(dict(cfg['store']))
         baseline_cfg = BaselineOptions.model_validate(dict(cfg['baseline']))
+        robust_cfg = None
+        if 'robust_optimization' in cfg and cfg['robust_optimization'] is not None:
+            from foambo.robustness import RobustOptimizationConfig
+            robust_cfg = RobustOptimizationConfig.model_validate(dict(cfg['robust_optimization']))
         trial_deps = []
         if 'trial_dependencies' in cfg:
             deps_raw = cfg['trial_dependencies']
@@ -244,6 +269,12 @@ def optimize(cfg, debug=False):
         nl_callables = build_nonlinear_constraints(nl_exprs, param_names)
         patch_optimize_acqf(nl_callables)
         log.info("Nonlinear parameter constraints active: %s", nl_exprs)
+
+    # Wire robust optimization (context variables + risk measures)
+    _robust_state = None
+    if robust_cfg is not None:
+        from foambo.robustness import augment_generator_specs
+        _robust_state = augment_generator_specs(client, exp_cfg, robust_cfg)
 
     client.set_early_stopping_strategy(orch_cfg.early_stopping_strategy)
 
@@ -473,6 +504,11 @@ def optimize(cfg, debug=False):
         store_cfg.save(client)
         _maybe_reduce_dimensions()
         streaming_metric(client, raw_cfg["optimization"])
+        # Cycle context point for next robust BO gen call
+        if _robust_state is not None:
+            from foambo.robustness import cycle_context
+            n_trials = len(client._experiment.trials)
+            cycle_context(client, _robust_state, n_trials)
         # Update runner's trial registry for dependency resolution
         runner = client._experiment.runner
         from ax.core.base_trial import TrialStatus as _TS

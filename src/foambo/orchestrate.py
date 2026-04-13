@@ -1201,6 +1201,17 @@ class FoamBOConfig(FoamBOBaseModel):
     orchestration_settings: ConfigOrchestratorOptions = Field(description="Timeouts, polling, stopping strategies")
     store: StoreOptions = Field(description="Where to save/load experiment state")
     trial_dependencies: List[TrialDependency] = Field(default=[], description="Trial-to-trial dependency definitions")
+    robust_optimization: Any = Field(default=None, description="Robust optimization config (parsed lazily from foambo.robustness)")
+
+    @field_validator("robust_optimization", mode="before")
+    @classmethod
+    def parse_robust_cfg(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, dict | DictConfig):
+            from foambo.robustness import RobustOptimizationConfig
+            return RobustOptimizationConfig.model_validate(dict(v) if isinstance(v, DictConfig) else v)
+        return v
 
     @field_validator("trial_dependencies", mode="before")
     @classmethod

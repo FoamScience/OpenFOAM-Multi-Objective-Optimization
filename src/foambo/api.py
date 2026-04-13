@@ -98,6 +98,7 @@ class FoamBO:
         self._transforms: list[str] | None = None
         self._exclude_transforms: list[str] | None = None
         self._dim_reduction: dict | None = None
+        self._robust: dict | None = None
         self._kernel = None  # gpytorch kernel class
         self._likelihood_class = None
         self._likelihood_options = {}
@@ -316,6 +317,42 @@ class FoamBO:
                         percentile_threshold=25, min_progression=5)
         """
         self._early_stop = kwargs
+        return self
+
+    def robust(
+        self,
+        context_groups: list[str],
+        risk_measure: str = "auto",
+        robustness: float = 0.5,
+        context_points: list[dict[str, float]] | None = None,
+        context_samples: int = 10,
+        context_constraints: list[str] | None = None,
+    ) -> FoamBO:
+        """Enable robust optimization across environmental/context variables.
+
+        Parameters in the specified groups are treated as uncontrollable
+        context variables.  The optimizer finds designs that perform well
+        across the context envelope, measured by a risk measure (CVaR for
+        single-objective, MARS for multi-objective by default).
+
+        Args:
+            context_groups: Parameter group names to treat as context variables.
+            risk_measure: ``"auto"`` (MARS for MOO, CVaR for SOO), ``"cvar"``,
+                or ``"mars"``.
+            robustness: 0 = risk-neutral, 1 = most conservative.
+            context_points: Explicit context scenarios.  If ``None``,
+                auto-generated via Sobol quasi-random sampling.
+            context_samples: Number of Sobol samples (ignored if context_points given).
+            context_constraints: Inequality filters on context points.
+        """
+        self._robust = {
+            "context_groups": context_groups,
+            "risk_measure": risk_measure,
+            "robustness": robustness,
+            "context_points": context_points,
+            "context_samples": context_samples,
+            "context_constraints": context_constraints or [],
+        }
         return self
 
     def reduce(self, after_trials: int = 10, min_importance: float = 0.05,
@@ -773,6 +810,7 @@ class FoamBO:
                 "backend_options": {"url": self._backend_url},
             },
             "trial_dependencies": self._dependencies,
+            "robust_optimization": self._robust,
         }
 
 
