@@ -11,7 +11,7 @@ function app(){return{
   lastUpdate:'',tf:'all',tsk:'index',tsd:1,xt:null,td:null,tdViz:null,tdVizLoading:false,tdVizErr:'',pvState:'',pp:{},predicting:false,pr:null,pe:null,cs:[],cv:{},cmp:[],
   enlargedEl:null,
   anlMetric:'',anlTopK:10,anlLoading:false,anlError:'',anlSens:null,anlCV:null,anlPC:null,anlContour:null,anlSearch:null,anlInsights:null,anlHealth:null,anlGroupSens:null,anlGroupInt:null,anlGroupBest:null,frozenGroups:{},fetchTrialIdx:'',
-  sweeping:false,sweepData:null,sweepErr:null,sweepNPts:25,
+  sweeping:false,sweepData:null,sweepErr:null,sweepNPts:25,sweepMetric:'',
   _schedPoll(){setTimeout(async()=>{await this.r();this._schedPoll()},3000)},
   async init(){await this.r();this._schedPoll();this.$watch('tab',()=>this.r());document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const n=parseInt(e.key);if(n>=1&&n<=this.tabs.length)this.tab=this.tabs[n-1].id;if(e.key==='v'&&!e.ctrlKey&&!e.metaKey){const hovered=document.querySelector('.chart-card:hover');if(hovered){const plotDiv=hovered.querySelector('.js-plotly-plot')||(hovered.classList.contains('js-plotly-plot')?hovered:null);if(plotDiv&&plotDiv.data){this.enlargedEl=true;this.$nextTick(()=>{const target=document.getElementById('enlarge-target');if(target)Plotly.react(target,plotDiv.data,{...plotDiv.layout,width:null,height:null},PC)})}}}if(e.key==='Escape'){this.enlargedEl=null;const et=document.getElementById('enlarge-target');if(et)Plotly.purge(et)}});this.$watch('xt',async(v)=>{this.td=null;this.tdViz=null;this.tdVizLoading=false;this.tdVizErr='';if(v!==null){const r=await this.f('trials/'+v);if(r&&!r._error)this.td=r}})},
   _etags:{},
@@ -184,68 +184,117 @@ function app(){return{
     return(100-ratio*100)+'%';
   },
   async predict(){this.predicting=true;this.pe=null;this.pr=null;try{const r=await this.f('predict','POST',{parameters:this.pp});if(r?._error)this.pe=r._error;else if(r?.predictions)this.pr=r;else this.pe='No predictions returned'}catch(e){this.pe=e.message}this.predicting=false},
-  async sweepGroup(group){
+  async sweepContext(){
+    // Sweep only context parameters
+    const ctxParams=this.state.status?.robust?.context_params||[];
+    if(!ctxParams.length)return;
     this.sweeping=true;this.sweepErr=null;this.sweepData=null;
     try{
-      const r=await this.f('predict/group-sweep','POST',{frozen_group:group,base_parameters:this.pp,n_points:this.sweepNPts});
-      if(r?._error)this.sweepErr=r._error;else{this.sweepData=r;if(r.base_predictions)this.pr={predictions:r.base_predictions}}
+      const r=await this.f('predict/sweep','POST',{base_parameters:this.pp,sweep_params:ctxParams,n_points:this.sweepNPts});
+      if(r?._error)this.sweepErr=r._error;else{this.sweepData=r;if(r.base_predictions)this.pr={predictions:r.base_predictions};if(!this.sweepMetric)this.sweepMetric=this.state.experiment?.objectives?.[0]?.name||''}
     }catch(e){this.sweepErr=e.message}
     this.sweeping=false;
     this.$nextTick(()=>this.renderSweepCharts());
   },
+  async sweepGroup(group){
+    this.sweeping=true;this.sweepErr=null;this.sweepData=null;
+    try{
+      const r=await this.f('predict/group-sweep','POST',{frozen_group:group,base_parameters:this.pp,n_points:this.sweepNPts});
+      if(r?._error)this.sweepErr=r._error;else{this.sweepData=r;if(r.base_predictions)this.pr={predictions:r.base_predictions};if(!this.sweepMetric)this.sweepMetric=this.state.experiment?.objectives?.[0]?.name||''}
+    }catch(e){this.sweepErr=e.message}
+    this.sweeping=false;
+    this.$nextTick(()=>this.renderSweepCharts());
+  },
+  isCtxParam(pname){
+    return(this.state.status?.robust?.context_params||[]).includes(pname);
+  },
+  _sweepRanges(){
+    // Compute effect range per param for the selected metric
+    if(!this.sweepData?.curves)return{};
+    const mn=this.sweepMetric||(this.state.experiment?.objectives?.[0]?.name)||'';
+    const ranges={};
+    for(const curve of this.sweepData.curves){
+      const pred=curve.predictions[mn];
+      if(!pred?.mean?.length)continue;
+      const vals=pred.mean;
+      ranges[curve.param_name]=Math.max(...vals)-Math.min(...vals);
+    }
+    return ranges;
+  },
+  sortedSweepCurves(){
+    if(!this.sweepData?.curves)return[];
+    const ranges=this._sweepRanges();
+    return this.sweepData.curves
+      .map((c,i)=>({...c,_sortIdx:i,_range:ranges[c.param_name]||0}))
+      .sort((a,b)=>b._range-a._range);
+  },
   renderSweepCharts(){
     if(!this.sweepData?.curves)return;
-    const objs=this.state.experiment?.objectives||[];
-    this.sweepData.curves.forEach((curve,idx)=>{
-      const el=document.getElementById('sweep-chart-'+idx);
-      if(!el)return;
-      const traces=[];
-      objs.forEach((obj,oi)=>{
-        const mn=obj.name;const pred=curve.predictions[mn];if(!pred)return;
-        const color=CL[oi%CL.length];
-        const upper=pred.mean.map((m,i)=>m+pred.sem[i]);
-        const lower=pred.mean.map((m,i)=>m-pred.sem[i]);
-        // Uncertainty band (SEM area) — single closed polygon
-        const hr=parseInt(color.slice(1,3),16),hg=parseInt(color.slice(3,5),16),hb=parseInt(color.slice(5,7),16);
-        const fc='rgba('+hr+','+hg+','+hb+',0.18)';
-        const bandX=[...curve.x_values,...[...curve.x_values].reverse()];
-        const bandY=[...upper,...[...lower].reverse()];
-        traces.push({x:bandX,y:bandY,fill:'toself',fillcolor:fc,line:{width:0},mode:'none',showlegend:false,legendgroup:mn,hoverinfo:'skip'});
-        // Mean line with SEM in hover
-        const htext=pred.mean.map((m,i)=>mn+': '+fmtN(m)+' ± '+fmtN(pred.sem[i]));
-        traces.push({x:curve.x_values,y:pred.mean,mode:'lines',line:{color,width:2},name:mn,
-          showlegend:idx===0,legendgroup:mn,text:htext,hoverinfo:'text+x'});
+    const mn=this.sweepMetric||(this.state.experiment?.objectives?.[0]?.name)||'';
+    if(!mn)return;
+    const ranges=this._sweepRanges();
+    const sorted=this.sortedSweepCurves();
+
+    // --- Tornado chart ---
+    const tornadoEl=document.getElementById('sweep-tornado');
+    if(tornadoEl&&sorted.length){
+      const names=sorted.map(c=>c.param_name);
+      const vals=sorted.map(c=>c._range);
+      const colors=sorted.map(c=>this.isCtxParam(c.param_name)?'rgba(234,88,12,0.7)':'rgba(59,130,246,0.7)');
+      // Horizontal bars, reversed so largest is at top
+      Plotly.react(tornadoEl,[{
+        y:[...names].reverse(),x:[...vals].reverse(),type:'bar',orientation:'h',
+        marker:{color:[...colors].reverse()},
+        text:[...vals].reverse().map(v=>fmtN(v)),textposition:'outside',textfont:{size:9},
+        hoverinfo:'y+x',
+      }],{
+        ...PL,autosize:true,
+        title:{text:'Effect on '+mn+' (range when sweeping each parameter)',font:{size:11,color:'#94a3b8'}},
+        xaxis:{...PL.xaxis,title:'Effect range'},
+        yaxis:{...PL.yaxis,automargin:true,tickfont:{size:9}},
+        margin:{l:130,r:60,t:28,b:40},
+      },PC);
+    }
+
+    // --- Individual sweep curves ---
+    this.$nextTick(()=>{
+      for(const curve of sorted){
+        const el=document.getElementById('sweep-chart-'+curve._sortIdx);
+        if(!el)continue;
+        const pred=curve.predictions[mn];
+        if(!pred?.mean?.length)continue;
+        const isCtx=this.isCtxParam(curve.param_name);
+        const color=isCtx?'rgba(234,88,12,0.9)':'#00d4aa';
+        const upper=pred.mean.map((m,i)=>m+(pred.sem[i]||0));
+        const lower=pred.mean.map((m,i)=>m-(pred.sem[i]||0));
+        // Parse color for fill
+        const fc=isCtx?'rgba(234,88,12,0.12)':'rgba(0,212,170,0.12)';
+        const traces=[
+          // SEM band
+          {x:[...curve.x_values,...[...curve.x_values].reverse()],
+           y:[...upper,...[...lower].reverse()],
+           fill:'toself',fillcolor:fc,line:{width:0},mode:'none',showlegend:false,hoverinfo:'skip'},
+          // Mean line
+          {x:curve.x_values,y:pred.mean,mode:'lines',line:{color,width:2.5},name:mn,
+           showlegend:false,
+           text:pred.mean.map((m,i)=>fmtN(m)+' \u00b1 '+fmtN(pred.sem[i])),hoverinfo:'text+x'},
+        ];
         // Current value marker
-        const bv=this.pp[curve.param_name];const bp=this.sweepData.base_predictions?.[mn];
-        if(bv!==undefined&&bp){traces.push({x:[bv],y:[bp.mean],mode:'markers',marker:{color,size:8,symbol:'diamond'},showlegend:false,legendgroup:mn,name:'Current'})}
-      });
-      const layout={...PL,title:{text:curve.param_name,font:{size:12}},
-        xaxis:{...PL.xaxis,title:curve.param_name},yaxis:{...PL.yaxis,title:'Objective'},
-        legend:{orientation:'h',y:-0.25,yanchor:'top',font:{size:9}},hovermode:'x unified',margin:{l:55,r:15,t:30,b:55}};
-      Plotly.react(el,traces,layout,PC);
-      // Sync legend clicks across all sweep charts
-      if(idx===0){
-        const syncLegend=(evtData)=>{
-          const ci=evtData.curveNumber;
-          const firstEl=document.getElementById('sweep-chart-0');
-          if(!firstEl||!firstEl.data||!firstEl.data[ci])return;
-          const vis=firstEl.data[ci].visible;
-          const grp=firstEl.data[ci].legendgroup;
-          if(!grp)return;
-          this.sweepData.curves.forEach((_,j)=>{
-            if(j===0)return;
-            const oel=document.getElementById('sweep-chart-'+j);
-            if(!oel||!oel.data)return;
-            const upd={};
-            oel.data.forEach((t,ti)=>{if(t.legendgroup===grp)upd[ti]=vis});
-            if(Object.keys(upd).length){
-              const indices=Object.keys(upd).map(Number);
-              Plotly.restyle(oel,{visible:indices.map(i=>upd[i])},indices);
-            }
-          });
-        };
-        el.on('plotly_legendclick',(d)=>{setTimeout(()=>syncLegend(d),50);return true});
-        el.on('plotly_legenddoubleclick',(d)=>{setTimeout(()=>syncLegend(d),50);return true});
+        const bv=this.pp[curve.param_name];
+        const bp=this.sweepData.base_predictions?.[mn];
+        if(bv!==undefined&&bp){
+          traces.push({x:[bv],y:[bp.mean],mode:'markers',
+            marker:{color:'#fff',size:10,symbol:'diamond',line:{width:2,color}},
+            showlegend:false,name:'Current',hoverinfo:'text',text:['Current: '+fmtN(bp.mean)]});
+        }
+        const titleColor=isCtx?'rgba(234,88,12,0.9)':'#94a3b8';
+        Plotly.react(el,traces,{
+          ...PL,
+          title:{text:curve.param_name+(isCtx?' (context)':''),font:{size:11,color:titleColor}},
+          xaxis:{...PL.xaxis,title:curve.param_name},
+          yaxis:{...PL.yaxis,title:mn},
+          hovermode:'x unified',margin:{l:55,r:15,t:28,b:50},
+        },PC);
       }
     });
   },
@@ -253,70 +302,81 @@ function app(){return{
     this.anlLoading=true;this.anlError='';
     const m=this.anlMetric||(this.state.experiment?.objectives?.[0]?.name)||'';
     if(!m){this.anlError='No metric selected';this.anlLoading=false;return}
-    const [s,pc,cv,ct,ss,ins,hc,gs,gi]=await Promise.allSettled([
-      this.f('analysis/sensitivity','POST',{metric:m,top_k:this.anlTopK}),
-      this.f('analysis/parallel-coordinates','POST',{metric:m}),
-      this.f('analysis/cross-validation','POST',{}),
-      this.f('analysis/contour','POST',{metric:m}),
-      this.f('analysis/search-space','POST',{}),
-      this.f('analysis/insights','POST',{}),
-      this.f('analysis/healthchecks','POST',{}),
-      this.f('analysis/group-sensitivity','POST',{metric:m}),
-      this.f('analysis/group-interactions','POST',{metric:m}),
-    ]);
-    const _r=(r)=>r.status==='fulfilled'&&r.value&&!r.value._error?r.value:null;
-    const _e=(r)=>r.status==='fulfilled'&&r.value?._error?r.value._error:'';
-    this.anlSens=_r(s)?.figure?_r(s):null;
-    this.anlPC=_r(pc)?.figure?_r(pc):null;
-    this.anlCV=_r(cv)?.figure?_r(cv):null;
-    this.anlContour=_r(ct);
-    this.anlSearch=_r(ss);
-    this.anlInsights=_r(ins);
-    this.anlHealth=_r(hc);
-    const gsR=_r(gs);this.anlGroupSens=gsR?.groups?gsR:null;
-    const giR=_r(gi);this.anlGroupInt=giR?.matrix?giR:null;
-    // Failed analyses are silently skipped — panels just don't appear
+    const DL={...PL,paper_bgcolor:'transparent',plot_bgcolor:'rgba(26,29,39,0.5)'};
+    const rp=(id,fig)=>{const el=document.getElementById(id);if(el&&fig)Plotly.react(el,fig.data,{...DL,...fig.layout},PC)};
+    const _ok=(r)=>r&&!r._error?r:null;
+    const _free=(obj,...keys)=>{setTimeout(()=>{for(const k of keys)if(this[k]?.figure)this[k]={title:this[k].title,subtitle:this[k].subtitle,_rendered:true}},300)};
+
+    // Stream analyses one at a time — render each as it arrives
+    // Ordered lightest → heaviest to show results progressively
+    const steps=[
+      // Fast: sensitivity bar chart
+      {key:'anlSens',ep:'analysis/sensitivity',body:{metric:m,top_k:this.anlTopK},
+       render:(d)=>{
+         // Ax may return a card group with bar chart + surface plots.
+         // Only keep the bar chart (first card); surfaces come from the contour endpoint.
+         let fig=null,title='',subtitle='';
+         if(d?.figure){fig=d.figure;title=d.title;subtitle=d.subtitle}
+         else if(d?.cards?.length){
+           // Find the bar chart card (has 'bar' type trace or 'Sensitivity' in title)
+           const barCard=d.cards.find(c=>c.title?.includes('Sensitivity'))||d.cards[0];
+           fig=barCard?.figure;title=barCard?.title;subtitle=barCard?.subtitle;
+         }
+         this.anlSens=fig?{figure:fig,title,subtitle}:null;
+         rp('anl-sens',fig);_free(d,'anlSens')}},
+      // Fast: parallel coordinates (data-only, no model prediction)
+      {key:'anlPC',ep:'analysis/parallel-coordinates',body:{metric:m},
+       render:(d)=>{
+         if(d?.figure){const fig=d.figure;const pg=this.state.experiment?.parameter_groups||{};
+           if(fig.data?.[0]?.dimensions){
+             const dims=fig.data[0].dimensions;
+             // Sort by parameter group
+             if(Object.keys(pg).length){dims.sort((a,b)=>{const ga=(pg[a.label]||['zzz'])[0];const gb=(pg[b.label]||['zzz'])[0];return ga<gb?-1:ga>gb?1:0})}
+             // Ensure labels are visible with proper font
+             dims.forEach(dim=>{dim.tickfont={size:9,color:'#94a3b8'}});
+           }
+           // Ensure bottom margin for rotated labels
+           fig.layout=fig.layout||{};fig.layout.margin={...(fig.layout.margin||{}),b:80,t:30};
+           this.anlPC=d;rp('anl-pc',fig);_free(d,'anlPC');}else this.anlPC=null}},
+      // Fast: healthchecks (statistical tests on data)
+      {key:'anlHealth',ep:'analysis/healthchecks',body:{},
+       render:(d)=>{this.anlHealth=_ok(d);this.$nextTick(()=>{if(d?.cards)d.cards.forEach((c,i)=>rp('anl-hc-'+i,c.figure))})}},
+      // Medium: group sensitivity (Sobol on groups)
+      {key:'anlGroupSens',ep:'analysis/group-sensitivity',body:{metric:m},
+       render:(d)=>{const r=_ok(d);this.anlGroupSens=r?.groups?r:null;
+         if(r?.groups){const el=document.getElementById('anl-gsens');if(el){const g=r.groups;const names=Object.keys(g).sort((a,b)=>g[b]-g[a]);
+           Plotly.react(el,[{y:names,x:names.map(n=>g[n]),type:'bar',orientation:'h',marker:{color:names.map((_,i)=>CL[i%CL.length])}}],{...DL,margin:{...DL.margin,l:120}},PC)}}}},
+      // Medium: group interactions
+      {key:'anlGroupInt',ep:'analysis/group-interactions',body:{metric:m},
+       render:(d)=>{const r=_ok(d);this.anlGroupInt=r?.matrix?r:null;
+         if(r?.matrix){const el=document.getElementById('anl-gint');if(el)Plotly.react(el,[{z:r.matrix,x:r.groups,y:r.groups,type:'heatmap',colorscale:[[0,'#1a1a2e'],[0.5,'#3b82f6'],[1,'#ef4444']],showscale:true}],{...DL,margin:{...DL.margin,l:120,b:80}},PC)}}},
+      // Medium: insights
+      {key:'anlInsights',ep:'analysis/insights',body:{},
+       render:(d)=>{this.anlInsights=_ok(d);this.$nextTick(()=>{if(d?.cards)d.cards.forEach((c,i)=>rp('anl-ins-'+i,c.figure))})}},
+      // Heavy: cross-validation (leave-one-out refitting)
+      {key:'anlCV',ep:'analysis/cross-validation',body:{},
+       render:(d)=>{this.anlCV=d?.figure?d:null;rp('anl-cv',d?.figure);_free(d,'anlCV')}},
+      // Heavy: search space coverage
+      {key:'anlSearch',ep:'analysis/search-space',body:{},
+       render:(d)=>{this.anlSearch=_ok(d);this.$nextTick(()=>{if(d?.cards)d.cards.forEach((c,i)=>rp('anl-ss-'+i,c.figure));
+         setTimeout(()=>{if(this.anlSearch?.cards)this.anlSearch={cards:this.anlSearch.cards.map(c=>({title:c.title,blob:c.blob,_rendered:true}))}},300)})}},
+      // Heavy: contour/surface plots (dense grid predictions)
+      {key:'anlContour',ep:'analysis/contour',body:{metric:m},
+       render:(d)=>{this.anlContour=_ok(d);
+         // Delay rendering to allow Alpine x-for to create DOM elements
+         setTimeout(()=>{
+           if(d?.cards)d.cards.forEach((c,i)=>rp('anl-cont-'+i,c.figure));
+           else if(d?.figure)rp('anl-cont-0',d.figure);
+           setTimeout(()=>{if(this.anlContour?.cards)this.anlContour={cards:this.anlContour.cards.map(c=>({title:c.title,_rendered:true}))}},300);
+         },200)}},
+    ];
+    for(const step of steps){
+      try{
+        const r=await this.f(step.ep,'POST',step.body);
+        this.$nextTick(()=>step.render(r));
+      }catch(e){/* skip failed analysis */}
+    }
     this.anlLoading=false;
-    this.$nextTick(()=>{
-      const DL={...PL,paper_bgcolor:'transparent',plot_bgcolor:'rgba(26,29,39,0.5)'};
-      const rp=(id,fig)=>{const el=document.getElementById(id);if(el&&fig)Plotly.react(el,fig.data,{...DL,...fig.layout},PC)};
-      rp('anl-sens',this.anlSens?.figure);
-      rp('anl-cv',this.anlCV?.figure);
-      // Parallel coordinates: reorder dimensions by group if available
-      if(this.anlPC?.figure){
-        const fig=this.anlPC.figure;
-        const pg=this.state.experiment?.parameter_groups||{};
-        if(fig.data?.[0]?.dimensions&&Object.keys(pg).length){
-          const dims=fig.data[0].dimensions;
-          dims.sort((a,b)=>{const ga=(pg[a.label]||['zzz'])[0];const gb=(pg[b.label]||['zzz'])[0];return ga<gb?-1:ga>gb?1:0});
-        }
-        rp('anl-pc',fig);
-      }
-      if(this.anlContour?.cards){this.anlContour.cards.forEach((c,i)=>rp('anl-cont-'+i,c.figure))}
-      else if(this.anlContour?.figure){rp('anl-cont-0',this.anlContour.figure)}
-      // Group sensitivity bar chart
-      if(this.anlGroupSens?.groups){
-        const el=document.getElementById('anl-gsens');
-        if(el){
-          const g=this.anlGroupSens.groups;
-          const names=Object.keys(g).sort((a,b)=>g[b]-g[a]);
-          const vals=names.map(n=>g[n]);
-          Plotly.react(el,[{y:names,x:vals,type:'bar',orientation:'h',marker:{color:names.map((_,i)=>CL[i%CL.length])}}],{...DL,margin:{...DL.margin,l:120}},PC);
-        }
-      }
-      // Group interaction heatmap
-      if(this.anlGroupInt?.matrix){
-        const el=document.getElementById('anl-gint');
-        if(el){
-          const d=this.anlGroupInt;
-          Plotly.react(el,[{z:d.matrix,x:d.groups,y:d.groups,type:'heatmap',colorscale:[[0,'#1a1a2e'],[0.5,'#3b82f6'],[1,'#ef4444']],showscale:true}],{...DL,margin:{...DL.margin,l:120,b:80}},PC);
-        }
-      }
-      // Render figure cards from search-space, insights, healthchecks
-      for(const[prefix,src]of[['anl-ss-',this.anlSearch],['anl-ins-',this.anlInsights],['anl-hc-',this.anlHealth]]){
-        if(src?.cards)src.cards.forEach((c,i)=>{if(c.figure)rp(prefix+i,c.figure)});
-      }
-    });
   },
   gcfg(){const g={};for(const f of this.cs){const s=f.path.split('.')[0];if(!g[s])g[s]=[];g[s].push(f)}
     const order=['experiment','optimization','trial_generation','orchestration_settings','store','baseline','trial_dependencies'];
@@ -385,3 +445,91 @@ function app(){return{
     this.renderDepGraph();
   }
 }}
+
+// --- Robust optimization Tier 2 charts (global functions called from Alpine x-init) ---
+
+function renderRobustProfiles(data) {
+  const el = document.getElementById('c-robust-profile');
+  if (!el || !data?.points?.length) return;
+  // Sort by trial index
+  const pts = [...data.points].sort((a, b) => a.trial_index - b.trial_index);
+  const objectives = Object.keys(pts[0].robustness || {});
+  const traces = [];
+  for (const obj of objectives) {
+    const x = [], y = [];
+    for (const pt of pts) {
+      const vals = pt.robustness[obj]?.values || [];
+      for (const v of vals) { x.push('T' + pt.trial_index); y.push(v); }
+    }
+    traces.push({
+      x, y, type: 'box', name: obj,
+      boxpoints: 'all', jitter: 0.3, pointpos: -1.5,
+      marker: { size: 3, color: CL[traces.length % CL.length] },
+      line: { width: 1.5 },
+    });
+  }
+  const layout = {
+    ...PL, boxmode: 'group', autosize: true,
+    xaxis: { ...PL.xaxis, title: 'Pareto Trial', categoryorder: 'array', categoryarray: pts.map(p => 'T' + p.trial_index) },
+    yaxis: { ...PL.yaxis, title: 'Metric Value' },
+    legend: { ...PL.legend, orientation: 'h', y: -0.25 },
+  };
+  Plotly.react(el, traces, layout, PC);
+  // Resize when tab becomes visible (Plotly can't measure hidden containers)
+  new ResizeObserver(() => Plotly.Plots.resize(el)).observe(el);
+}
+
+function renderRiskTrace(data) {
+  const el = document.getElementById('c-risk-trace');
+  if (!el || !data?.trial_indices?.length) return;
+  const traces = [];
+  let i = 0;
+  for (const [metric, vals] of Object.entries(data.traces || {})) {
+    traces.push({
+      x: data.trial_indices, y: vals,
+      mode: 'lines+markers', name: metric,
+      line: { color: CL[i % CL.length], width: 2 },
+      marker: { size: 4 },
+    });
+    i++;
+  }
+  Plotly.react(el, traces, {
+    ...PL,
+    xaxis: { ...PL.xaxis, title: 'Trial', dtick: 1 },
+    yaxis: { ...PL.yaxis, title: 'CVaR' },
+  }, PC);
+}
+
+function renderCtxHeatmap(data) {
+  const el = document.getElementById('c-ctx-heatmap');
+  if (!el || !data?.context_params?.length) return;
+  const metrics = Object.keys(data.matrix || {});
+  const ctxParams = data.context_params;
+  if (!metrics.length) return;
+  // Build z-matrix: metrics × context_params (normalized per metric)
+  const z = [], hovertext = [];
+  for (const m of metrics) {
+    const row = [], hrow = [];
+    const maxStd = Math.max(...ctxParams.map(cp => data.matrix[m]?.[cp]?.std || 0), 1e-12);
+    for (const cp of ctxParams) {
+      const s = data.matrix[m]?.[cp] || {};
+      row.push(s.std || 0);
+      hrow.push(m + ' / ' + cp + '<br>std: ' + (s.std?.toFixed(4) || '-') +
+                '<br>range: ' + (s.range?.toFixed(4) || '-') +
+                '<br>mean: ' + (s.mean?.toFixed(4) || '-'));
+    }
+    z.push(row);
+    hovertext.push(hrow);
+  }
+  Plotly.react(el, [{
+    z, x: ctxParams, y: metrics, type: 'heatmap',
+    colorscale: 'Viridis',
+    hovertext, hoverinfo: 'text',
+    showscale: true, colorbar: { title: 'Std Dev', titleside: 'right', len: 0.8 },
+  }], {
+    ...PL,
+    xaxis: { ...PL.xaxis, title: 'Context Parameter' },
+    yaxis: { ...PL.yaxis, title: 'Objective', autorange: 'reversed' },
+    margin: { ...PL.margin, l: 120, b: 80 },
+  }, PC);
+}

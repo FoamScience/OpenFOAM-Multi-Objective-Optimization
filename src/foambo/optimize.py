@@ -96,16 +96,8 @@ def optimize(cfg, debug=False):
     _ax_encoder.object_to_json = _patched_object_to_json
     _ax_encoder._object_to_json = _patched_object_to_json
 
-    # Register custom BoTorch classes so Ax's JSON serializer can handle them
-    from ax.storage.botorch_modular_registry import (
-        CLASS_TO_REGISTRY, CLASS_TO_REVERSE_REGISTRY,
-        register_acquisition,
-    )
-    from botorch.models.transforms.input import InputTransform
-    from .robustness import SubstituteContextFeatures, RobustAcquisition
-    CLASS_TO_REGISTRY[InputTransform][SubstituteContextFeatures] = "SubstituteContextFeatures"
-    CLASS_TO_REVERSE_REGISTRY[InputTransform]["SubstituteContextFeatures"] = SubstituteContextFeatures
-    register_acquisition(RobustAcquisition)
+    # Ensure robust opt classes are registered (import triggers module-level registration)
+    from .robustness import SubstituteContextFeatures, RobustAcquisition  # noqa: F401
 
     from .analysis import compute_analysis_cards, plot_pareto_frontier
     from .orchestrate import (
@@ -657,7 +649,8 @@ def optimize(cfg, debug=False):
     if isinstance(client._experiment.optimization_config._objective, MultiObjective):
         try:
             front = client.get_pareto_frontier(use_model_predictions=True)
-        except Exception:
+        except Exception as e:
+            log.warning("Model-based Pareto frontier failed (%s), using observed data", e)
             front = client.get_pareto_frontier(use_model_predictions=False)
         for best_parameters, prediction, _, _ in front:
             log.info("Pareto-frontier configuration:\n%s", json.dumps(best_parameters, indent=2))
@@ -940,9 +933,11 @@ def main():
                       "Please set store.read_from option to either `json` or `sql`")
             exit(1)
         set_experiment_name(cfg["experiment"]["name"])
+        # Ensure robust opt classes are registered before loading saved state
+        from .robustness import SubstituteContextFeatures, RobustAcquisition  # noqa: F401
         client = StoreOptions.model_validate(dict(cfg['store'])).load()
         orch_cfg = ConfigOrchestratorOptions.model_validate(dict(cfg['orchestration_settings']))
-        # Set parameter groups on the runner from raw config
+        # Set parameter groups and trial dependencies on the runner from raw config
         runner = client._experiment.runner
         if runner is not None:
             param_groups = {}
@@ -950,6 +945,15 @@ def main():
                 if hasattr(p, "get") and p.get("groups"):
                     param_groups[p["name"]] = list(p["groups"])
             runner._parameter_groups = param_groups
+            # Restore trial dependencies
+            if 'trial_dependencies' in cfg:
+                from .orchestrate import TrialDependency
+                deps_raw = cfg['trial_dependencies']
+                if deps_raw:
+                    runner.trial_dependencies = [
+                        TrialDependency.model_validate(dict(d)) if hasattr(d, 'items') or isinstance(d, dict)
+                        else d for d in deps_raw
+                    ]
         # Pre-warm GP model (with cached state_dict if available → 0.15s vs 9s)
         try:
             import os, torch
@@ -972,8 +976,11 @@ def main():
         except Exception as e:
             log.warning("Model pre-warm failed: %s", e)
         from .api_server import start_api_server, stop_api_server
+        # Ensure raw_cfg is a plain dict (not OmegaConf DictConfig)
+        from omegaconf import OmegaConf
+        plain_cfg = OmegaConf.to_container(cfg, resolve=True) if hasattr(cfg, '_metadata') else cfg
         thread = start_api_server(
-            client=client, raw_cfg=cfg, orch_cfg=orch_cfg,
+            client=client, raw_cfg=plain_cfg, orch_cfg=orch_cfg,
             host=orch_cfg.api_host, port=orch_cfg.api_port,
         )
         if thread is None:

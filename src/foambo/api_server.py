@@ -354,9 +354,9 @@ def serve_config_builder():
     return Response(content=html, media_type="text/html")
 
 
-@app.get("/api/v1/config/schema")
-def config_schema():
-    """Return the JSON Schema for FoamBOConfig."""
+@app.get("/api/v1/config/json-schema")
+def config_json_schema():
+    """Return the raw Pydantic JSON Schema for FoamBOConfig (used by config builder)."""
     from foambo.orchestrate import FoamBOConfig
     return SafeJSONResponse(content=FoamBOConfig.model_json_schema())
 
@@ -1114,6 +1114,39 @@ def _get_pareto(use_model: bool) -> dict:
 
 
 
+def _disable_context_transforms(gs) -> list[tuple]:
+    """Temporarily disable SubstituteContextFeatures on all surrogate models.
+
+    Returns a list of (transform, original_flag) tuples to restore later.
+    """
+    disabled = []
+    try:
+        from foambo.robustness import SubstituteContextFeatures
+        surr = getattr(gs.adapter.generator, "surrogate", None)
+        if surr is None or surr.model is None:
+            return disabled
+        models = getattr(surr.model, "models", [surr.model])
+        for m in models:
+            tf = getattr(m, "input_transform", None)
+            if tf is None:
+                continue
+            # ChainedInputTransform stores transforms as named children
+            transforms = getattr(tf, "items", lambda: [(None, tf)])()
+            for name, t in transforms:
+                if isinstance(t, SubstituteContextFeatures):
+                    disabled.append((t, t.transform_on_eval))
+                    t.transform_on_eval = False
+    except Exception:
+        pass
+    return disabled
+
+
+def _restore_context_transforms(disabled: list[tuple]) -> None:
+    """Restore SubstituteContextFeatures flags from _disable_context_transforms."""
+    for transform, original_flag in disabled:
+        transform.transform_on_eval = original_flag
+
+
 def _do_predict(parameters: dict, context_point: dict | None = None) -> dict:
     """Run model prediction under lock."""
     with _state.lock:
@@ -1146,7 +1179,11 @@ def _do_predict(parameters: dict, context_point: dict | None = None) -> dict:
             if context_point:
                 params.update(context_point)
             obs = [ObservationFeatures(parameters=params)]
-            means, sems = gs.adapter.predict(obs)
+            _disabled_transforms = _disable_context_transforms(gs)
+            try:
+                means, sems = gs.adapter.predict(obs)
+            finally:
+                _restore_context_transforms(_disabled_transforms)
             result = {}
             for metric_name in means:
                 result[metric_name] = {
@@ -1164,8 +1201,8 @@ def _get_config_flat() -> dict:
         raw_cfg = _state.raw_cfg
         if raw_cfg is None:
             raise HTTPException(503, "Optimizer not initialized")
-        from omegaconf import OmegaConf
-        container = OmegaConf.to_container(raw_cfg, resolve=True)
+        from omegaconf import OmegaConf, DictConfig
+        container = OmegaConf.to_container(raw_cfg, resolve=True) if isinstance(raw_cfg, DictConfig) else raw_cfg
 
     def _flatten(d, prefix=""):
         out = {}
@@ -1202,6 +1239,16 @@ def _walk_model(model_cls, prefix: str, fields: list):
         except TypeError:
             pass
 
+        # Resolve lazily-typed fields (e.g. robust_optimization: Any → RobustOptimizationConfig)
+        if not is_model and annotation is Any:
+            try:
+                resolved = _resolve_lazy_model(name)
+                if resolved is not None:
+                    is_model = True
+                    annotation = resolved
+            except Exception:
+                pass
+
         if is_model:
             _walk_model(annotation, path, fields)
         else:
@@ -1213,6 +1260,14 @@ def _walk_model(model_cls, prefix: str, fields: list):
                 "description": field_info.description or "",
                 "mutable": _is_mutable(path),
             })
+
+
+def _resolve_lazy_model(field_name: str):
+    """Resolve lazily-imported Pydantic models for schema introspection."""
+    if field_name == "robust_optimization":
+        from foambo.robustness import RobustOptimizationConfig
+        return RobustOptimizationConfig
+    return None
 
 
 def _type_name(annotation) -> str:
@@ -1445,6 +1500,161 @@ def predict(req: PredictRequest):
     return SafeJSONResponse(content=data)
 
 
+@app.post("/api/v1/predict/robust")
+def predict_robust(req: PredictRequest):
+    """Predict at each context scenario. Returns per-scenario predictions,
+    nominal (mean context) prediction, CVaR, std, and percentile rank
+    vs all completed trials."""
+    import numpy as np
+    raw_cfg = _state.raw_cfg
+    if not raw_cfg or not raw_cfg.get("robust_optimization"):
+        return SafeJSONResponse(content={"error": "Not in robust mode"}, status_code=400)
+
+    rc = raw_cfg["robust_optimization"]
+    alpha = max(rc.get("robustness", 0.5), 0.05)
+
+    # Get context points
+    ctx_points = rc.get("context_points")
+    if ctx_points is None:
+        try:
+            from foambo.robustness import resolve_context_points, RobustOptimizationConfig
+            from foambo.orchestrate import ExperimentOptions
+            robust_cfg = RobustOptimizationConfig.model_validate(dict(rc))
+            exp_cfg = ExperimentOptions.model_validate(dict(raw_cfg["experiment"]))
+            resolve_context_points(robust_cfg, exp_cfg)
+            ctx_points = robust_cfg.context_points
+        except Exception:
+            ctx_points = []
+    if not ctx_points:
+        return SafeJSONResponse(content={"error": "No context points"}, status_code=500)
+
+    # Get context param names
+    ctx_groups = rc.get("context_groups", [])
+    ctx_param_names = []
+    for p in raw_cfg.get("experiment", {}).get("parameters", []):
+        p_groups = p.get("groups", []) if hasattr(p, "get") else getattr(p, "groups", [])
+        if any(g in ctx_groups for g in (p_groups or [])):
+            ctx_param_names.append(p.get("name", "") if hasattr(p, "get") else getattr(p, "name", ""))
+
+    # Compute nominal context (mean of context points)
+    nominal_ctx = {}
+    for cn in ctx_param_names:
+        nominal_ctx[cn] = float(np.mean([cp[cn] for cp in ctx_points]))
+
+    with _state.lock:
+        client = _state.client
+        if client is None:
+            raise HTTPException(503, "Optimizer not initialized")
+        gs = client._generation_strategy
+        if gs is None or gs.adapter is None:
+            raise HTTPException(503, "Model not fitted yet")
+
+        from ax.core.observation import ObservationFeatures
+        params = dict(req.parameters)
+
+        # Predict at each context scenario
+        obs_list = []
+        for cp in ctx_points:
+            p = dict(params)
+            p.update(cp)
+            obs_list.append(ObservationFeatures(parameters=p))
+
+        # Also predict at nominal
+        nom_params = dict(params)
+        nom_params.update(nominal_ctx)
+        obs_list.append(ObservationFeatures(parameters=nom_params))
+
+        _disabled = _disable_context_transforms(gs)
+        try:
+            means, sems = gs.adapter.predict(obs_list)
+        finally:
+            _restore_context_transforms(_disabled)
+
+        n_ctx = len(ctx_points)
+        scenarios = []
+        metric_stats = {}
+
+        for i, cp in enumerate(ctx_points):
+            sc = {"context": cp, "predictions": {}}
+            for metric in means:
+                sc["predictions"][metric] = {
+                    "mean": float(means[metric][i]),
+                    "sem": float(sems.get(metric, {}).get(metric, [0]*len(obs_list))[i])
+                          if isinstance(sems.get(metric), dict) else 0.0,
+                }
+            scenarios.append(sc)
+
+        # Nominal prediction (last obs)
+        nominal_preds = {}
+        for metric in means:
+            nominal_preds[metric] = {
+                "mean": float(means[metric][n_ctx]),
+                "sem": float(sems.get(metric, {}).get(metric, [0]*len(obs_list))[n_ctx])
+                      if isinstance(sems.get(metric), dict) else 0.0,
+            }
+
+        # Per-metric stats across contexts
+        for metric in means:
+            vals = np.array([float(means[metric][i]) for i in range(n_ctx)])
+            sorted_vals = np.sort(vals)
+            n_tail = max(1, int(len(sorted_vals) * (1 - alpha)))
+            cvar = float(np.mean(sorted_vals[:n_tail]))
+            metric_stats[metric] = {
+                "mean": float(np.mean(vals)),
+                "std": float(np.std(vals)),
+                "min": float(np.min(vals)),
+                "max": float(np.max(vals)),
+                "cvar": cvar,
+                "nominal": nominal_preds[metric]["mean"],
+                "gap": float(nominal_preds[metric]["mean"] - cvar),
+            }
+
+        # Percentile rank: how does this design's CVaR compare to completed trials?
+        from ax.core.base_trial import TrialStatus as AxTrialStatus
+        from ax.core.trial import Trial
+        completed = [t for t in client._experiment.trials.values()
+                     if t.status == AxTrialStatus.COMPLETED and isinstance(t, Trial)]
+
+        percentile_rank = {}
+        if len(completed) >= 3:
+            # Sample a few trials to compute CVaR distribution
+            sample = completed[-min(30, len(completed)):]
+            for metric in means:
+                trial_cvars = []
+                for trial in sample:
+                    arm = trial.arm
+                    if arm is None:
+                        continue
+                    t_obs = []
+                    for cp in ctx_points:
+                        p = dict(arm.parameters)
+                        p.update(cp)
+                        t_obs.append(ObservationFeatures(parameters=p))
+                    try:
+                        t_means, _ = gs.adapter.predict(t_obs)
+                        t_vals = np.array([float(t_means[metric][j]) for j in range(n_ctx)])
+                        t_sorted = np.sort(t_vals)
+                        t_cvar = float(np.mean(t_sorted[:n_tail]))
+                        trial_cvars.append(t_cvar)
+                    except Exception:
+                        continue
+                if trial_cvars:
+                    my_cvar = metric_stats[metric]["cvar"]
+                    rank = float(np.mean([1 if my_cvar >= tc else 0 for tc in trial_cvars]) * 100)
+                    percentile_rank[metric] = round(rank, 1)
+
+    return SafeJSONResponse(content={
+        "scenarios": scenarios,
+        "nominal": nominal_preds,
+        "nominal_context": nominal_ctx,
+        "stats": metric_stats,
+        "percentile_rank": percentile_rank,
+        "alpha": alpha,
+        "context_params": ctx_param_names,
+        "n_contexts": n_ctx,
+    })
+
+
 def _do_sweep(base_params: dict, sweep_params: list[str], n_points: int = 25,
               context_point: dict | None = None) -> dict:
     """Sweep each param across its bounds."""
@@ -1503,7 +1713,13 @@ def _do_sweep(base_params: dict, sweep_params: list[str], n_points: int = 25,
         base_idx = len(all_obs)
         all_obs.append(ObservationFeatures(parameters=params))
 
-        means, sems = gs.adapter.predict(all_obs)
+        # Temporarily disable SubstituteContextFeatures so predictions
+        # return one result per input (not n_w per input).
+        _disabled_transforms = _disable_context_transforms(gs)
+        try:
+            means, sems = gs.adapter.predict(all_obs)
+        finally:
+            _restore_context_transforms(_disabled_transforms)
 
         curves = []
         for pname, xs, start, count in sweep_meta:
@@ -1583,6 +1799,30 @@ def get_status():
         except Exception:
             pass
 
+    # Derive robust mode info from raw config
+    robust_info = None
+    raw_cfg = _state.raw_cfg
+    if raw_cfg and raw_cfg.get("robust_optimization"):
+        rc = raw_cfg["robust_optimization"]
+        # Get context param names from config
+        ctx_groups = rc.get("context_groups", [])
+        ctx_params = []
+        for p in raw_cfg.get("experiment", {}).get("parameters", []):
+            if hasattr(p, "get"):
+                p_groups = p.get("groups", [])
+            else:
+                p_groups = getattr(p, "groups", [])
+            if any(g in ctx_groups for g in (p_groups or [])):
+                ctx_params.append(p.get("name", "") if hasattr(p, "get") else getattr(p, "name", ""))
+        robust_info = {
+            "risk_measure": rc.get("risk_measure", "auto"),
+            "robustness": rc.get("robustness", 0.5),
+            "alpha": max(rc.get("robustness", 0.5), 0.05),
+            "context_groups": ctx_groups,
+            "context_params": ctx_params,
+            "context_samples": rc.get("context_samples", 10),
+        }
+
     return SafeJSONResponse(content={
         "running": True,
         "uptime_s": round(time.time() - _state.start_time, 1),
@@ -1592,6 +1832,327 @@ def get_status():
         "trials_total": total,
         "model_fitted": has_model,
         "timing": getattr(_state, '_timing', None),
+        "robust": robust_info,
+    })
+
+
+@app.get("/api/v1/robust/context-points")
+def get_robust_context_points():
+    """Return the context scenarios used for robust optimization."""
+    raw_cfg = _state.raw_cfg
+    if not raw_cfg or not raw_cfg.get("robust_optimization"):
+        return SafeJSONResponse(content={"points": []})
+    rc = raw_cfg["robust_optimization"]
+    points = rc.get("context_points")
+    if points is None:
+        # Context points are auto-generated — try to reconstruct from config
+        try:
+            import logging as _logging
+            from foambo.robustness import resolve_context_points, RobustOptimizationConfig
+            from foambo.orchestrate import ExperimentOptions
+            robust_cfg = RobustOptimizationConfig.model_validate(dict(rc))
+            exp_cfg = ExperimentOptions.model_validate(dict(raw_cfg["experiment"]))
+            # Suppress logging during context point generation to avoid
+            # format errors from custom log formatters outside optimize()
+            _rob_log = _logging.getLogger("ax.foambo.robustness")
+            _old_level = _rob_log.level
+            _rob_log.setLevel(_logging.WARNING)
+            try:
+                resolve_context_points(robust_cfg, exp_cfg)
+            finally:
+                _rob_log.setLevel(_old_level)
+            points = robust_cfg.context_points
+        except Exception:
+            points = []
+    return SafeJSONResponse(content={"points": points or []})
+
+
+@app.get("/api/v1/robust/pareto-robustness")
+def get_pareto_robustness():
+    """For each Pareto point, predict across all context scenarios.
+
+    Returns per-point, per-objective stats (mean, std, min, max, cvar)
+    and the raw predictions for box plots.
+    """
+    import numpy as np
+    raw_cfg = _state.raw_cfg
+    if not raw_cfg or not raw_cfg.get("robust_optimization"):
+        return SafeJSONResponse(content={"points": []})
+
+    with _state.lock:
+        client = _state.client
+        if client is None:
+            raise HTTPException(503, "Optimizer not initialized")
+        gs = client._generation_strategy
+        if gs is None or gs.adapter is None:
+            raise HTTPException(503, "Model not fitted yet")
+
+        # Get Pareto frontier
+        from ax.core.objective import MultiObjective
+        is_moo = isinstance(
+            client._experiment.optimization_config.objective, MultiObjective)
+        if not is_moo:
+            return SafeJSONResponse(content={"points": []})
+
+        try:
+            front = client.get_pareto_frontier(use_model_predictions=False)
+        except Exception as e:
+            return SafeJSONResponse(content={"error": str(e)}, status_code=500)
+
+        # Get context points
+        rc = raw_cfg["robust_optimization"]
+        ctx_groups = rc.get("context_groups", [])
+        ctx_params = []
+        for p in raw_cfg.get("experiment", {}).get("parameters", []):
+            p_groups = p.get("groups", []) if hasattr(p, "get") else getattr(p, "groups", [])
+            if any(g in ctx_groups for g in (p_groups or [])):
+                ctx_params.append(p.get("name", "") if hasattr(p, "get") else getattr(p, "name", ""))
+
+        ctx_points = rc.get("context_points")
+        if ctx_points is None:
+            try:
+                from foambo.robustness import resolve_context_points, RobustOptimizationConfig
+                from foambo.orchestrate import ExperimentOptions
+                import logging as _logging
+                _rob_log = _logging.getLogger("ax.foambo.robustness")
+                _old = _rob_log.level
+                _rob_log.setLevel(_logging.WARNING)
+                try:
+                    robust_cfg = RobustOptimizationConfig.model_validate(dict(rc))
+                    exp_cfg = ExperimentOptions.model_validate(dict(raw_cfg["experiment"]))
+                    resolve_context_points(robust_cfg, exp_cfg)
+                    ctx_points = robust_cfg.context_points
+                finally:
+                    _rob_log.setLevel(_old)
+            except Exception:
+                ctx_points = []
+        if not ctx_points:
+            return SafeJSONResponse(content={"points": []})
+
+        alpha = max(rc.get("robustness", 0.5), 0.05)
+
+        # For each Pareto point, predict at each context scenario
+        from ax.core.observation import ObservationFeatures
+        _disabled = _disable_context_transforms(gs)
+        try:
+            results = []
+            for params, preds, trial_idx, arm_name in front:
+                obs_list = []
+                for cp in ctx_points:
+                    p = dict(params)
+                    p.update(cp)
+                    obs_list.append(ObservationFeatures(parameters=p))
+                means, sems = gs.adapter.predict(obs_list)
+
+                obj_stats = {}
+                for metric in means:
+                    vals = np.array([float(means[metric][i]) for i in range(len(ctx_points))])
+                    sorted_vals = np.sort(vals)
+                    n_tail = max(1, int(len(sorted_vals) * (1 - alpha)))
+                    cvar = float(np.mean(sorted_vals[:n_tail]))
+                    obj_stats[metric] = {
+                        "mean": float(np.mean(vals)),
+                        "std": float(np.std(vals)),
+                        "min": float(np.min(vals)),
+                        "max": float(np.max(vals)),
+                        "cvar": cvar,
+                        "values": vals.tolist(),
+                    }
+                results.append({
+                    "trial_index": trial_idx,
+                    "arm_name": arm_name,
+                    "parameters": params,
+                    "observed": {k: v if isinstance(v, (int, float)) else v[0] if isinstance(v, tuple) else v
+                                 for k, v in preds.items()},
+                    "robustness": obj_stats,
+                })
+        finally:
+            _restore_context_transforms(_disabled)
+
+    return SafeJSONResponse(content={"points": results, "alpha": alpha,
+                                     "context_params": ctx_params,
+                                     "n_contexts": len(ctx_points)})
+
+
+@app.get("/api/v1/robust/risk-trace")
+def get_risk_trace():
+    """CVaR trace over completed trials — shows whether optimization finds
+    increasingly robust designs over time."""
+    import numpy as np
+    raw_cfg = _state.raw_cfg
+    if not raw_cfg or not raw_cfg.get("robust_optimization"):
+        return SafeJSONResponse(content={"traces": {}})
+
+    with _state.lock:
+        client = _state.client
+        if client is None:
+            raise HTTPException(503, "Optimizer not initialized")
+        gs = client._generation_strategy
+        if gs is None or gs.adapter is None:
+            raise HTTPException(503, "Model not fitted yet")
+
+        rc = raw_cfg["robust_optimization"]
+        alpha = max(rc.get("robustness", 0.5), 0.05)
+
+        # Get context points
+        ctx_points = rc.get("context_points")
+        if ctx_points is None:
+            try:
+                from foambo.robustness import resolve_context_points, RobustOptimizationConfig
+                from foambo.orchestrate import ExperimentOptions
+                import logging as _logging
+                _rob_log = _logging.getLogger("ax.foambo.robustness")
+                _old = _rob_log.level
+                _rob_log.setLevel(_logging.WARNING)
+                try:
+                    robust_cfg = RobustOptimizationConfig.model_validate(dict(rc))
+                    exp_cfg = ExperimentOptions.model_validate(dict(raw_cfg["experiment"]))
+                    resolve_context_points(robust_cfg, exp_cfg)
+                    ctx_points = robust_cfg.context_points
+                finally:
+                    _rob_log.setLevel(_old)
+            except Exception:
+                ctx_points = []
+        if not ctx_points:
+            return SafeJSONResponse(content={"traces": {}})
+
+        from ax.core.observation import ObservationFeatures
+        from ax.core.base_trial import TrialStatus as AxTrialStatus
+        from ax.core.trial import Trial
+
+        completed = sorted(
+            [t for t in client._experiment.trials.values()
+             if t.status == AxTrialStatus.COMPLETED and isinstance(t, Trial)],
+            key=lambda t: t.index)
+
+        _disabled = _disable_context_transforms(gs)
+        try:
+            traces = {}  # metric → [cvar_per_trial]
+            trial_indices = []
+            for trial in completed:
+                arm = trial.arm
+                if arm is None:
+                    continue
+                params = arm.parameters
+                obs_list = []
+                for cp in ctx_points:
+                    p = dict(params)
+                    p.update(cp)
+                    obs_list.append(ObservationFeatures(parameters=p))
+                try:
+                    means, _ = gs.adapter.predict(obs_list)
+                except Exception:
+                    continue
+                trial_indices.append(trial.index)
+                for metric in means:
+                    vals = np.array([float(means[metric][i]) for i in range(len(ctx_points))])
+                    sorted_vals = np.sort(vals)
+                    n_tail = max(1, int(len(sorted_vals) * (1 - alpha)))
+                    cvar = float(np.mean(sorted_vals[:n_tail]))
+                    traces.setdefault(metric, []).append(cvar)
+        finally:
+            _restore_context_transforms(_disabled)
+
+    return SafeJSONResponse(content={
+        "traces": traces,
+        "trial_indices": trial_indices,
+        "alpha": alpha,
+    })
+
+
+@app.get("/api/v1/robust/context-sensitivity")
+def get_context_sensitivity():
+    """Heatmap data: for each objective × context param, how much does
+    the objective vary when sweeping that context param?
+
+    Uses the best Pareto point (or best SOO point) as the base design.
+    """
+    import numpy as np
+    raw_cfg = _state.raw_cfg
+    if not raw_cfg or not raw_cfg.get("robust_optimization"):
+        return SafeJSONResponse(content={"matrix": {}})
+
+    with _state.lock:
+        client = _state.client
+        if client is None:
+            raise HTTPException(503, "Optimizer not initialized")
+        gs = client._generation_strategy
+        if gs is None or gs.adapter is None:
+            raise HTTPException(503, "Model not fitted yet")
+
+        rc = raw_cfg["robust_optimization"]
+        ctx_groups = rc.get("context_groups", [])
+        ctx_params = []
+        for p in raw_cfg.get("experiment", {}).get("parameters", []):
+            p_groups = p.get("groups", []) if hasattr(p, "get") else getattr(p, "groups", [])
+            if any(g in ctx_groups for g in (p_groups or [])):
+                ctx_params.append(p.get("name", "") if hasattr(p, "get") else getattr(p, "name", ""))
+
+        if not ctx_params:
+            return SafeJSONResponse(content={"matrix": {}})
+
+        # Get base design (best point or first Pareto point)
+        exp = client._experiment
+        from ax.core.objective import MultiObjective
+        try:
+            if isinstance(exp.optimization_config.objective, MultiObjective):
+                front = client.get_pareto_frontier(use_model_predictions=False)
+                base_params = front[0][0] if front else None
+            else:
+                base_params, _, _, _ = client.get_best_parameterization(
+                    use_model_predictions=False)
+        except Exception:
+            base_params = None
+        if base_params is None:
+            return SafeJSONResponse(content={"matrix": {}})
+
+        from ax.core.observation import ObservationFeatures
+        from ax.core.parameter import ChoiceParameter
+
+        # Only include objective metrics (not tracking metrics)
+        obj_names = set()
+        from ax.core.objective import MultiObjective
+        opt_config = exp.optimization_config
+        if isinstance(opt_config.objective, MultiObjective):
+            obj_names = {o.metric.name for o in opt_config.objective.objectives}
+        else:
+            obj_names = {opt_config.objective.metric.name}
+
+        n_sweep = 20
+        _disabled = _disable_context_transforms(gs)
+        try:
+            matrix = {}  # metric → {ctx_param → variation}
+            for cp_name in ctx_params:
+                param = exp.search_space.parameters.get(cp_name)
+                if param is None or isinstance(param, ChoiceParameter):
+                    continue
+                lo, hi = param.lower, param.upper
+                xs = np.linspace(lo, hi, n_sweep).tolist()
+                obs_list = []
+                for xval in xs:
+                    p = dict(base_params)
+                    p[cp_name] = xval
+                    obs_list.append(ObservationFeatures(parameters=p))
+                means, _ = gs.adapter.predict(obs_list)
+                for metric in means:
+                    if obj_names and metric not in obj_names:
+                        continue
+                    vals = np.array([float(means[metric][i]) for i in range(len(means[metric]))])
+                    variation = float(np.std(vals))
+                    matrix.setdefault(metric, {})[cp_name] = {
+                        "std": variation,
+                        "range": float(np.max(vals) - np.min(vals)),
+                        "min": float(np.min(vals)),
+                        "max": float(np.max(vals)),
+                        "mean": float(np.mean(vals)),
+                    }
+        finally:
+            _restore_context_transforms(_disabled)
+
+    return SafeJSONResponse(content={
+        "matrix": matrix,
+        "context_params": ctx_params,
+        "base_parameters": base_params,
     })
 
 
@@ -1656,6 +2217,9 @@ def _ensure_model_fitted():
 def _compute_ax_analysis(analysis_cls, **kwargs) -> dict:
     """Run an Ax analysis under lock and return Plotly figure JSON."""
     import json as _json
+    cls_name = getattr(analysis_cls, '__name__', str(analysis_cls))
+    log.info("Computing analysis: %s(%s)", cls_name,
+             ', '.join(f'{k}={v!r}' for k, v in kwargs.items()) if kwargs else '')
     with _state.lock:
         client = _state.client
         if client is None:
@@ -1664,15 +2228,26 @@ def _compute_ax_analysis(analysis_cls, **kwargs) -> dict:
 
         import logging
         ax_logger = logging.getLogger("ax")
+        cv_logger = logging.getLogger("ax.adapter.cross_validation")
         prev_level = ax_logger.level
+        prev_cv_level = cv_logger.level
         ax_logger.setLevel(logging.CRITICAL)
+        cv_logger.setLevel(logging.CRITICAL)
+        # Disable SubstituteContextFeatures for Ax analyses — they do dense
+        # grid predictions (contour, CV) that blow up with n_w expansion.
+        # Our custom robust endpoints handle context separately.
+        gs = client._generation_strategy
+        _disabled = _disable_context_transforms(gs)
         try:
             cards = client.compute_analyses(
                 analyses=[analysis_cls(**kwargs)],
                 display=False,
             )
         finally:
+            _restore_context_transforms(_disabled)
             ax_logger.setLevel(prev_level)
+            cv_logger.setLevel(prev_cv_level)
+        log.info("Analysis %s completed (%d cards)", cls_name, len(cards) if cards else 0)
 
         from ax.analysis.plotly.plotly_analysis import PlotlyAnalysisCard
         from ax.core.analysis_card import AnalysisCardGroup
@@ -1752,18 +2327,67 @@ def _compute_ax_healthcheck(analysis_cls, **kwargs) -> dict:
 
 @app.post("/api/v1/analysis/sensitivity")
 def post_analysis_sensitivity(request_body: dict):
-    """Sobol sensitivity analysis via Ax."""
+    """Sobol sensitivity analysis via Ax.
+
+    In robust mode, context parameter bars are colored differently from
+    design parameter bars so users can see at a glance which sensitivity
+    comes from environmental variation vs design choices.
+    """
     metric = request_body.get("metric")
     top_k = request_body.get("top_k", 10)
     try:
         from ax.analysis.plotly.sensitivity import SensitivityAnalysisPlot
         result = _compute_ax_analysis(
             SensitivityAnalysisPlot, metric_name=metric, top_k=top_k)
+
+        # Annotate context params in robust mode
+        raw_cfg = _state.raw_cfg
+        if raw_cfg and raw_cfg.get("robust_optimization"):
+            ctx_groups = raw_cfg["robust_optimization"].get("context_groups", [])
+            ctx_params = set()
+            for p in raw_cfg.get("experiment", {}).get("parameters", []):
+                p_groups = p.get("groups", []) if hasattr(p, "get") else getattr(p, "groups", [])
+                if any(g in ctx_groups for g in (p_groups or [])):
+                    ctx_params.add(p.get("name", "") if hasattr(p, "get") else getattr(p, "name", ""))
+            if ctx_params:
+                result = _annotate_sensitivity_context(result, ctx_params)
+
         return SafeJSONResponse(content=result)
     except HTTPException:
         raise
     except Exception as e:
         return SafeJSONResponse(content={"error": str(e)}, status_code=500)
+
+
+def _annotate_sensitivity_context(result: dict, ctx_params: set) -> dict:
+    """Color context parameter bars in the sensitivity Plotly figure."""
+    for card in result.get("cards", []):
+        fig = card.get("figure")
+        if not fig or "data" not in fig:
+            continue
+        for trace in fig["data"]:
+            if trace.get("type") not in ("bar",):
+                continue
+            labels = trace.get("y") or trace.get("x") or []
+            colors = []
+            for label in labels:
+                name = label.split(" ")[-1] if isinstance(label, str) else str(label)
+                if name in ctx_params:
+                    colors.append("rgba(234, 88, 12, 0.8)")  # orange for context
+                else:
+                    colors.append("rgba(59, 130, 246, 0.8)")  # blue for design
+            if colors:
+                trace.setdefault("marker", {})["color"] = colors
+        # Add legend annotation
+        fig.setdefault("layout", {}).setdefault("annotations", []).extend([
+            {"text": "<b style='color:rgba(59,130,246,0.8)'>\u25a0</b> Design",
+             "xref": "paper", "yref": "paper", "x": 1.0, "y": 1.05,
+             "showarrow": False, "font": {"size": 11}},
+            {"text": "<b style='color:rgba(234,88,12,0.8)'>\u25a0</b> Context",
+             "xref": "paper", "yref": "paper", "x": 1.0, "y": 1.12,
+             "showarrow": False, "font": {"size": 11}},
+        ])
+    return result
 
 
 @app.post("/api/v1/analysis/parallel-coordinates")

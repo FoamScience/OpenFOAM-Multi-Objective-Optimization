@@ -368,8 +368,8 @@ def resolve_context_points(robust_cfg, exp_cfg) -> None:
     n_target = robust_cfg.context_samples
     points = points[:n_target]
     robust_cfg.context_points = points
-    log.info("Generated %d context points via Sobol from %s bounds",
-             len(points), robust_cfg.context_groups)
+    log.debug("Generated %d context points via Sobol from %s bounds",
+              len(points), robust_cfg.context_groups)
     for i, pt in enumerate(points):
         log.debug("  context[%d]: %s", i, pt)
 
@@ -548,3 +548,22 @@ def cycle_context(client, robust_state: dict, trial_index: int) -> None:
                 spec.fixed_features = ObservationFeatures(parameters=ctx_values)
 
     log.debug("Context cycle: trial=%d → context[%d]=%s", trial_index, ctx_idx, ctx_values)
+
+
+# ---------------------------------------------------------------------------
+# Ax JSON serialization registry — must run at import time so that
+# loading saved experiments (--no-opt, analysis, etc.) can deserialize
+# SubstituteContextFeatures and RobustAcquisition.
+# ---------------------------------------------------------------------------
+try:
+    from ax.storage.botorch_modular_registry import (
+        CLASS_TO_REGISTRY, CLASS_TO_REVERSE_REGISTRY,
+        register_acquisition,
+    )
+    from botorch.models.transforms.input import InputTransform as _InputTransform
+
+    CLASS_TO_REGISTRY[_InputTransform][SubstituteContextFeatures] = "SubstituteContextFeatures"
+    CLASS_TO_REVERSE_REGISTRY[_InputTransform]["SubstituteContextFeatures"] = SubstituteContextFeatures
+    register_acquisition(RobustAcquisition)
+except ImportError:
+    pass

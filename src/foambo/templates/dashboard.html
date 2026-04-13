@@ -19,6 +19,16 @@
     <div class="status">
       <span><span class="dot" :class="state.status===null?'':state.status?.running?'dot-live':'dot-off'"></span> <span x-text="state.status===null?'Connecting...':state.status?.running?'Live':'Offline'"></span> <span style="color:var(--pico-muted-color);font-size:0.7rem" x-text="'(3s)'"></span></span>
       <span x-text="(state.status?.trials_total || 0) + ' trials'"></span>
+      <template x-if="state.status?.robust">
+        <span class="robust-badge" x-data="{ tip: false }" @mouseenter="tip=true" @mouseleave="tip=false" style="position:relative">
+          <span style="background:var(--pico-primary-background);color:var(--pico-primary-inverse);padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:600;cursor:default">Robust</span>
+          <div x-show="tip" x-cloak style="position:absolute;top:110%;right:0;z-index:99;background:var(--pico-card-background-color);border:1px solid var(--pico-muted-border-color);border-radius:6px;padding:8px 12px;font-size:0.75rem;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.15)">
+            <div><strong x-text="(state.status.robust.risk_measure==='auto'?(state.status.robust.context_params?.length>1?'MARS':'CVaR'):state.status.robust.risk_measure.toUpperCase()) + '(\u03B1=' + state.status.robust.alpha?.toFixed(2) + ')'"></strong></div>
+            <div style="color:var(--pico-muted-color)">Context: <span x-text="state.status.robust.context_params?.join(', ')"></span></div>
+            <div style="color:var(--pico-muted-color)">Scenarios: <span x-text="state.status.robust.context_samples"></span></div>
+          </div>
+        </span>
+      </template>
       <span x-text="lastUpdate"></span>
     </div>
   </header>
@@ -225,6 +235,33 @@
       <template x-for="p in opairs()" :key="'cp'+p[0]+p[1]">
         <div class="chart-card panel-6"><h6 x-text="'Pareto: '+p[0]+' vs '+p[1]"></h6><div :id="'cp-'+p[0]+'-'+p[1]" style="height:280px"></div></div>
       </template>
+      <!-- Robust: Robustness Profile (box plots per Pareto point) -->
+      <div class="chart-card" style="grid-column:1/-1" x-show="state.status?.robust && robustPareto?.points?.length"
+           x-data="{ robustPareto: null, _fetched: false }" x-effect="
+        if(state.status?.robust && !_fetched){ _fetched=true; fetch('/api/v1/robust/pareto-robustness').then(r=>r.json()).then(d=>{ robustPareto=d; $nextTick(()=>renderRobustProfiles(robustPareto)) }).catch(()=>{}) }
+      ">
+        <h6>Robustness Profile <small style="color:var(--pico-muted-color);font-weight:400" x-text="robustPareto?.n_contexts ? '(across ' + robustPareto.n_contexts + ' context scenarios, \u03B1=' + robustPareto.alpha?.toFixed(2) + ')' : ''"></small></h6>
+        <p style="font-size:0.7rem;color:var(--pico-muted-color)">How stable is each Pareto-optimal design across environmental conditions. Lower spread = more robust.</p>
+        <div id="c-robust-profile" style="height:350px;width:100%"></div>
+      </div>
+      <!-- Robust: Risk Measure Trace -->
+      <div class="chart-card panel-6" x-show="state.status?.robust && robustTrace?.trial_indices?.length"
+           x-data="{ robustTrace: null, _fetched: false }" x-effect="
+        if(state.status?.robust && !_fetched){ _fetched=true; fetch('/api/v1/robust/risk-trace').then(r=>r.json()).then(d=>{ robustTrace=d; $nextTick(()=>renderRiskTrace(robustTrace)) }).catch(()=>{}) }
+      ">
+        <h6>Risk Measure Trace <small style="color:var(--pico-muted-color);font-weight:400" x-text="robustTrace?.alpha ? 'CVaR(\u03B1=' + robustTrace.alpha?.toFixed(2) + ')' : ''"></small></h6>
+        <p style="font-size:0.7rem;color:var(--pico-muted-color)">CVaR per trial over time. Rising = finding more robust designs.</p>
+        <div id="c-risk-trace" style="height:250px"></div>
+      </div>
+      <!-- Robust: Context Sensitivity Heatmap -->
+      <div class="chart-card panel-6" x-show="state.status?.robust && robustHeatmap?.context_params?.length"
+           x-data="{ robustHeatmap: null, _fetched: false }" x-effect="
+        if(state.status?.robust && !_fetched){ _fetched=true; fetch('/api/v1/robust/context-sensitivity').then(r=>r.json()).then(d=>{ robustHeatmap=d; $nextTick(()=>renderCtxHeatmap(robustHeatmap)) }).catch(()=>{}) }
+      ">
+        <h6>Context Sensitivity</h6>
+        <p style="font-size:0.7rem;color:var(--pico-muted-color)">Which context variables matter for which objectives (std-dev when sweeping each context param).</p>
+        <div id="c-ctx-heatmap" style="height:280px"></div>
+      </div>
     </div>
   </div>
 
@@ -242,13 +279,13 @@
     </div>
     <div class="panel-grid">
       <!-- Sensitivity -->
-      <div class="chart-card panel-4" x-show="anlSens">
+      <div class="chart-card panel-6" x-show="anlSens">
         <h6 x-text="anlSens?.title||'Sensitivity Analysis'"></h6>
         <p style="font-size:0.7rem;color:var(--pico-muted-color)" x-text="anlSens?.subtitle||''"></p>
         <div id="anl-sens" style="height:320px"></div>
       </div>
       <!-- Parallel Coordinates -->
-      <div class="chart-card panel-8" x-show="anlPC">
+      <div class="chart-card panel-6" x-show="anlPC">
         <h6 x-text="anlPC?.title||'Parallel Coordinates'"></h6>
         <p style="font-size:0.7rem;color:var(--pico-muted-color)" x-text="anlPC?.subtitle||''"></p>
         <div id="anl-pc" style="height:400px"></div>
@@ -325,6 +362,22 @@
           </article>
         </template>
       </template>
+      <!-- Context Scenarios (robust mode) -->
+      <div class="chart-card" style="grid-column:1/-1" x-show="state.status?.robust" x-data="{ ctxPoints: null, ctxLoaded: false }" x-effect="
+        if(state.status?.robust && !ctxLoaded){ ctxLoaded=true; fetch('/api/v1/robust/context-points').then(r=>r.json()).then(d=>{ ctxPoints=d }).catch(()=>{}) }
+      ">
+        <h6>Context Scenarios <small style="color:var(--pico-muted-color);font-weight:400" x-text="ctxPoints?.points?.length ? '(' + ctxPoints.points.length + ' scenarios)' : ''"></small></h6>
+        <p style="font-size:0.7rem;color:var(--pico-muted-color)">Sobol-sampled environmental conditions used for robust optimization. Parameters: <span x-text="state.status?.robust?.context_params?.join(', ')"></span></p>
+        <template x-if="ctxPoints?.points?.length">
+          <div style="overflow-x:auto;max-height:200px;overflow-y:auto">
+            <table role="grid" style="font-size:0.75rem;margin:0">
+              <thead><tr><th>#</th><template x-for="k in Object.keys(ctxPoints.points[0])" :key="k"><th x-text="k"></th></template></tr></thead>
+              <tbody><template x-for="(pt,i) in ctxPoints.points" :key="i"><tr><td x-text="i+1"></td><template x-for="k in Object.keys(pt)" :key="k"><td x-text="typeof pt[k]==='number'?pt[k].toFixed(4):pt[k]"></td></template></tr></template></tbody>
+            </table>
+          </div>
+        </template>
+        <p x-show="ctxLoaded && !ctxPoints?.points?.length" style="color:var(--pico-muted-color);font-size:0.8rem">No context points available.</p>
+      </div>
       <!-- Group Sensitivity -->
       <div class="chart-card panel-6" x-show="anlGroupSens">
         <h6>Group Sensitivity</h6>
@@ -398,7 +451,8 @@
               </span>
             </template>
           </div>
-          <div style="display:flex;gap:0.5rem;align-items:center;margin-left:auto">
+          <div style="display:flex;gap:0.5rem;align-items:center;margin-left:auto;flex-wrap:wrap">
+            <button x-show="state.status?.robust" class="btn" @click="sweepContext()" :disabled="sweeping" style="font-size:0.7rem;padding:0.2rem 0.5rem;border-color:rgba(234,88,12,0.8);color:rgba(234,88,12,0.8)" x-text="sweeping?'Sweeping...':'Sweep Context'"></button>
             <input type="number" x-model="fetchTrialIdx" placeholder="Trial #" style="width:70px;font-size:0.75rem;padding:0.2rem 0.4rem">
             <button class="btn" @click="fetchTrialParams()">Fetch params</button>
           </div>
@@ -439,19 +493,82 @@
         </article>
       </template>
       <p class="panel" x-show="pe" style="color:#f59e0b" x-text="pe"></p>
-      <!-- Sweep charts -->
+      <!-- Robust: Robustness Gauge + Nominal vs CVaR comparison -->
+      <template x-if="state.status?.robust && pr">
+        <article class="panel-8" x-data="{ rp: null, rpLoading: false, rpErr: '' }" x-effect="
+          if(state.status?.robust && pr && !rp && !rpLoading){ rpLoading=true; fetch('/api/v1/predict/robust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({parameters:pp})}).then(r=>r.json()).then(d=>{rp=d;rpLoading=false}).catch(e=>{rpErr=e.message;rpLoading=false}) }
+        ">
+          <h6>Robust Analysis <small style="color:var(--pico-muted-color);font-weight:400" x-text="rp ? '('+rp.n_contexts+' scenarios, \u03B1='+rp.alpha?.toFixed(2)+')' : rpLoading ? 'loading...' : ''"></small></h6>
+          <template x-if="rp?.stats">
+            <div>
+              <!-- Nominal context values -->
+              <div style="font-size:0.7rem;color:var(--pico-muted-color);margin-bottom:0.75rem;padding:0.3rem 0.5rem;background:rgba(59,130,246,0.08);border-radius:4px">
+                Nominal context: <template x-for="(v,k) in rp.nominal_context||{}" :key="'nc'+k"><span x-text="k+'='+fmtN(v)" style="margin-right:0.75rem"></span></template>
+              </div>
+              <!-- Per-metric: Nominal vs CVaR gauge -->
+              <template x-for="(s,m) in rp.stats||{}" :key="'rg'+m">
+                <div style="margin-bottom:0.75rem;padding:0.4rem 0.5rem;background:rgba(255,255,255,0.03);border-radius:4px">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.25rem">
+                    <span style="font-weight:600;font-size:0.85rem" x-text="m"></span>
+                    <span style="font-size:0.7rem;color:var(--pico-muted-color)" x-show="rp.percentile_rank?.[m]!=null" x-text="'better than ' + rp.percentile_rank[m] + '% of trials'"></span>
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0.5rem;font-size:0.8rem">
+                    <div><div style="color:var(--pico-muted-color);font-size:0.65rem">Nominal</div><span x-text="fmtN(s.nominal)"></span></div>
+                    <div><div style="color:var(--pico-muted-color);font-size:0.65rem">CVaR</div><span style="font-weight:600" x-text="fmtN(s.cvar)"></span></div>
+                    <div><div style="color:var(--pico-muted-color);font-size:0.65rem">Gap</div><span :style="{color: Math.abs(s.gap)>0.01*Math.abs(s.nominal||1) ? '#f59e0b' : '#22c55e'}" x-text="fmtN(s.gap)"></span></div>
+                    <div><div style="color:var(--pico-muted-color);font-size:0.65rem">Spread</div><span x-text="fmtN(s.min)+' .. '+fmtN(s.max)"></span></div>
+                  </div>
+                  <!-- Gauge bar: CVaR position within min..max range -->
+                  <div style="margin-top:0.3rem;height:6px;background:var(--pico-muted-border-color);border-radius:3px;position:relative">
+                    <div style="position:absolute;height:100%;border-radius:3px;background:linear-gradient(90deg,#ef4444,#f59e0b,#22c55e)"
+                         :style="{width:'100%',opacity:0.6}"></div>
+                    <div style="position:absolute;top:-3px;width:12px;height:12px;border-radius:50%;background:#fff;border:2px solid var(--accent)"
+                         :style="{left: (s.max!==s.min ? ((s.cvar-s.min)/(s.max-s.min)*100) : 50) + '%',transform:'translateX(-50%)'}"></div>
+                  </div>
+                </div>
+              </template>
+              <!-- Context scenario table (collapsible) -->
+              <details style="margin-top:0.5rem">
+                <summary style="font-size:0.75rem;color:var(--pico-muted-color);cursor:pointer">Per-scenario breakdown</summary>
+                <div style="overflow-x:auto;max-height:180px;overflow-y:auto;margin-top:0.3rem">
+                  <table role="grid" style="font-size:0.7rem;margin:0">
+                    <thead><tr><th>#</th><template x-for="k in rp.context_params" :key="'rth'+k"><th x-text="k"></th></template><template x-for="m in Object.keys(rp.stats)" :key="'rmh'+m"><th x-text="m"></th></template></tr></thead>
+                    <tbody><template x-for="(sc,i) in rp.scenarios||[]" :key="'rsc'+i"><tr>
+                      <td x-text="i+1"></td>
+                      <template x-for="k in rp.context_params" :key="'rcv'+k+i"><td x-text="fmtN(sc.context[k])"></td></template>
+                      <template x-for="m in Object.keys(rp.stats)" :key="'rpv'+m+i"><td x-text="fmtN(sc.predictions[m]?.mean)"></td></template>
+                    </tr></template></tbody>
+                  </table>
+                </div>
+              </details>
+            </div>
+          </template>
+          <p x-show="rpErr" style="color:#f59e0b;font-size:0.8rem" x-text="rpErr"></p>
+        </article>
+      </template>
+      <!-- Partial Dependence -->
       <template x-if="sweepData">
         <article class="panel" style="grid-column:span 12">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;gap:0.5rem">
             <h6 style="margin:0">Partial Dependence</h6>
-            <div style="display:flex;gap:0.5rem;align-items:center">
+            <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+              <label style="font-size:0.7rem">Metric:
+                <select x-model="sweepMetric" @change="renderSweepCharts()" style="font-size:0.7rem;padding:0.2rem;width:auto">
+                  <template x-for="o in state.experiment?.objectives||[]" :key="'sm'+o.name"><option :value="o.name" x-text="o.name"></option></template>
+                </select>
+              </label>
               <label style="font-size:0.7rem">Points: <input type="number" x-model.number="sweepNPts" min="10" max="100" style="width:55px;font-size:0.7rem;padding:0.2rem"></label>
               <button class="btn" @click="sweepData=null" style="font-size:0.7rem;padding:0.2rem 0.5rem">Clear</button>
             </div>
           </div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(350px,1fr));gap:0.75rem">
-            <template x-for="(curve,idx) in sweepData.curves" :key="'sw-'+curve.param_name">
-              <div class="chart-card" :id="'sweep-chart-'+idx" style="height:280px;border:1px solid var(--pico-muted-border-color);border-radius:4px;padding:0.25rem"></div>
+          <!-- Tornado: parameter effect magnitude -->
+          <div id="sweep-tornado" style="height:220px;margin-bottom:0.75rem"></div>
+          <!-- Detail sweep curves sorted by importance -->
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:0.75rem">
+            <template x-for="(curve,idx) in sortedSweepCurves()" :key="'sw-'+curve.param_name">
+              <div class="chart-card" :id="'sweep-chart-'+curve._sortIdx"
+                   :style="'height:260px;border:1px solid var(--pico-muted-border-color);border-radius:4px;padding:0.25rem' + (isCtxParam(curve.param_name) ? ';border-left:3px solid rgba(234,88,12,0.8)' : '')">
+              </div>
             </template>
           </div>
         </article>
