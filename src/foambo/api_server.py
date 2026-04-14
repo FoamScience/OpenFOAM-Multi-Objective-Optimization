@@ -1055,7 +1055,8 @@ def _get_pareto(use_model: bool) -> dict:
         # Compute hypervolume trace over completed trials
         hv_trace = []
         try:
-            from ax.plot.pareto_utils import compute_hypervolume
+            import torch
+            from botorch.utils.multi_objective.hypervolume import Hypervolume
             exp = client._experiment
             completed = sorted(
                 [t for t in list(exp.trials.values())
@@ -1069,6 +1070,12 @@ def _get_pareto(use_model: bool) -> dict:
                     for obj in opt_config.objective.objectives
                 }
                 data = exp.lookup_data().df
+                # BoTorch Hypervolume assumes maximization: negate minimized objectives
+                ref_t = torch.tensor([
+                    -ref_point[n] if minimize_flags.get(n, True) else ref_point[n]
+                    for n in obj_names
+                ], dtype=torch.double)
+                hv_calc = Hypervolume(ref_point=ref_t)
                 for i in range(1, len(completed) + 1):
                     subset_indices = {t.index for t in completed[:i]}
                     subset_data = data[data["trial_index"].isin(subset_indices)]
@@ -1082,27 +1089,21 @@ def _get_pareto(use_model: bool) -> dict:
                                 if mdf.empty:
                                     break
                                 val = float(mdf["mean"].iloc[-1])
-                                # Negate maximized objectives for HV computation
-                                if not minimize_flags.get(obj_name, True):
+                                # Negate minimized objectives for maximization convention
+                                if minimize_flags.get(obj_name, True):
                                     val = -val
                                 point.append(val)
                             if len(point) == len(obj_names):
                                 points.append(point)
                         if points:
-                            import numpy as np
-                            ref = [
-                                -ref_point[n] if not minimize_flags.get(n, True) else ref_point[n]
-                                for n in obj_names
-                            ]
-                            hv = compute_hypervolume(
-                                np.array(points),
-                                np.array(ref),
-                            )
+                            pts_t = torch.tensor(points, dtype=torch.double)
+                            hv = hv_calc.compute(pts_t)
                             hv_trace.append({"trial": completed[i-1].index, "value": float(hv)})
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except Exception as e:
+                        log.debug("HV computation failed at trial %d: %s",
+                                  completed[i-1].index if i > 0 else -1, e)
+        except Exception as e:
+            log.debug("HV trace setup failed: %s", e)
 
         return {
             "frontier": frontier,
@@ -2154,6 +2155,179 @@ def get_context_sensitivity():
         "context_params": ctx_params,
         "base_parameters": base_params,
     })
+
+
+@app.get("/api/v1/convergence")
+def get_convergence():
+    """Part A: Per-objective max Probability of Improvement for convergence tracking."""
+    with _state.lock:
+        client = _state.client
+        if client is None:
+            return SafeJSONResponse(content={"estimates": {}, "error": "Not initialized"})
+        gs = client._generation_strategy
+        if gs is None or gs.adapter is None:
+            return SafeJSONResponse(content={"estimates": {}, "error": "No fitted model"})
+        # Get improvement_bar from config
+        orch_cfg = _state.orch_cfg
+        improvement_bar = 0.1
+        if orch_cfg and hasattr(orch_cfg, 'global_stopping_strategy'):
+            gss = orch_cfg.global_stopping_strategy
+            if gss and hasattr(gss, 'improvement_bar'):
+                improvement_bar = gss.improvement_bar
+            elif isinstance(gss, dict):
+                improvement_bar = gss.get('improvement_bar', 0.1)
+        try:
+            from .analysis import compute_convergence_pi
+            result = compute_convergence_pi(client, gs, improvement_bar=improvement_bar)
+
+            # Build improvement trace from best-so-far data (retrospective)
+            # This shows how the normalized improvement rate decayed over trials
+            import numpy as np
+            from ax.core.objective import MultiObjective as _MO
+            exp = client._experiment
+            oc = exp.optimization_config
+            obj_info = ({o.metric.name: o.minimize for o in oc.objective.objectives}
+                        if isinstance(oc.objective, _MO)
+                        else {oc.objective.metric.name: oc.objective.minimize})
+            data = exp.lookup_data().df
+            completed = sorted(
+                [t for t in exp.trials.values() if t.status.name == "COMPLETED"],
+                key=lambda t: t.index)
+            improvement_traces = {}
+            for metric, minimize in obj_info.items():
+                best = None
+                trace = []
+                for trial in completed:
+                    tdf = data[(data["trial_index"] == trial.index) & (data["metric_name"] == metric)]
+                    if tdf.empty:
+                        continue
+                    val = float(tdf["mean"].iloc[-1])
+                    if best is None:
+                        best = val
+                    elif (minimize and val < best) or (not minimize and val > best):
+                        best = val
+                    # Normalized improvement: how much room is left
+                    # Use IQR as scale
+                    all_vals = data[data["metric_name"] == metric]["mean"].dropna().values
+                    if len(all_vals) > 2:
+                        q75, q25 = np.percentile(all_vals, [75, 25])
+                        iqr = max(q75 - q25, 1e-12)
+                        trace.append(abs(val - best) / iqr)
+                    else:
+                        trace.append(1.0)
+                if trace:
+                    improvement_traces[metric] = trace
+
+            result["improvement_trace"] = improvement_traces
+            return SafeJSONResponse(content=result)
+        except Exception as e:
+            return SafeJSONResponse(content={"estimates": {}, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/v1/specialization-cost")
+def get_specialization_cost():
+    """Part B: Per-objective PI at fixed context (no robustness)."""
+    # Return cached result if available (computed at startup or previous call)
+    if hasattr(_state, '_specialization_cache') and _state._specialization_cache:
+        return SafeJSONResponse(content=_state._specialization_cache)
+
+    import numpy as np
+    raw_cfg = _state.raw_cfg
+    if not raw_cfg or not raw_cfg.get("robust_optimization"):
+        return SafeJSONResponse(content={"estimates": {}, "error": "Not in robust mode"})
+
+    with _state.lock:
+        client = _state.client
+        if client is None:
+            return SafeJSONResponse(content={"estimates": {}, "error": "Not initialized"})
+        gs = client._generation_strategy
+        if gs is None or gs.adapter is None:
+            return SafeJSONResponse(content={"estimates": {}, "error": "No fitted model"})
+
+        # Compute nominal context (mean of context points)
+        rc = raw_cfg["robust_optimization"]
+        ctx_groups = rc.get("context_groups", [])
+        ctx_param_names = []
+        for p in raw_cfg.get("experiment", {}).get("parameters", []):
+            p_groups = p.get("groups", []) if hasattr(p, "get") else getattr(p, "groups", [])
+            if any(g in ctx_groups for g in (p_groups or [])):
+                ctx_param_names.append(p.get("name", "") if hasattr(p, "get") else getattr(p, "name", ""))
+
+        ctx_points = rc.get("context_points")
+        if ctx_points is None:
+            try:
+                from foambo.robustness import resolve_context_points, RobustOptimizationConfig
+                from foambo.orchestrate import ExperimentOptions
+                robust_cfg = RobustOptimizationConfig.model_validate(dict(rc))
+                exp_cfg = ExperimentOptions.model_validate(dict(raw_cfg["experiment"]))
+                resolve_context_points(robust_cfg, exp_cfg)
+                ctx_points = robust_cfg.context_points
+            except Exception:
+                ctx_points = []
+
+        if not ctx_points or not ctx_param_names:
+            return SafeJSONResponse(content={"estimates": {}, "error": "No context points"})
+
+        nominal_ctx = {cn: float(np.mean([cp[cn] for cp in ctx_points])) for cn in ctx_param_names}
+
+        orch_cfg = _state.orch_cfg
+        improvement_bar = 0.1
+        if orch_cfg and hasattr(orch_cfg, 'global_stopping_strategy'):
+            gss = orch_cfg.global_stopping_strategy
+            if gss and hasattr(gss, 'improvement_bar'):
+                improvement_bar = gss.improvement_bar
+            elif isinstance(gss, dict):
+                improvement_bar = gss.get('improvement_bar', 0.1)
+
+        try:
+            from .analysis import compute_specialization_cost
+            # Compute for each context point + nominal
+            all_ctx = [nominal_ctx] + list(ctx_points)
+            all_labels = ["nominal (mean)"] + [
+                ", ".join(f"{k}={v:.4g}" for k, v in cp.items()) for cp in ctx_points
+            ]
+            per_context = []
+            for ctx, label in zip(all_ctx, all_labels):
+                result = compute_specialization_cost(
+                    client, gs, context_point=ctx, improvement_bar=improvement_bar,
+                )
+                per_context.append({
+                    "context_point": ctx,
+                    "label": label,
+                    "estimates": result.get("estimates", {}),
+                })
+            # Build summary: worst-case (max trials) across all context points per objective
+            summary = {}
+            all_metrics = set()
+            for pc in per_context:
+                all_metrics.update(pc["estimates"].keys())
+            for metric in all_metrics:
+                max_trials = 0
+                max_pi = 0.0
+                worst_ctx = ""
+                for pc in per_context:
+                    est = pc["estimates"].get(metric, {})
+                    t = est.get("estimated_specialized_trials") or 0
+                    pi = est.get("max_pi_specialized") or 0.0
+                    if t > max_trials:
+                        max_trials = t
+                        max_pi = pi
+                        worst_ctx = pc["label"]
+                summary[metric] = {
+                    "max_trials": max_trials,
+                    "max_pi": round(max_pi, 4),
+                    "worst_context": worst_ctx,
+                }
+            result = {
+                "summary": summary,
+                "per_context": per_context,
+                "pi_threshold": improvement_bar,
+                "context_params": ctx_param_names,
+            }
+            _state._specialization_cache = result
+            return SafeJSONResponse(content=result)
+        except Exception as e:
+            return SafeJSONResponse(content={"estimates": {}, "error": str(e)}, status_code=500)
 
 
 @app.get("/api/v1/config")

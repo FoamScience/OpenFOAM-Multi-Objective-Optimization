@@ -1,6 +1,7 @@
 const API = window.location.origin + '/api/v1';
 function fmtN(v,d=4){if(v==null||typeof v!=='number'||isNaN(v)||!isFinite(v))return'-';const a=Math.abs(v);if(a===0)return'0';if(a>=1e6||a<1e-3)return v.toExponential(2);if(a>=100)return v.toFixed(1);if(a>=1)return v.toFixed(d>3?3:d);return v.toFixed(d)}
 const PL = {paper_bgcolor:'transparent',plot_bgcolor:'rgba(26,29,39,0.5)',font:{family:'JetBrains Mono',size:10,color:'#94a3b8'},margin:{l:50,r:16,t:24,b:56},xaxis:{gridcolor:'#2a2d3a',zerolinecolor:'#2a2d3a'},yaxis:{gridcolor:'#2a2d3a',zerolinecolor:'#2a2d3a'},legend:{orientation:'h',y:-0.3,yanchor:'top',font:{size:9}},modebar:{bgcolor:'transparent'}};
+window._PL = PL;  // expose for inline x-effect charts
 const PC = {responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d']};
 const CL = ['#00d4aa','#3b82f6','#f59e0b','#ef4444','#a78bfa','#ec4899','#06b6d4','#84cc16'];
 const GC = {CenterOfSearchSpace:'#64748b',Sobol:'#3b82f6',MBM:'#00d4aa',bo:'#00d4aa',sobol:'#3b82f6'};
@@ -470,9 +471,10 @@ function renderRobustProfiles(data) {
   }
   const layout = {
     ...PL, boxmode: 'group', autosize: true,
+    margin: { ...PL.margin, b: 70 },
     xaxis: { ...PL.xaxis, title: 'Pareto Trial', categoryorder: 'array', categoryarray: pts.map(p => 'T' + p.trial_index) },
     yaxis: { ...PL.yaxis, title: 'Metric Value' },
-    legend: { ...PL.legend, orientation: 'h', y: -0.25 },
+    legend: { ...PL.legend, orientation: 'h', y: -0.35, yanchor: 'top' },
   };
   Plotly.react(el, traces, layout, PC);
   // Resize when tab becomes visible (Plotly can't measure hidden containers)

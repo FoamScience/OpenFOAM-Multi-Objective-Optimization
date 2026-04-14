@@ -10,6 +10,7 @@ Separated into data computation and plotting layers:
 The web UI and API server can use compute_* functions directly.
 """
 
+import logging
 import webbrowser
 from .common import *
 from .orchestrate import StoreOptions
@@ -603,3 +604,452 @@ def _resolve_percentile_thresholds(metrics: dict, thresholds: dict):
         if pct_steps:
             th["resolved_steps"] = pct_steps
             th["resolved_values"] = pct_values
+
+
+# ---------------------------------------------------------------------------
+# Specialization Estimate — GP-based convergence & specialization cost
+# ---------------------------------------------------------------------------
+
+_log = logging.getLogger(__name__)
+
+
+def _get_model_bounds(sub_model):
+    """Derive bounds from the model's training data (handles extra dims like 'step')."""
+    import torch
+    X = sub_model.train_inputs[0]  # (n, d)
+    lo = X.min(dim=0).values.tolist()
+    hi = X.max(dim=0).values.tolist()
+    # Widen bounds slightly to allow exploration beyond training range
+    return [[l - 0.01 * max(abs(h - l), 1e-6), h + 0.01 * max(abs(h - l), 1e-6)]
+            for l, h in zip(lo, hi)]
+
+
+def _get_objective_models(gs):
+    """Extract per-objective sub-models from the surrogate (ModelListGP)."""
+    surr = getattr(gs.adapter.generator, "surrogate", None)
+    if surr is None or surr.model is None:
+        return None, None
+    model = surr.model
+    outcomes = getattr(surr, "_outcomes", None) or []
+    if hasattr(model, "models"):
+        return model.models, outcomes
+    return [model], outcomes
+
+
+def _compute_max_pi_for_model(
+    sub_model, bounds, best_f, minimize, fixed_features=None,
+    n_restarts=8, raw_samples=64,
+):
+    """Compute max Probability of Improvement for a single-output GP model.
+
+    Args:
+        fixed_features: dict of {dim_index: value} to fix during optimization.
+            Used to pin context dimensions to specific values.
+    """
+    import torch
+    from botorch.acquisition.analytic import ProbabilityOfImprovement
+    from botorch.optim import optimize_acqf
+
+    pi_acqf = ProbabilityOfImprovement(
+        model=sub_model, best_f=best_f, maximize=not minimize,
+    )
+    bounds_t = torch.tensor(bounds, dtype=torch.double).T  # (2, d)
+
+    # Fix context dimensions by collapsing their bounds
+    if fixed_features:
+        for dim_idx, val in fixed_features.items():
+            bounds_t[0, dim_idx] = val
+            bounds_t[1, dim_idx] = val
+
+    try:
+        _, max_pi_val = optimize_acqf(
+            acq_function=pi_acqf,
+            bounds=bounds_t,
+            q=1,
+            num_restarts=n_restarts,
+            raw_samples=raw_samples,
+            fixed_features=fixed_features,
+        )
+        return float(max_pi_val)
+    except Exception as e:
+        _log.debug("PI optimization failed: %s", e)
+        return None
+
+
+def _simulate_convergence(model, bounds, best_f, minimize, threshold, max_steps=30):
+    """Simulate BO convergence by fantasizing observations at EI-optimal points.
+
+    At each step:
+    1. Find x* = argmax ExpectedImprovement
+    2. Fantasize observation y* = posterior_mean(x*) at x*
+    3. Update best_f if y* improves
+    4. Compute max PI on the fantasy model
+    5. Stop if max PI < threshold
+
+    Returns the number of simulated steps to convergence.
+    """
+    import torch
+    from botorch.acquisition.analytic import LogExpectedImprovement, ProbabilityOfImprovement
+    from botorch.optim import optimize_acqf
+
+    bounds_t = torch.tensor(bounds, dtype=torch.double).T
+    current_model = model
+    current_best = best_f
+
+    _log.info("  Simulating convergence (max %d steps, threshold=%.3f)...", max_steps, threshold)
+    for step in range(1, max_steps + 1):
+        try:
+            # Find where EI is maximized
+            ei = LogExpectedImprovement(
+                model=current_model, best_f=current_best, maximize=not minimize,
+            )
+            candidate, _ = optimize_acqf(
+                ei, bounds=bounds_t, q=1, num_restarts=4, raw_samples=32,
+            )
+
+            # Fantasize: get posterior mean at candidate as the "observation"
+            with torch.no_grad():
+                posterior = current_model.posterior(candidate)
+                y_fantasy = posterior.mean.squeeze(-1)
+
+            # Update best_f
+            y_val = y_fantasy.item()
+            improved = (minimize and y_val < current_best) or (not minimize and y_val > current_best)
+            if improved:
+                current_best = y_val
+
+            # Create fantasy model (condition on the new observation)
+            current_model = current_model.condition_on_observations(
+                X=candidate, Y=y_fantasy,
+            )
+
+            # Check max PI on the fantasy model
+            pi = ProbabilityOfImprovement(
+                model=current_model, best_f=current_best, maximize=not minimize,
+            )
+            _, max_pi = optimize_acqf(
+                pi, bounds=bounds_t, q=1, num_restarts=4, raw_samples=32,
+            )
+            pi_val = max_pi.item()
+
+            if step % 50 == 0 or step == 1:
+                _log.info("    step %d: PI=%.4f best_f=%.4f%s",
+                           step, pi_val, current_best, " *" if improved else "")
+
+            if pi_val < threshold:
+                _log.info("  Converged after %d simulated trials", step)
+                return step
+
+        except Exception as e:
+            _log.debug("Simulation step %d failed: %s", step, e)
+            return max_steps
+
+    _log.info("  Did not converge in %d steps (final PI=%.4f)", max_steps, pi_val)
+    return max_steps
+
+
+def _find_observed_best_f(sub_model, minimize):
+    """Get the best observed value from the model's training targets.
+
+    Uses the actual training data (not GP prediction) so PI measures
+    the probability of improving over what we've actually seen.
+    """
+    import torch
+    Y = sub_model.train_targets  # (n,)
+    if minimize:
+        return float(Y.min().item())
+    else:
+        return float(Y.max().item())
+
+
+def _estimate_trials_remaining(pi_history, threshold):
+    """Fit exponential decay to PI history and extrapolate to threshold crossing."""
+    import numpy as np
+    vals = np.array(pi_history)
+    if len(vals) < 3:
+        return None
+    # Only use positive values for log fit
+    mask = vals > 0
+    if mask.sum() < 3:
+        return None
+    x = np.arange(len(vals))[mask]
+    y = np.log(vals[mask])
+    # Linear fit on log(PI) = a - b*t
+    try:
+        b, a = np.polyfit(x, y, 1)
+    except (np.linalg.LinAlgError, ValueError):
+        return None
+    if b >= 0:  # PI not decaying
+        return None
+    # Solve: a + b*t = log(threshold)
+    if threshold <= 0:
+        return None
+    t_cross = (np.log(threshold) - a) / b
+    remaining = max(0, int(np.ceil(t_cross - len(vals) + 1)))
+    return min(remaining, 999)
+
+
+def compute_convergence_pi(client, gs, improvement_bar=0.1):
+    """Part A: Per-objective max PI for convergence tracking.
+
+    Returns dict with per-metric estimates and metadata.
+    """
+    import torch
+    from ax.core.objective import MultiObjective
+
+    models, outcomes = _get_objective_models(gs)
+    if models is None:
+        return {"estimates": {}, "error": "No fitted model"}
+
+    exp = client._experiment
+    opt_config = exp.optimization_config
+
+    # Derive bounds from the model's actual training data to match its input dim
+    # (includes extra features like 'step' added by Ax transforms)
+    bounds = _get_model_bounds(models[0])
+
+    # Get objective info
+    if isinstance(opt_config.objective, MultiObjective):
+        obj_info = {o.metric.name: o.minimize for o in opt_config.objective.objectives}
+    else:
+        obj_info = {opt_config.objective.metric.name: opt_config.objective.minimize}
+
+    # Disable context transforms for clean per-point PI
+    from .api_server import _disable_context_transforms, _restore_context_transforms
+    _disabled = _disable_context_transforms(gs)
+
+    estimates = {}
+    try:
+        for i, (sub_model, outcome_name) in enumerate(zip(models, outcomes)):
+            if outcome_name not in obj_info:
+                continue
+            minimize = obj_info[outcome_name]
+
+            # Find GP-predicted best
+            best_f = _find_observed_best_f(sub_model, minimize)
+            if best_f is None:
+                estimates[outcome_name] = {"status": "insufficient_data", "max_pi": None}
+                continue
+
+            # For minimize objectives, PosteriorMean returns the minimum but PI needs
+            # the best_f in the model's native scale. Use the raw posterior mean value.
+            max_pi = _compute_max_pi_for_model(
+                sub_model, bounds, best_f, minimize,
+            )
+            if max_pi is None:
+                estimates[outcome_name] = {"status": "insufficient_data", "max_pi": None}
+                continue
+
+            if max_pi < improvement_bar:
+                status = "converged"
+            else:
+                status = "improving"
+
+            estimates[outcome_name] = {
+                "status": status,
+                "max_pi": round(max_pi, 4),
+                "best_so_far": round(best_f, 6),
+                "convergence_pct": round((1 - min(max_pi, 1.0)) * 100, 1),
+            }
+    finally:
+        _restore_context_transforms(_disabled)
+
+    n_completed = sum(1 for t in exp.trials.values()
+                      if t.status.name == "COMPLETED")
+    return {
+        "trial": n_completed,
+        "estimates": estimates,
+        "pi_threshold": improvement_bar,
+    }
+
+
+def compute_specialization_cost(client, gs, context_point, improvement_bar=0.1):
+    """Part B: Per-objective PI at fixed context using a specialized GP.
+
+    Fits a fresh GP on training data near the specified context point
+    (no context transforms), then computes max PI on it. This gives
+    a more accurate estimate than using the robust GP with fixed features.
+    """
+    import torch
+    import numpy as np
+    from ax.core.objective import MultiObjective
+    from botorch.models import SingleTaskGP
+    from botorch.models.transforms.input import Normalize
+    from botorch.fit import fit_gpytorch_mll
+    from gpytorch.mlls import ExactMarginalLogLikelihood
+
+    models, outcomes = _get_objective_models(gs)
+    if models is None:
+        return {"estimates": {}, "error": "No fitted model"}
+
+    exp = client._experiment
+    opt_config = exp.optimization_config
+
+    if isinstance(opt_config.objective, MultiObjective):
+        obj_info = {o.metric.name: o.minimize for o in opt_config.objective.objectives}
+    else:
+        obj_info = {opt_config.objective.metric.name: opt_config.objective.minimize}
+
+    # Get feature ordering from the adapter
+    param_names = getattr(gs.adapter, 'parameters', [])
+    ctx_indices = [param_names.index(cn) for cn in context_point if cn in param_names]
+    ctx_values_raw = torch.tensor(
+        [float(context_point[param_names[idx]]) for idx in ctx_indices],
+        dtype=torch.double,
+    )
+
+    estimates = {}
+    for i, (robust_model, outcome_name) in enumerate(zip(models, outcomes)):
+        if outcome_name not in obj_info:
+            continue
+        minimize = obj_info[outcome_name]
+
+        try:
+            # Get training data from the robust model
+            X_all = robust_model.train_inputs[0]   # (n, d)
+            Y_all = robust_model.train_targets      # (n,)
+
+            # Filter: select trials near the target context using the GP's
+            # lengthscales to define "nearby" (within 2 lengthscales).
+            if ctx_indices:
+                ctx_X = X_all[:, ctx_indices]  # (n, n_ctx)
+                # Map raw context values to training data space
+                param_lo = torch.tensor([
+                    float(exp.search_space.parameters[param_names[idx]].lower)
+                    for idx in ctx_indices], dtype=torch.double)
+                param_hi = torch.tensor([
+                    float(exp.search_space.parameters[param_names[idx]].upper)
+                    for idx in ctx_indices], dtype=torch.double)
+                ctx_lo = ctx_X.min(dim=0).values
+                ctx_hi = ctx_X.max(dim=0).values
+                ctx_range = (ctx_hi - ctx_lo).clamp(min=1e-6)
+                param_range = (param_hi - param_lo).clamp(min=1e-6)
+                ctx_target = ctx_lo + (ctx_values_raw - param_lo) / param_range * ctx_range
+
+                # Select the closest N trials to the target context,
+                # where N = total_trials / n_context_scenarios.
+                # This gives each context point its fair share of data.
+                param_lo = torch.tensor([
+                    float(exp.search_space.parameters[param_names[idx]].lower)
+                    for idx in ctx_indices], dtype=torch.double)
+                param_hi = torch.tensor([
+                    float(exp.search_space.parameters[param_names[idx]].upper)
+                    for idx in ctx_indices], dtype=torch.double)
+                param_range = (param_hi - param_lo).clamp(min=1e-6)
+                ctx_target = ctx_lo + (ctx_values_raw - param_lo) / param_range * ctx_range
+                dist = ((ctx_X - ctx_target) / ctx_range).norm(dim=1)
+
+                # n_context_scenarios from the robust config (not from unique data)
+                n_scenarios = max(1, len(context_point))  # at least split by context dims
+                # Select 1/4 of data — enough to fit a meaningful GP
+                n_select = max(10, len(X_all) // 4)
+                _, nearest_idx = dist.topk(min(n_select, len(dist)), largest=False)
+            else:
+                nearest_idx = torch.arange(len(X_all))
+
+            X_sub = X_all[nearest_idx]
+            Y_sub = Y_all[nearest_idx]
+            n_sub = len(X_sub)
+
+            if n_sub < 3:
+                estimates[outcome_name] = {
+                    "max_pi_specialized": None,
+                    "estimated_specialized_trials": None,
+                    "n_nearby_trials": n_sub,
+                }
+                continue
+
+            # Drop context dims from features (specialized model doesn't need them)
+            keep_dims = [j for j in range(X_sub.shape[1]) if j not in ctx_indices]
+            X_spec = X_sub[:, keep_dims]
+            d_spec = X_spec.shape[1]
+
+            ctx_str = ", ".join(f"{k}={v:.4g}" for k, v in context_point.items())
+            _log.info("Specialization: %s @ [%s] (minimize=%s, %d nearby points, %d design dims)",
+                      outcome_name, ctx_str, minimize, n_sub, d_spec)
+            # Fit a fresh specialized GP
+            spec_model = SingleTaskGP(
+                X_spec, Y_sub.unsqueeze(-1),
+                input_transform=Normalize(d=d_spec),
+            )
+            mll = ExactMarginalLogLikelihood(spec_model.likelihood, spec_model)
+            fit_gpytorch_mll(mll)
+
+            # Compute best_f from the specialized training data
+            best_f = float(Y_sub.min().item()) if minimize else float(Y_sub.max().item())
+
+            # Compute max PI on the specialized model
+            spec_bounds = _get_model_bounds(spec_model)
+            max_pi = _compute_max_pi_for_model(
+                spec_model, spec_bounds, best_f, minimize,
+            )
+
+            if max_pi is None:
+                estimates[outcome_name] = {
+                    "max_pi_specialized": None,
+                    "estimated_specialized_trials": None,
+                    "n_nearby_trials": n_sub,
+                }
+                continue
+
+            # Estimate remaining trials via BO simulation on the specialized GP.
+            # Repeatedly: find argmax EI, fantasize an observation, recompute PI.
+            if max_pi > improvement_bar:
+                est_trials = _simulate_convergence(
+                    spec_model, spec_bounds, best_f, minimize,
+                    improvement_bar, max_steps=30,
+                )
+            else:
+                est_trials = 0
+
+            estimates[outcome_name] = {
+                "max_pi_specialized": round(max_pi, 4),
+                "estimated_specialized_trials": est_trials,
+                "n_nearby_trials": n_sub,
+            }
+        except Exception as e:
+            _log.debug("Specialization cost failed for %s: %s", outcome_name, e)
+            estimates[outcome_name] = {
+                "max_pi_specialized": None,
+                "estimated_specialized_trials": None,
+            }
+
+    return {
+        "context_point": context_point,
+        "estimates": estimates,
+        "pi_threshold": improvement_bar,
+    }
+
+
+def format_convergence_log(convergence_result, specialization_result=None):
+    """Format convergence + specialization for stdout logging."""
+    lines = []
+    trial = convergence_result.get("trial", "?")
+    lines.append(f"--- Convergence (trial {trial}) ---")
+    for metric, est in convergence_result.get("estimates", {}).items():
+        status = est.get("status", "?")
+        pi = est.get("max_pi")
+        pct = est.get("convergence_pct")
+        if status == "converged":
+            lines.append(f"  {metric:20s}: converged  (PI={pi:.3f})")
+        elif status == "improving":
+            remaining = est.get("estimated_trials_remaining", "?")
+            lines.append(f"  {metric:20s}: improving  (PI={pi:.3f}, {pct:.0f}% converged)")
+        else:
+            lines.append(f"  {metric:20s}: {status}")
+
+    if specialization_result and specialization_result.get("estimates"):
+        ctx = specialization_result.get("context_point", {})
+        ctx_str = ", ".join(f"{k}={v:.4g}" for k, v in ctx.items())
+        lines.append(f"\n--- Specialization Cost (at context: {ctx_str}) ---")
+        for metric, est in specialization_result.get("estimates", {}).items():
+            pi = est.get("max_pi_specialized")
+            trials = est.get("estimated_specialized_trials")
+            if pi is None:
+                lines.append(f"  {metric:20s}: insufficient data")
+            elif trials == 0:
+                lines.append(f"  {metric:20s}: already specialized  (PI={pi:.3f})")
+            else:
+                lines.append(f"  {metric:20s}: ~{trials} additional specialized trials  (PI={pi:.3f})")
+
+    return "\n".join(lines)

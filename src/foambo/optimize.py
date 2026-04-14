@@ -96,9 +96,6 @@ def optimize(cfg, debug=False):
     _ax_encoder.object_to_json = _patched_object_to_json
     _ax_encoder._object_to_json = _patched_object_to_json
 
-    # Ensure robust opt classes are registered (import triggers module-level registration)
-    from .robustness import SubstituteContextFeatures, RobustAcquisition  # noqa: F401
-
     from .analysis import compute_analysis_cards, plot_pareto_frontier
     from .orchestrate import (
         ExperimentOptions, OptimizationOptions,
@@ -526,6 +523,19 @@ def optimize(cfg, debug=False):
         from .analysis import plot_streaming_metrics
         plot_streaming_metrics(raw_cfg, client)
 
+        # Log convergence estimate (Part A) after BO trials
+        try:
+            gs = client._generation_strategy
+            if gs is not None and gs.adapter is not None:
+                from .analysis import compute_convergence_pi, format_convergence_log
+                _imp_bar = getattr(orch_cfg, 'global_stopping_strategy', None)
+                _imp_bar = getattr(_imp_bar, 'improvement_bar', 0.1) if _imp_bar else 0.1
+                conv = compute_convergence_pi(client, gs, improvement_bar=_imp_bar)
+                if conv.get("estimates"):
+                    log.info("\n%s", format_convergence_log(conv))
+        except Exception as e:
+            log.debug("Convergence estimate failed: %s", e)
+
         data = client._experiment.fetch_data()
         if data.df.empty:
             return
@@ -664,6 +674,30 @@ def optimize(cfg, debug=False):
         log.info("Best parameter set:\n%s", json.dumps(best_parameters, indent=2))
         log.info("Predictions for best parameter set (mean, variance):\n%s", json.dumps(prediction, indent=2))
 
+    # Convergence + Specialization Cost estimate
+    try:
+        gs = client._generation_strategy
+        if gs is not None and gs.adapter is not None:
+            from .analysis import compute_convergence_pi, compute_specialization_cost, format_convergence_log
+            _imp_bar = getattr(orch_cfg, 'global_stopping_strategy', None)
+            _imp_bar = getattr(_imp_bar, 'improvement_bar', 0.1) if _imp_bar else 0.1
+            conv = compute_convergence_pi(client, gs, improvement_bar=_imp_bar)
+            spec = None
+            if _robust_state is not None:
+                import numpy as _np
+                ctx_points = _robust_state.get("robust_cfg", None)
+                ctx_names = _robust_state.get("ctx_names", [])
+                feature_set = _robust_state.get("feature_set", None)
+                if ctx_names and feature_set is not None:
+                    nominal_ctx = {cn: float(_np.mean([float(feature_set[i, j])
+                                   for i in range(feature_set.shape[0])]))
+                                   for j, cn in enumerate(ctx_names)}
+                    spec = compute_specialization_cost(
+                        client, gs, context_point=nominal_ctx, improvement_bar=_imp_bar)
+            log.info("\n%s", format_convergence_log(conv, spec))
+    except Exception as e:
+        log.debug("Convergence/specialization estimate failed: %s", e)
+
     log.info("=================================================")
     cards = compute_analysis_cards(raw_cfg, client, open_html=False)
 
@@ -758,6 +792,9 @@ def setup_colored_logging(debug=False):
 
 def main():
     setup_colored_logging()
+    # Register custom BoTorch classes early so any JSON deserialization works
+    # (--pack, --no-opt, --analysis all load saved state before optimize() runs)
+    from .robustness import SubstituteContextFeatures, RobustAcquisition  # noqa: F401
     from ._version import VERSION, DEFAULT_CONFIG
 
     parser = argparse.ArgumentParser(
@@ -933,8 +970,6 @@ def main():
                       "Please set store.read_from option to either `json` or `sql`")
             exit(1)
         set_experiment_name(cfg["experiment"]["name"])
-        # Ensure robust opt classes are registered before loading saved state
-        from .robustness import SubstituteContextFeatures, RobustAcquisition  # noqa: F401
         client = StoreOptions.model_validate(dict(cfg['store'])).load()
         orch_cfg = ConfigOrchestratorOptions.model_validate(dict(cfg['orchestration_settings']))
         # Set parameter groups and trial dependencies on the runner from raw config
@@ -961,20 +996,33 @@ def main():
             node = gs.current_node
             model_cache = f"artifacts/{cfg['experiment']['name']}_model.pt"
             if os.path.exists(model_cache):
+                # Use cached state_dict as warm-start but still refit hyperparameters
                 cached_sd = torch.load(model_cache, weights_only=True)
                 from ax.generators.torch.botorch_modular.surrogate import Surrogate
                 _orig_fit = Surrogate.fit
-                def _fast_fit(self, *a, state_dict=None, refit=True, **kw):
-                    return _orig_fit(self, *a, state_dict=cached_sd, refit=False, **kw)
-                Surrogate.fit = _fast_fit
+                def _warm_fit(self, *a, state_dict=None, refit=True, **kw):
+                    return _orig_fit(self, *a, state_dict=cached_sd, refit=True, **kw)
+                Surrogate.fit = _warm_fit
                 node._fit(experiment=client._experiment, data=client._experiment.lookup_data())
                 Surrogate.fit = _orig_fit
-                log.info("GP model restored from cache (fast)")
+                log.info("GP model fitted (warm-start from cache)")
             else:
                 node._fit(experiment=client._experiment, data=client._experiment.lookup_data())
-                log.info("GP model fitted from scratch (no cache)")
+                log.info("GP model fitted from scratch")
         except Exception as e:
             log.warning("Model pre-warm failed: %s", e)
+        # Log convergence + specialization estimate
+        try:
+            gs = client._generation_strategy
+            if gs is not None and gs.adapter is not None:
+                from .analysis import compute_convergence_pi, format_convergence_log
+                _imp_bar = getattr(orch_cfg, 'global_stopping_strategy', None)
+                _imp_bar = getattr(_imp_bar, 'improvement_bar', 0.1) if _imp_bar else 0.1
+                conv = compute_convergence_pi(client, gs, improvement_bar=_imp_bar)
+                log.info("\n%s", format_convergence_log(conv))
+                log.info("Specialization cost will be computed on first dashboard request.")
+        except Exception as e:
+            log.debug("Convergence estimate failed: %s", e)
         from .api_server import start_api_server, stop_api_server
         # Ensure raw_cfg is a plain dict (not OmegaConf DictConfig)
         from omegaconf import OmegaConf

@@ -262,6 +262,94 @@
         <p style="font-size:0.7rem;color:var(--pico-muted-color)">Which context variables matter for which objectives (std-dev when sweeping each context param).</p>
         <div id="c-ctx-heatmap" style="height:280px"></div>
       </div>
+      <!-- Convergence & Specialization Cost -->
+      <div class="chart-card" style="grid-column:1/-1" x-show="convData?.estimates && Object.keys(convData.estimates).length"
+           x-data="{ convData: null, specData: null, _fetched: false }" x-effect="
+        if(state.status?.model_fitted && !_fetched){ _fetched=true;
+          fetch('/api/v1/convergence').then(r=>r.json()).then(d=>{convData=d}).catch(()=>{});
+          if(state.status?.robust) fetch('/api/v1/specialization-cost').then(r=>r.json()).then(d=>{specData=d}).catch(()=>{});
+        }
+      ">
+        <h6>Convergence <small style="color:var(--pico-muted-color);font-weight:400" x-text="convData?.trial ? '(trial '+convData.trial+')' : ''"></small></h6>
+        <p style="font-size:0.7rem;color:var(--pico-muted-color)">Per-objective Probability of Improvement (PI). Lower PI = closer to converged. Threshold: <span x-text="convData?.pi_threshold"></span></p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:0.75rem;margin-top:0.5rem">
+          <template x-for="(est,metric) in convData?.estimates||{}" :key="'conv-'+metric">
+            <div style="padding:0.5rem 0.75rem;background:rgba(255,255,255,0.03);border-radius:6px;border-left:3px solid"
+                 :style="{borderLeftColor: est.status==='converged'?'#22c55e':est.status==='improving'?'#f59e0b':'#64748b'}">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem">
+                <span style="font-weight:600;font-size:0.85rem" x-text="metric"></span>
+                <span style="font-size:0.7rem;padding:2px 6px;border-radius:3px;font-weight:600"
+                      :style="{background: est.status==='converged'?'rgba(34,197,94,0.15)':est.status==='improving'?'rgba(245,158,11,0.15)':'rgba(100,116,139,0.15)',
+                               color: est.status==='converged'?'#22c55e':est.status==='improving'?'#f59e0b':'#64748b'}"
+                      x-text="est.status"></span>
+              </div>
+              <div style="display:flex;gap:1rem;font-size:0.8rem;color:var(--pico-muted-color)">
+                <span>PI: <strong style="color:#e2e8f0" x-text="est.max_pi!=null?est.max_pi.toFixed(3):'-'"></strong></span>
+                <span x-show="est.convergence_pct!=null" x-text="est.convergence_pct.toFixed(0)+'% converged'"></span>
+              </div>
+              <!-- Progress bar -->
+              <div style="margin-top:0.3rem;height:5px;background:var(--pico-muted-border-color);border-radius:3px;overflow:hidden">
+                <div style="height:100%;border-radius:3px;transition:width 0.5s"
+                     :style="{width:(est.convergence_pct||0)+'%',background:est.status==='converged'?'#22c55e':'#f59e0b'}"></div>
+              </div>
+              <!-- Specialization cost (if available) -->
+              <template x-if="specData?.summary?.[metric]">
+                <div style="margin-top:0.3rem;font-size:0.75rem;color:var(--pico-muted-color)">
+                  <span x-show="specData.summary[metric].max_trials>0">
+                    Specialization: up to <strong style="color:#3b82f6" x-text="specData.summary[metric].max_trials"></strong> additional trials
+                    <span style="font-size:0.65rem">(worst at <span x-text="specData.summary[metric].worst_context"></span>, PI=<span x-text="specData.summary[metric].max_pi?.toFixed(3)"></span>)</span>
+                  </span>
+                  <span x-show="specData.summary[metric].max_trials===0" style="color:#22c55e">Already specialized at all contexts</span>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+        <!-- Specialization detail table (per context point) -->
+        <template x-if="specData?.per_context?.length > 1">
+          <details open style="margin-top:0.5rem">
+            <summary style="font-size:0.75rem;color:var(--pico-muted-color);cursor:pointer">Specialization cost per context scenario</summary>
+            <div style="overflow-x:auto;max-height:200px;overflow-y:auto;margin-top:0.3rem">
+              <table role="grid" style="font-size:0.7rem;margin:0">
+                <thead><tr>
+                  <th>Context</th>
+                  <template x-for="m in Object.keys(specData.summary||{})" :key="'sth-'+m"><th x-text="m + ' (trials)'"></th></template>
+                </tr></thead>
+                <tbody><template x-for="(pc,i) in specData.per_context" :key="'spc-'+i"><tr>
+                  <td x-text="pc.label" style="white-space:nowrap"></td>
+                  <template x-for="m in Object.keys(specData.summary||{})" :key="'spv-'+m+i">
+                    <td>
+                      <span x-text="pc.estimates[m]?.estimated_specialized_trials === 0 ? 'converged' : '~' + (pc.estimates[m]?.estimated_specialized_trials || '?')"></span>
+                      <span style="color:var(--pico-muted-color)" x-text="' (PI=' + (pc.estimates[m]?.max_pi_specialized?.toFixed(3) || '?') + ')'"></span>
+                    </td>
+                  </template>
+                </tr></template></tbody>
+              </table>
+            </div>
+          </details>
+        </template>
+        <!-- Improvement Gap chart -->
+        <template x-if="convData?.improvement_trace && Object.keys(convData.improvement_trace).length">
+          <div style="margin-top:0.75rem">
+            <p style="font-size:0.7rem;color:var(--pico-muted-color);margin-bottom:0.25rem">Per-trial distance from the running best, normalized by IQR. 0 = matched or set the best. Values trending toward 0 indicate the optimizer is consistently near the optimum. Dashed line = improvement threshold from stopping strategy.</p>
+            <div id="c-pi-history" style="height:200px" x-effect="
+              if(convData?.improvement_trace){
+                const traces=[];let i=0;
+                for(const[m,vals] of Object.entries(convData.improvement_trace)){
+                  traces.push({y:vals,mode:'lines+markers',name:m,line:{color:CL[i%CL.length],width:2},marker:{size:4}});i++}
+                const thr=convData.pi_threshold||0.1;
+                const PL=window._PL||{paper_bgcolor:'transparent',plot_bgcolor:'rgba(26,29,39,0.5)',font:{family:'JetBrains Mono',size:10,color:'#94a3b8'},margin:{l:50,r:16,t:24,b:40},xaxis:{gridcolor:'#2a2d3a'},yaxis:{gridcolor:'#2a2d3a'}};
+                Plotly.react(document.getElementById('c-pi-history'),traces,{...PL,
+                  margin:{...PL.margin,b:60},
+                  legend:{orientation:'h',y:-0.35,yanchor:'top',font:{size:9}},
+                  shapes:[{type:'line',y0:thr,y1:thr,x0:0,x1:1,xref:'paper',line:{color:'#22c55e',dash:'dash',width:1.5}}],
+                  xaxis:{...PL.xaxis,title:'Trial'},yaxis:{...PL.yaxis,title:'Norm. Improvement Gap'}},
+                  {responsive:true,displaylogo:false})
+              }
+            "></div>
+          </div>
+        </template>
+      </div>
     </div>
   </div>
 
