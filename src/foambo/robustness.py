@@ -187,6 +187,19 @@ class RobustAcquisition(Acquisition):
             if issubclass(botorch_acqf_class, qLogNoisyExpectedHypervolumeImprovement):
                 botorch_acqf_class = qLogNoisyExpectedImprovement
                 log.debug("MARS: swapped acqf to qLogNoisyExpectedImprovement")
+            # Temporarily clear outcome_constraints for the parent construction:
+            # with MARS scalarization, the constraint transforms produce shape
+            # mismatches in prune_inferior_points.
+            _saved_oc = self._outcome_constraints
+            self._outcome_constraints = None
+            try:
+                return super()._construct_botorch_acquisition(
+                    botorch_acqf_class=botorch_acqf_class,
+                    botorch_acqf_options=botorch_acqf_options,
+                    model=model,
+                )
+            finally:
+                self._outcome_constraints = _saved_oc
         return super()._construct_botorch_acquisition(
             botorch_acqf_class=botorch_acqf_class,
             botorch_acqf_options=botorch_acqf_options,
@@ -203,6 +216,13 @@ class RobustAcquisition(Acquisition):
         if is_moo:
             from botorch.acquisition.logei import qLogNoisyExpectedImprovement
             botorch_acqf_class = qLogNoisyExpectedImprovement
+            # MARS + constraint transforms produce shape mismatches in
+            # prune_inferior_points. Drop constraints for MARS — the
+            # GP-learned posterior already accounts for constraint violations
+            # via the training data.
+            if outcome_constraints is not None:
+                log.debug("MARS: dropping outcome_constraints to avoid shape mismatch")
+                outcome_constraints = None
 
         from ax.generators.torch.utils import get_botorch_objective_and_transform as _get_obj
         objective, posterior_transform = _get_obj(

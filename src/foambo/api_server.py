@@ -2231,6 +2231,14 @@ def get_specialization_cost():
     if hasattr(_state, '_specialization_cache') and _state._specialization_cache:
         return SafeJSONResponse(content=_state._specialization_cache)
 
+    # Heavy GP simulation — only run in --no-opt dashboard mode.
+    # During an active optimization, this would compete with trial scheduling.
+    if not getattr(_state, 'no_opt', False):
+        return SafeJSONResponse(content={
+            "estimates": {},
+            "error": "Specialization cost is only computed in --no-opt mode",
+        })
+
     import numpy as np
     raw_cfg = _state.raw_cfg
     if not raw_cfg or not raw_cfg.get("robust_optimization"):
@@ -3188,7 +3196,7 @@ def get_trial_visualization(trial_index: int):
 # Server lifecycle
 
 def start_api_server(client, raw_cfg, orch_cfg, host: str = "127.0.0.1",
-                     port: int = 8098) -> threading.Thread | None:
+                     port: int = 8098, no_opt: bool = False) -> threading.Thread | None:
     """Start the API server in a background daemon thread.
 
     Args:
@@ -3208,6 +3216,7 @@ def start_api_server(client, raw_cfg, orch_cfg, host: str = "127.0.0.1",
     _state.client = client
     _state.raw_cfg = raw_cfg
     _state.orch_cfg = orch_cfg
+    _state.no_opt = no_opt
     _state.start_time = time.time()
     _state.last_callback = time.time()
 

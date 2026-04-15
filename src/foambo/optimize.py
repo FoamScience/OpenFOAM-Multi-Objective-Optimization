@@ -1029,7 +1029,7 @@ def main():
         plain_cfg = OmegaConf.to_container(cfg, resolve=True) if hasattr(cfg, '_metadata') else cfg
         thread = start_api_server(
             client=client, raw_cfg=plain_cfg, orch_cfg=orch_cfg,
-            host=orch_cfg.api_host, port=orch_cfg.api_port,
+            host=orch_cfg.api_host, port=orch_cfg.api_port, no_opt=True,
         )
         if thread is None:
             log.error("API server failed to start")
