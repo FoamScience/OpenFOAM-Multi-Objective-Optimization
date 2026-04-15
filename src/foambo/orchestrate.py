@@ -9,7 +9,7 @@ from foambo.metrics import FoamJobRunner, LocalJobMetric
 from .common import *
 from .common import FoamBOBaseModel
 from pydantic import Field, field_validator, model_validator
-from typing import Any, Iterable, List, Literal, Dict
+from typing import Any, Iterable, List, Literal, Dict, Optional
 from functools import reduce
 from ax.global_stopping.strategies import BaseGlobalStoppingStrategy, ImprovementGlobalStoppingStrategy
 from ax.api.configs import StorageConfig, RangeParameterConfig, ChoiceParameterConfig
@@ -835,11 +835,15 @@ class TrialGenerationOptions(FoamBOBaseModel):
 
 
 class VariableSubstOptions(FoamBOBaseModel):
-    """Maps parameters to OpenFOAM file fields for value substitution via foamlib."""
-    file: str = Field(description="Relative path to the OpenFOAM file (e.g. `/0orig/field`)",
+    """Maps parameters to file fields (OpenFOAM dict, JSON, or YAML) for value substitution."""
+    file: str = Field(description="Relative path to the target file (e.g. `/0orig/field`, `/params.json`). Empty/`.` in caseless mode targets the trial's auto-generated JSON.",
                        examples=["/0orig/field"])
     parameter_scopes: Dict[str, str] = Field(description="Mapping of parameter name to dotted path in the file (e.g. `x: someDict.x`)",
                                               examples=[{"x": "someDict.x"}])
+    format: Optional[Literal["openfoam", "json", "yaml"]] = Field(
+        default=None,
+        description="File format. `None` (default) = openfoam (backward-compat). Set to `json` or `yaml` for non-OpenFOAM files.",
+        examples=["openfoam"])
 
 
 class FileSubstOptions(FoamBOBaseModel):

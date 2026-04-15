@@ -35,7 +35,7 @@
   gap: 0.5rem;
 }/* Buttons — match dashboard */
 .btn {
-  font-size: 0.875rem;
+  font-size: 16px;
   padding: 0.3rem 0.8rem;
   cursor: pointer;
   border-radius: 4px;
@@ -49,7 +49,7 @@
   margin: 0;
 }.btn-sm {
   padding: 0.15rem 0.4rem;
-  font-size: 0.825rem;
+  font-size: 16px;
 }/* Main layout */
 .builder-layout {
   display: grid;
@@ -77,27 +77,27 @@
   background: none;
   border: none;
   padding: 0.3rem 0.75rem;
-  font-size: 0.875rem;
+  font-size: 16px;
   color: var(--pico-secondary);
   cursor: pointer;
   border-left: 2px solid transparent;
   transition: all 0.15s;
 }.builder-sidebar button:hover {
   color: var(--pico-color);
-  background: rgba(255,255,255,0.03);
+  background: var(--pico-secondary);
 }.builder-sidebar button.active {
   color: var(--accent);
   border-left-color: var(--accent);
 }.builder-sidebar button.has-data::before {
   content: '\25CF';
-  font-size: 0.625rem;
+  font-size: 16px;
   margin-right: 0.4rem;
   color: var(--accent);
   vertical-align: middle;
 }.sidebar-children {
   padding-left: 0.75rem;
 }.sidebar-children button.child {
-  font-size: 0.875rem;
+  font-size: 16px;
   padding: 0.3rem 1rem;
 }/* Form area */
 .builder-form {
@@ -105,7 +105,7 @@
   overflow-y: auto;
 }.builder-form h5 {
   margin: 0 0 1rem;
-  font-size: 1.025rem;
+  font-size: 16px;
   color: var(--accent);
   border-bottom: 1px solid var(--pico-muted-border-color);
   padding-bottom: 0.5rem;
@@ -116,12 +116,12 @@
   margin-bottom: 0.75rem;
 }.form-group label {
   display: block;
-  font-size: 0.875rem;
+  font-size: 16px;
   color: var(--pico-secondary);
   margin-bottom: 0.2rem;
 }.form-group input, .form-group select, .form-group textarea {
   width: 100%;
-  font-size: 0.925rem;
+  font-size: 16px;
 }.form-group input[type="range"] {
   padding: 0;
 }.required,
@@ -129,7 +129,7 @@
 .node-FAILED {
   color: var(--danger);
 }.hint {
-  font-size: 0.825rem;
+  font-size: 16px;
   color: var(--pico-muted-color);
   font-style: italic;
   margin-top: 0.15rem;
@@ -140,7 +140,7 @@
   margin-bottom: 0.3rem;
 }.subsection-title {
   margin: 1.5rem 0 0.75rem;
-  font-size: 0.925rem;
+  font-size: 18px;
   color: var(--pico-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -159,7 +159,7 @@
   justify-content: space-between;
   margin-bottom: 0.5rem;
 }.param-name {
-  font-size: 0.925rem;
+  font-size: 16px;
   font-weight: 500;
   color: var(--accent);
 }.param-grid {
@@ -171,7 +171,7 @@
   display: flex !important;
   align-items: center;
   gap: 0.5rem;
-  font-size: 0.925rem;
+  font-size: 16px;
   cursor: pointer;
 }.toggle-label input[type="checkbox"] {
   width: auto;
@@ -191,7 +191,7 @@
   background: transparent !important;
   flex: 1;
   min-width: 120px;
-  font-size: 0.875rem;
+  font-size: 16px;
   padding: 0.2rem 0.4rem;
   outline: none;
   margin: 0 !important;
@@ -201,16 +201,16 @@
   gap: 0.2rem;
   padding: 0.15rem 0.5rem;
   border-radius: 1rem;
-  background: rgba(0,212,170,0.1);
+  background: var(--pico-primary-hover);
   color: var(--accent);
-  font-size: 0.825rem;
+  font-size: 16px;
 }.tag button {
   background: none;
   border: none;
   color: var(--accent);
   cursor: pointer;
   padding: 0;
-  font-size: 0.925rem;
+  font-size: 16px;
   line-height: 1;
 }/* Key-value rows */
 .kv-row {
@@ -245,7 +245,7 @@
   border-bottom: 1px solid var(--pico-muted-border-color);
 }.preview-header h6 {
   margin: 0;
-  font-size: 0.875rem;
+  font-size: 16px;
   color: var(--pico-secondary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -254,7 +254,7 @@
   margin: 0;
   padding: 0.75rem;
   overflow: auto;
-  font-size: 0.845rem;
+  font-size: 16px;
   line-height: 1.5;
   background: var(--pico-card-background-color);
   color: var(--pico-color);
@@ -276,11 +276,11 @@
   align-items: center;
   flex-wrap: wrap;
 }.validation-msg {
-  font-size: 0.875rem;
+  font-size: 16px;
   color: var(--danger);
   font-weight: 500;
 }.validation-error {
-  font-size: 0.825rem;
+  font-size: 16px;
   color: var(--danger);
 }/* Modal */
 .modal-overlay {
@@ -305,20 +305,20 @@
   overflow-y: auto;
 }.modal-content h5 {
   margin: 0 0 1rem;
-  font-size: 1.025rem;
+  font-size: 16px;
   color: var(--accent);
 }.preflight-check {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   padding: 0.3rem 0;
-  font-size: 0.925rem;
+  font-size: 16px;
   border-bottom: 1px solid var(--pico-muted-border-color);
 }.preflight-check:last-of-type,
 .config-field:last-child {
   border-bottom: none;
 }.check-icon {
-  font-size: 1.125rem;
+  font-size: 16px;
   width: 1.2rem;
   text-align: center;
 }.check-PASS .check-icon,
@@ -345,9 +345,9 @@ nav[role="tablist"] button.active {
   background: var(--pico-card-background-color);
   border: 1px solid var(--accent);
   border-radius: var(--pico-border-radius);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.7);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 0.845rem;
+  font-size: 16px;
   line-height: 1.55;
   color: var(--pico-color);
   pointer-events: none;
@@ -372,7 +372,7 @@ nav[role="tablist"] button.active {
   color: var(--accent);
   padding: 0.05rem 0.25rem;
   border-radius: 3px;
-  font-size: 0.825rem;
+  font-size: 16px;
 }#foambo-tooltip pre {
   background: rgba(255,255,255,0.03);
   border: 1px solid var(--pico-muted-border-color);
@@ -380,7 +380,7 @@ nav[role="tablist"] button.active {
   border-radius: var(--pico-border-radius);
   margin: 0.4rem 0;
   overflow-x: auto;
-  font-size: 0.805rem;
+  font-size: 16px;
 }#foambo-tooltip pre code,
 .docs-content pre code {
   background: none;
@@ -400,11 +400,11 @@ nav[role="tablist"] button.active {
 }#foambo-tooltip h1, #foambo-tooltip h2, #foambo-tooltip h3,
 #foambo-tooltip h4, #foambo-tooltip h5, #foambo-tooltip h6 {
   color: var(--accent);
-  font-size: 0.905rem;
+  font-size: 16px;
   margin: 0.4rem 0 0.2rem;
 }#foambo-tooltip table {
   border-collapse: collapse;
-  font-size: 0.805rem;
+  font-size: 16px;
   margin: 0.3rem 0;
 }#foambo-tooltip th, #foambo-tooltip td {
   border: 1px solid var(--pico-muted-border-color);
@@ -422,7 +422,7 @@ nav[role="tablist"] button.active {
 }.docs-content h1, .docs-content h2, .docs-content h3,
 .docs-content h4, .docs-content h5, .docs-content h6 {
   color: var(--accent);
-  font-size: 0.975rem;
+  font-size: 16px;
   margin: 0.75rem 0 0.4rem;
 }.docs-content p {
   margin: 0.4rem 0;
@@ -431,18 +431,18 @@ nav[role="tablist"] button.active {
   color: var(--accent);
   padding: 0.05rem 0.25rem;
   border-radius: 3px;
-  font-size: 0.875rem;
+  font-size: 16px;
 }.docs-content pre {
   background: var(--pico-card-background-color);
   border: 1px solid var(--pico-muted-border-color);
   padding: 0.5rem;
   border-radius: var(--pico-border-radius);
   overflow-x: auto;
-  font-size: 0.845rem;
+  font-size: 16px;
 }.docs-content li {
   margin: 0.15rem 0;
 }.docs-content table {
-  font-size: 0.845rem;
+  font-size: 16px;
   border-collapse: collapse;
 }.docs-content th, .docs-content td {
   border: 1px solid var(--pico-muted-border-color);
@@ -460,14 +460,14 @@ nav[role="tablist"] button.active {
   background: var(--pico-card-background-color);
 }.es-branch-label {
   display: block;
-  font-size: 0.825rem;
+  font-size: 16px;
   font-weight: 600;
   color: var(--accent);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 0.3rem;
 }.es-branch-content {
-  font-size: 0.975rem;
+  font-size: 16px;
 }@media (max-width: 900px) {
   .es-composite { grid-template-columns: 1fr; }
 }
@@ -490,7 +490,7 @@ body {
   display: flex;
   align-items: center;
   gap: 1rem;
-  font-size: 22px;
+  font-size: 16px;
   color: var(--pico-secondary);
 }.dot {
   display: inline-block;
@@ -516,7 +516,7 @@ nav[role="tablist"] {
   border: none;
   border-bottom: 2px solid transparent;
   padding: 0.6rem 1rem;
-  font-size: 22px;
+  font-size: 18px;
   color: var(--pico-secondary);
   cursor: pointer;
   white-space: nowrap;

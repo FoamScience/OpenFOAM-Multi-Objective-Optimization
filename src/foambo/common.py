@@ -2,8 +2,9 @@
 Common constants and shared definitions for the foambo package.
 """
 
-import hashlib, os, shutil, time
-from typing import List, Literal, Dict
+import hashlib, json, os, shutil, time
+from contextlib import contextmanager
+from typing import List, Literal, Dict, Optional
 from omegaconf import DictConfig, OmegaConf
 from foamlib import FoamCase, FoamFile
 from pydantic import BaseModel, ConfigDict
@@ -140,6 +141,56 @@ def assign_foam_path(foamfile, dotted_path, new_value):
     return foamfile[last]
 
 
+def _detect_format(path: str, explicit: Optional[str] = None) -> str:
+    """Pick file-format handler. Explicit wins. Else extension. Else openfoam."""
+    if explicit:
+        return explicit
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".json":
+        return "json"
+    if ext in (".yaml", ".yml"):
+        return "yaml"
+    return "openfoam"
+
+
+@contextmanager
+def _open_param_file(path: str, fmt: Optional[str] = None):
+    """Open a parameter file for dotted-path mutation across formats.
+
+    Yields a mapping-like object that supports __getitem__/__setitem__.
+    Writes back on exit for json/yaml (foamlib handles persistence itself).
+    """
+    resolved = _detect_format(path, fmt)
+    if resolved == "openfoam":
+        with FoamFile(path) as ff:
+            yield ff
+        return
+    if resolved == "json":
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                data = json.load(f)
+        else:
+            data = {}
+        yield data
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+        return
+    if resolved == "yaml":
+        from ruamel.yaml import YAML
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                data = yaml.load(f) or {}
+        else:
+            data = {}
+        yield data
+        with open(path, "w") as f:
+            yaml.dump(data, f)
+        return
+    raise ValueError(f"Unknown parameter file format: {resolved}")
+
+
 class CasePreprocessor:
     """Protocol for case setup before trial execution.
 
@@ -171,18 +222,45 @@ class _FakeCasePath:
 
 
 class NoCasePreprocessor(CasePreprocessor):
-    """No-op preprocessor for caseless (pure-Python) optimization.
+    """Caseless preprocessor: writes a single JSON file per trial.
 
-    Uses a virtual path as the trial "case path" — no directories are
-    created on disk since there are no files to store.
+    Output: `{trial_destination}/{EXPERIMENT_NAME}_trial_{hash}.json`
+    containing the full parameter dict. No case directory is created.
+    Any `variable_substitution` entries with empty/`.` file target this JSON.
     """
-    _counter: int = 0
-
     def setup(self, parameters: dict, cfg) -> dict:
-        NoCasePreprocessor._counter += 1
-        virtual_path = f"<caseless_trial_{NoCasePreprocessor._counter}>"
-        fake = _FakeCasePath(virtual_path)
-        return {"case": fake, "casename": virtual_path}
+        hash = hashlib.md5()
+        encoded = repr(OmegaConf.to_yaml(parameters)).encode()
+        hash.update(encoded + f"{time.time()}".encode())
+        hash = hash.hexdigest()[:DEFAULT_HASH_LENGTH]
+
+        trial_dest = cfg['template_case'].get('trial_destination', 'trials') \
+            if isinstance(cfg, (dict, DictConfig)) and 'template_case' in cfg \
+            else 'trials'
+        os.makedirs(trial_dest, exist_ok=True)
+        trial_name = f"{EXPERIMENT_NAME}_trial_{hash}"
+        trial_path = os.path.join(trial_dest, f"{trial_name}.json")
+
+        payload = dict(parameters)
+        with open(trial_path, "w") as f:
+            json.dump(payload, f, indent=2)
+
+        # Apply variable_substitution entries targeting the trial JSON
+        if isinstance(cfg, (dict, DictConfig)) and 'templating' in cfg:
+            for elmt in cfg['templating'].get('variables', []) or []:
+                tgt = (elmt.get('file') or '').strip()
+                if tgt in ('', '.', '/'):
+                    # Entry targets the trial JSON itself — already written as flat dict.
+                    # Dotted paths in parameter_scopes allow nested rewrites.
+                    elmv = elmt['parameter_scopes']
+                    with _open_param_file(trial_path, 'json') as pf:
+                        for p in elmv:
+                            if p in parameters:
+                                assign_foam_path(pf, elmv[p], parameters[p])
+
+        fake = _FakeCasePath(trial_path)
+        fake.name = trial_name
+        return {"case": fake, "casename": trial_path}
 
 
 # Module-level default preprocessor; can be swapped by users
@@ -255,7 +333,7 @@ def preprocess_case(parameters, cfg):
             elm = elmt['file']
             elmv = elmt['parameter_scopes']
             param_file_path = os.path.join(case.path, elm.lstrip('/'))
-            with FoamFile(param_file_path) as paramFile:
+            with _open_param_file(param_file_path, elmt.get('format')) as paramFile:
                 for param in elmv:
                     try:
                         if param in parameters.keys():

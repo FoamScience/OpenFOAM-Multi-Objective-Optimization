@@ -143,8 +143,12 @@ def _resolve_trial_indices(include_trials: str | None, cfg, client) -> list[int]
     if include_trials == "all":
         trial_dest = cfg.get("optimization", {}).get("case_runner", {}).get("trial_destination", "trials")
         if os.path.isdir(trial_dest):
-            return sorted(int(d.split("_")[-1]) for d in os.listdir(trial_dest)
-                          if os.path.isdir(os.path.join(trial_dest, d)))
+            entries = os.listdir(trial_dest)
+            has_dirs = any(os.path.isdir(os.path.join(trial_dest, d)) for d in entries)
+            has_files = any(f.endswith(".json") and os.path.isfile(os.path.join(trial_dest, f)) for f in entries)
+            if has_dirs or has_files:
+                # Mix: prefer Ax trial index mapping to avoid fragile name parsing
+                return sorted(exp.trials.keys())
         return sorted(exp.trials.keys())
 
     if include_trials == "best":
@@ -318,28 +322,48 @@ def pack(config_path: str, include_trials: str | None = None,
                 if trial is None:
                     log.warning(f"Trial {tidx} not found in experiment")
                     continue
-                # Find trial folder
+                # Find trial folder OR caseless json file
                 trial_dir = None
+                trial_file = None
                 run_meta = trial.run_metadata or {}
                 case_path = run_meta.get("case_path") or run_meta.get("job", {}).get("case_path")
                 if case_path and os.path.isdir(case_path):
                     trial_dir = case_path
+                elif case_path and os.path.isfile(case_path):
+                    trial_file = case_path
                 else:
-                    # Try common naming patterns
+                    # Try common naming patterns (directory, then flat-file caseless)
+                    import glob
                     for pattern in [f"{exp_name}_trial_*_{tidx}", f"trial_{tidx}", f"*_trial_{tidx:04d}"]:
-                        import glob
                         matches = glob.glob(os.path.join(trial_destination, pattern))
                         if matches:
                             trial_dir = matches[0]
                             break
+                    if not trial_dir:
+                        for pattern in [f"{exp_name}_trial_*.json", f"trial_{tidx}.json"]:
+                            matches = glob.glob(os.path.join(trial_destination, pattern))
+                            if matches:
+                                trial_file = matches[0]
+                                break
                 if trial_dir and os.path.isdir(trial_dir):
                     tgrp = trials_grp.create_group(str(tidx))
                     tgrp.attrs["status"] = trial.status.name
                     tgrp.attrs["parameters"] = json.dumps(trial.arm.parameters if trial.arm else {})
                     n, sz = _store_directory(tgrp, trial_dir, all_skip)
                     print(f"  + trials/{tidx}/ ({n} files, {sz / 1024 / 1024:.1f} MB)")
+                elif trial_file and os.path.isfile(trial_file):
+                    tgrp = trials_grp.create_group(str(tidx))
+                    tgrp.attrs["status"] = trial.status.name
+                    tgrp.attrs["parameters"] = json.dumps(trial.arm.parameters if trial.arm else {})
+                    tgrp.attrs["caseless"] = True
+                    tgrp.attrs["filename"] = os.path.basename(trial_file)
+                    with open(trial_file, "rb") as tf:
+                        data = tf.read()
+                    ds = tgrp.create_dataset("__file__", data=data, **_compression())
+                    ds.attrs["mode"] = os.stat(trial_file).st_mode & 0o777
+                    print(f"  + trials/{tidx} (caseless file, {len(data)} bytes)")
                 else:
-                    log.warning(f"Trial {tidx} folder not found")
+                    log.warning(f"Trial {tidx} folder/file not found")
 
     archive_size = os.path.getsize(archive_path)
     print(f"\nArchive created: {archive_path} ({archive_size / 1024 / 1024:.1f} MB)")
@@ -413,10 +437,23 @@ def unpack(archive_path: str, output_dir: str | None = None) -> str:
         # Trials
         if "trials" in f:
             trials_dir = os.path.join(target, "trials")
+            os.makedirs(trials_dir, exist_ok=True)
             for tidx_str in f["trials"]:
-                tdir = os.path.join(trials_dir, f"{exp_name}_trial_{tidx_str}")
-                n = _extract_directory(f["trials"][tidx_str], tdir)
-                print(f"  + trials/{tidx_str}/ ({n} files)")
+                tgrp = f["trials"][tidx_str]
+                if tgrp.attrs.get("caseless", False):
+                    fname = tgrp.attrs.get("filename", f"{exp_name}_trial_{tidx_str}.json")
+                    if isinstance(fname, bytes):
+                        fname = fname.decode()
+                    out_path = os.path.join(trials_dir, fname)
+                    with open(out_path, "wb") as out:
+                        out.write(bytes(tgrp["__file__"][()]))
+                    mode = tgrp["__file__"].attrs.get("mode", 0o644)
+                    os.chmod(out_path, mode)
+                    print(f"  + trials/{fname} (caseless file)")
+                else:
+                    tdir = os.path.join(trials_dir, f"{exp_name}_trial_{tidx_str}")
+                    n = _extract_directory(tgrp, tdir)
+                    print(f"  + trials/{tidx_str}/ ({n} files)")
 
         # Rewrite config paths
         cfg = OmegaConf.load_from_string(config_bytes.decode())
