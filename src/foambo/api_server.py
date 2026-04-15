@@ -404,6 +404,71 @@ def config_docs():
     return SafeJSONResponse(content=get_config_docs())
 
 
+@app.get("/api/v1/bootstrap-lineage")
+def bootstrap_lineage():
+    """Return the active run's bootstrap lineage, or empty if none."""
+    raw_cfg = getattr(_state, "raw_cfg", None)
+    if not raw_cfg:
+        return SafeJSONResponse(content={})
+    lineage = raw_cfg.get("bootstrap_lineage") if hasattr(raw_cfg, "get") else None
+    if not lineage:
+        return SafeJSONResponse(content={})
+    return SafeJSONResponse(content=lineage)
+
+
+@app.get("/api/v1/config/bootstrap-preview")
+def config_bootstrap_preview(path: str):
+    """Inspect a candidate bootstrap state file.
+
+    Returns the parent experiment name, search space parameters, and any
+    robust_optimization context groups — so the config builder can populate
+    a specialize: editor with valid parameter choices.
+    """
+    import json, os
+    if not path:
+        return SafeJSONResponse(content={"error": "missing path"}, status_code=400)
+    abs_path = path if os.path.isabs(path) else os.path.abspath(path)
+    if not os.path.isfile(abs_path):
+        return SafeJSONResponse(content={"error": f"not found: {abs_path}"}, status_code=404)
+    try:
+        with open(abs_path) as f:
+            state = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        return SafeJSONResponse(content={"error": f"unreadable: {e}"}, status_code=400)
+    parent_cfg = state.get("foambo_config")
+    if parent_cfg is None:
+        return SafeJSONResponse(
+            content={"error": "state has no embedded foambo_config"},
+            status_code=400,
+        )
+    exp = parent_cfg.get("experiment", {}) or {}
+    robust = parent_cfg.get("robust_optimization") or {}
+    ctx_groups = robust.get("context_groups", []) if isinstance(robust, dict) else []
+    params = []
+    for p in exp.get("parameters", []):
+        if not isinstance(p, dict):
+            continue
+        groups = p.get("groups", []) or []
+        params.append({
+            "name": p.get("name"),
+            "type": p.get("parameter_type"),
+            "bounds": p.get("bounds"),
+            "values": p.get("values"),
+            "groups": groups,
+            "is_context": any(g in ctx_groups for g in groups),
+        })
+    exp_block = state.get("experiment") or {}
+    n_trials = len((state.get("trials") or {}))
+    return SafeJSONResponse(content={
+        "parent_name": exp.get("name"),
+        "parent_path": abs_path,
+        "context_groups": list(ctx_groups),
+        "parameters": params,
+        "n_trials": n_trials,
+        "immutable": bool(exp_block.get("immutable_search_space_and_opt_config")),
+    })
+
+
 def _check_etag(endpoint: str, if_none_match: Optional[str]) -> Optional[Response]:
     """Return a 304 response if the ETag matches, else None."""
     current = _state.etag(endpoint)

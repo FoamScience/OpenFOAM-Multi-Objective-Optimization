@@ -167,8 +167,23 @@ def optimize(cfg, debug=False):
     _m.DEPENDENCY_ACTION_TIMEOUT = orch_cfg.dependency_action_timeout
     _m.PROCESS_REAP_TIMEOUT = orch_cfg.process_reap_timeout
     # Embed the full config in the JSON state for FoamBO.load()
-    store_cfg._foambo_config = OmegaConf.to_container(raw_cfg, resolve=True)
-    client = store_cfg.load()
+    from .bootstrap import bootstrap_meta, strip_bootstrap_meta, apply_specialization
+    _boot = bootstrap_meta(raw_cfg) if isinstance(raw_cfg, DictConfig) else None
+    if isinstance(raw_cfg, DictConfig):
+        strip_bootstrap_meta(raw_cfg)
+    store_cfg._foambo_config = OmegaConf.to_container(raw_cfg, resolve=True) \
+        if isinstance(raw_cfg, DictConfig) else raw_cfg
+    if _boot is not None:
+        from ax import Client as _AxClient
+        client = _AxClient.load_from_json_file(filepath=_boot["client_state_path"])
+        new_name = exp_cfg.name if hasattr(exp_cfg, "name") else raw_cfg["experiment"]["name"]
+        if client._experiment._name != new_name:
+            log.info(f"Renaming experiment {client._experiment._name} → {new_name}")
+            client._experiment._name = new_name
+        if _boot.get("specialize"):
+            apply_specialization(client, _boot["specialize"])
+    else:
+        client = store_cfg.load()
 
     # 1.0 Experiment setup
     has_experiment = False
@@ -478,6 +493,10 @@ def optimize(cfg, debug=False):
                 dispatch = (trial.run_metadata or {}).get("dispatch_time")
                 completed = trial.time_completed
                 if dispatch is not None and completed is not None:
+                    # Skip trials inherited from a bootstrap parent: their
+                    # dispatch happened before this process started.
+                    if dispatch < wall_start:
+                        continue
                     trial_s += completed.timestamp() - dispatch
                     n_completed += 1
         overhead_s = max(total_s - gen_s - trial_s, 0.0)
@@ -970,7 +989,22 @@ def main():
                       "Please set store.read_from option to either `json` or `sql`")
             exit(1)
         set_experiment_name(cfg["experiment"]["name"])
-        client = StoreOptions.model_validate(dict(cfg['store'])).load()
+        from .bootstrap import bootstrap_meta, strip_bootstrap_meta, apply_specialization
+        _boot = bootstrap_meta(cfg)
+        if _boot is not None:
+            strip_bootstrap_meta(cfg)
+            from ax import Client as _AxClient
+            log.info("Bootstrap: loading parent client state from %s", _boot["client_state_path"])
+            client = _AxClient.load_from_json_file(filepath=_boot["client_state_path"])
+            new_name = cfg["experiment"]["name"]
+            if client._experiment._name != new_name:
+                log.info("Bootstrap: renaming experiment %r → %r",
+                         client._experiment._name, new_name)
+                client._experiment._name = new_name
+            if _boot.get("specialize"):
+                apply_specialization(client, _boot["specialize"])
+        else:
+            client = StoreOptions.model_validate(dict(cfg['store'])).load()
         orch_cfg = ConfigOrchestratorOptions.model_validate(dict(cfg['orchestration_settings']))
         # Set parameter groups and trial dependencies on the runner from raw config
         runner = client._experiment.runner

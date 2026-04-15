@@ -162,7 +162,53 @@ def static_checks(cfg: DictConfig) -> PreflightResult:
         else:
             r.warned("State file for resume", f"not found: {state_file} (will start fresh)")
 
+    _check_bootstrap(cfg, r)
     return _check_config_coherence(cfg, r)
+
+
+def _check_bootstrap(cfg: DictConfig, r: PreflightResult) -> None:
+    """Validate bootstrap: / specialize: entries."""
+    bootstrap = cfg.get("bootstrap") if hasattr(cfg, "get") else None
+    if not bootstrap:
+        return
+    import json
+    raw_path = str(bootstrap)
+    abs_path = raw_path if os.path.isabs(raw_path) else os.path.abspath(raw_path)
+    if not os.path.isfile(abs_path):
+        r.failed("Bootstrap state file exists", f"not found: {abs_path}")
+        return
+    r.passed("Bootstrap state file exists", abs_path)
+    try:
+        with open(abs_path) as f:
+            state = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        r.failed("Bootstrap state file is valid JSON", str(e))
+        return
+    parent_cfg = state.get("foambo_config")
+    if parent_cfg is None:
+        r.failed("Bootstrap state has embedded foambo_config",
+                 "missing 'foambo_config' — re-save parent with a recent foamBO")
+        return
+    r.passed("Bootstrap state has embedded foambo_config")
+
+    exp_block = state.get("experiment") or {}
+    if exp_block.get("immutable_search_space_and_opt_config"):
+        r.warned("Bootstrap parent is mutable",
+                 "parent has immutable_search_space_and_opt_config=True; foamBO will clear it during specialize")
+    else:
+        r.passed("Bootstrap parent is mutable")
+
+    specialize = cfg.get("specialize") if hasattr(cfg, "get") else None
+    if not specialize:
+        return
+    parent_params = {p.get("name") for p in (parent_cfg.get("experiment", {}) or {}).get("parameters", [])}
+    missing = [k for k in specialize if k not in parent_params]
+    if missing:
+        r.failed("Specialize keys present in parent search space",
+                 f"unknown parameter(s): {missing}")
+    else:
+        r.passed("Specialize keys present in parent search space",
+                 ", ".join(specialize.keys()))
 
 
 def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightResult:

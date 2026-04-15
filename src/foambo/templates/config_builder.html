@@ -56,6 +56,75 @@
 
     <!-- Form area -->
     <main class="builder-form">
+      <!-- Section: Bootstrap -->
+      <section x-show="activeSection === 'bootstrap'">
+        <h5>Bootstrap from a prior run</h5>
+        <p class="muted">
+          Optional. Point at a saved <code>*_client_state.json</code> to inherit
+          search space, fitted GP, and trial history. The current YAML is
+          deep-merged on top. Add a <em>specialize</em> map to pin context
+          parameters from a robust run to concrete values.
+        </p>
+
+        <div class="form-group">
+          <label data-hint="bootstrap">Parent state path</label>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="text" x-model="config.bootstrap"
+                   placeholder="./artifacts/PumpOpt_client_state.json"
+                   style="flex:1;">
+            <button class="btn" @click="loadBootstrapPreview()"
+                    :disabled="bootstrapLoading || !config.bootstrap">
+              <span x-show="!bootstrapLoading">Inspect</span>
+              <span x-show="bootstrapLoading">Loading…</span>
+            </button>
+            <button class="btn btn-danger" @click="clearBootstrap()"
+                    x-show="config.bootstrap">Clear</button>
+          </div>
+          <p class="error" x-show="bootstrapError" x-text="bootstrapError"></p>
+        </div>
+
+        <template x-if="bootstrapPreview">
+          <div class="form-group">
+            <h6>Parent: <span x-text="bootstrapPreview.parent_name"></span>
+              (<span x-text="bootstrapPreview.n_trials"></span> trials)</h6>
+            <p class="muted" x-show="bootstrapPreview.immutable" style="color:var(--warning, #d97706);">
+              Parent experiment is marked immutable. foamBO will clear that flag
+              at load time so specialization can mutate the search space.
+            </p>
+            <p class="muted" x-show="bootstrapPreview.context_groups?.length">
+              Context groups: <span x-text="bootstrapPreview.context_groups.join(', ')"></span>
+            </p>
+
+            <label data-hint="specialize">Specialize (pin parameters to fixed values)</label>
+            <table class="param-table">
+              <thead>
+                <tr><th>Pin</th><th>Parameter</th><th>Context?</th><th>Bounds</th><th>Value</th></tr>
+              </thead>
+              <tbody>
+                <template x-for="p in bootstrapPreview.parameters" :key="p.name">
+                  <tr>
+                    <td>
+                      <input type="checkbox"
+                             :checked="config.specialize && p.name in config.specialize"
+                             @change="toggleSpecialize(p.name)">
+                    </td>
+                    <td x-text="p.name"></td>
+                    <td x-text="p.is_context ? '✓' : ''"></td>
+                    <td x-text="p.bounds ? p.bounds.join(' – ') : (p.values || []).join(', ')"></td>
+                    <td>
+                      <input type="number" step="any"
+                             x-show="config.specialize && p.name in config.specialize"
+                             :value="config.specialize?.[p.name]"
+                             @input="config.specialize[p.name] = parseFloat($event.target.value)">
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </section>
+
       <!-- Section: Experiment -->
       <section x-show="activeSection === 'experiment'">
         <h5>Experiment</h5>

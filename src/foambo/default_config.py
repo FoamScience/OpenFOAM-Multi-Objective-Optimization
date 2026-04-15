@@ -758,6 +758,98 @@ def get_config_docs() -> Dict[str, Any]:
 
     # Phase 3: Standalone entries not tied to model fields
     harvested["version"] = f"The foamBO version to run this configuration with (v{str(VERSION)})"
+
+    harvested["bootstrap"] = {
+        "category": "Config",
+        "content": textwrap.dedent("""
+            Inherit configuration, search space, trials, and fitted GP from a
+            previously saved run. The value is a path (absolute or relative to
+            the YAML file) to a ``*_client_state.json`` produced by foamBO. The
+            saved state embeds the original ``foambo_config``; the current YAML
+            is merged on top via OmegaConf, so any key can be overridden.
+
+            **Two typical workflows:**
+
+            1. *Continue with more trials under a new name:*
+            ```yaml
+            bootstrap: ./artifacts/PumpOpt_client_state.json
+
+            experiment:
+              name: PumpOpt_continued   # new save target
+
+            orchestration_settings:
+              n_trials: 60              # extend the budget
+            ```
+
+            2. *Specialize a robust run to a fixed context point:*
+            ```yaml
+            bootstrap: ./artifacts/PumpOpt_client_state.json
+
+            experiment:
+              name: PumpOpt_spec_op1
+
+            robust_optimization: null   # disable robust mode
+
+            specialize:
+              flowRate: 0.022
+              rpm: 2811
+
+            orchestration_settings:
+              n_trials: 30
+            ```
+
+            **Merge rules:**
+            - Dict keys merge deeply; scalars in YAML override parent values.
+            - Setting a block to ``null`` in YAML clears it (e.g., dropping
+              ``robust_optimization``).
+            - Parent ``experiment.parameters`` is inherited verbatim unless
+              explicitly overridden. Changing parameter bounds / types is not
+              safe when trials already exist — use ``specialize`` instead.
+
+            **What gets reused automatically:**
+            The loaded Ax Client retains the full trial history and fitted GP.
+            ``_model.pt`` alongside the state JSON warm-starts the surrogate
+            (0.15s vs 9s cold fit). Analysis cards, generation-node progress,
+            and attached metadata are all preserved.
+        """).strip(),
+    }
+
+    harvested["specialize"] = {
+        "category": "Config",
+        "content": textwrap.dedent("""
+            Only meaningful when ``bootstrap`` is set. A mapping of parameter
+            name → fixed value. Each listed parameter is converted to an Ax
+            ``FixedParameter`` in the inherited search space; all recorded
+            trial arms are rewritten so the fixed parameter equals the pinned
+            value. The GP refits on this clamped dataset at the next
+            generation call, and subsequent candidates only vary the remaining
+            design dimensions.
+
+            ```yaml
+            specialize:
+              flowRate: 0.022    # context variable from the parent robust run
+              rpm: 2811
+            ```
+
+            **Intended use:** after a robust optimization covers a context
+            distribution, pick a concrete operating point and continue tuning
+            design parameters under that point. Pairs naturally with
+            ``robust_optimization: null``.
+
+            **Trade-off:** rewriting arm parameters discards information about
+            how the specialized variable influenced outcomes — past trials
+            now all appear to share the fixed value. This is the correct
+            behavior for conditional optimization; if you want the GP to
+            retain context sensitivity, use ``bootstrap`` alone and keep
+            ``robust_optimization``.
+
+            **Requirements:** each specialized key must exist in the parent
+            search space. Parent experiments produced by foamBO carry Ax's
+            ``immutable_search_space_and_opt_config=True`` flag (it only means
+            generator runs didn't cache per-trial search-space copies); the
+            bootstrap loader clears that flag automatically before mutating.
+        """).strip(),
+    }
     harvested["dashboard"] = {
         "category": "Dashboard",
         "content": textwrap.dedent("""

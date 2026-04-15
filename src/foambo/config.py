@@ -22,12 +22,20 @@ def load_config(config_path: Optional[str] = None) -> DictConfig:
     """
     Load configuration from a YAML file and return as OmegaConf DictConfig.
     If no path is given, use the default config filename.
+
+    If the YAML contains a top-level ``bootstrap:`` pointing at a saved state
+    JSON, the embedded parent ``foambo_config`` is loaded and the current YAML
+    is merged on top.
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG
     with open(config_path, 'r') as f:
         data = yaml.safe_load(f)
-    return OmegaConf.create(data)
+    cfg = OmegaConf.create(data)
+    if isinstance(cfg, DictConfig) and cfg.get("bootstrap"):
+        from .bootstrap import resolve_bootstrap
+        cfg = resolve_bootstrap(cfg, yaml_path=config_path)
+    return cfg
 
 def save_default_config(path: Optional[str] = None):
     """

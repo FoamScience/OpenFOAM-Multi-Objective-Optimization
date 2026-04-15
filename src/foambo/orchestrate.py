@@ -1202,6 +1202,30 @@ class FoamBOConfig(FoamBOBaseModel):
     store: StoreOptions = Field(description="Where to save/load experiment state")
     trial_dependencies: List[TrialDependency] = Field(default=[], description="Trial-to-trial dependency definitions")
     robust_optimization: Any = Field(default=None, description="Robust optimization config (parsed lazily from foambo.robustness)")
+    bootstrap: str | None = Field(
+        default=None,
+        description=(
+            "Path to a prior experiment's *_client_state.json. Its embedded "
+            "foambo_config is deep-merged with this YAML (current YAML wins). "
+            "Loaded client keeps full trial history and fitted GP."
+        ),
+    )
+    specialize: Dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional map {param_name: fixed_value} applied to a bootstrapped run. "
+            "Each listed parameter becomes a FixedParameter in the inherited "
+            "search space and all recorded arms are rewritten to the pinned value."
+        ),
+    )
+    bootstrap_lineage: Dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Auto-populated by the bootstrap loader. Records the parent state "
+            "path, parent experiment name, and specialize map — used by the "
+            "dashboard to display a continuation banner. Do not set manually."
+        ),
+    )
 
     @field_validator("robust_optimization", mode="before")
     @classmethod

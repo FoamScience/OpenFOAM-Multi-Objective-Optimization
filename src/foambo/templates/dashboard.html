@@ -19,6 +19,24 @@
     <div class="status">
       <span><span class="dot" :class="state.status===null?'':state.status?.running?'dot-live':'dot-off'"></span> <span x-text="state.status===null?'Connecting...':state.status?.running?'Live':'Offline'"></span> <span style="color:var(--pico-muted-color);font-size:0.7rem" x-text="'(3s)'"></span></span>
       <span x-text="(state.status?.trials_total || 0) + ' trials'"></span>
+      <template x-if="state.lineage?.parent_name">
+        <span class="lineage-badge" x-data="{ tip: false }" @mouseenter="tip=true" @mouseleave="tip=false" style="position:relative">
+          <span style="background:#6366f1;color:white;padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:600;cursor:default"
+                x-text="(state.lineage.specialize && Object.keys(state.lineage.specialize).length ? 'Specialized' : 'Continuation') + ' of ' + state.lineage.parent_name"></span>
+          <div x-show="tip" x-cloak style="position:absolute;top:110%;right:0;z-index:99;background:var(--pico-card-background-color);border:1px solid var(--pico-muted-border-color);border-radius:6px;padding:8px 12px;font-size:0.75rem;box-shadow:0 2px 8px rgba(0,0,0,0.15);min-width:260px">
+            <div style="margin-bottom:4px"><strong>Parent:</strong> <span x-text="state.lineage.parent_name"></span></div>
+            <div style="color:var(--pico-muted-color);font-size:0.7rem;word-break:break-all" x-text="state.lineage.parent_state_path"></div>
+            <template x-if="state.lineage.specialize && Object.keys(state.lineage.specialize).length">
+              <div style="margin-top:6px">
+                <div style="margin-bottom:2px"><strong>Specialized at:</strong></div>
+                <template x-for="(v,k) in state.lineage.specialize" :key="k">
+                  <div><code x-text="k + ' = ' + v"></code></div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </span>
+      </template>
       <template x-if="state.status?.robust">
         <span class="robust-badge" x-data="{ tip: false }" @mouseenter="tip=true" @mouseleave="tip=false" style="position:relative">
           <span style="background:var(--pico-primary-background);color:var(--pico-primary-inverse);padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:600;cursor:default">Robust</span>

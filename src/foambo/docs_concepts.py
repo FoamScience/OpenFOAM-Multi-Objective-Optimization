@@ -504,4 +504,73 @@ objective values. The log drives the dashboard's live event feed and is
 available via ``GET /api/v1/events``.""",
     },
 
+    "concept.bootstrap_and_specialize": {
+        "category": "Concept",
+        "content": """\
+Reusing a prior experiment: ``bootstrap`` and ``specialize``.
+
+A top-level ``bootstrap: path/to/<name>_client_state.json`` key in a YAML
+config tells foamBO to inherit the parent run's full state: search space,
+trial history, fitted GP, generation strategy progress, and every field of
+the original ``foambo_config``. The current YAML is deep-merged on top via
+OmegaConf — any field can be overridden, and setting a block to ``null``
+clears it.
+
+**Two workflows this unlocks:**
+
+1. **Continue** under a new experiment name with more trials:
+```yaml
+bootstrap: ./artifacts/PumpOpt_client_state.json
+experiment:
+  name: PumpOpt_continued
+orchestration_settings:
+  n_trials: 60
+```
+
+The parent ``_model.pt`` warm-starts the GP (~0.15s) and the orchestrator
+resumes at the next free trial index. Everything else stays identical.
+
+2. **Specialize** a robust run to a concrete operating point. Add a
+``specialize: {param: value, ...}`` map; each listed parameter becomes an
+Ax ``FixedParameter`` in the inherited search space, and every recorded
+trial arm is rewritten so that parameter equals the pinned value. The GP
+refits on this clamped dataset at the next generation call, and future
+candidates vary only the remaining design dimensions.
+```yaml
+bootstrap: ./artifacts/PumpOpt_client_state.json
+experiment:
+  name: PumpOpt_spec_op1
+robust_optimization: null
+specialize:
+  flowRate: 0.022
+  rpm: 2811
+orchestration_settings:
+  n_trials: 30
+```
+
+**Why rewrite arms instead of dropping non-matching trials?**
+Dropping loses the design-variable information that is perfectly valid at
+any context. Rewriting keeps every trial as a data point at the pinned
+context — the GP loses sensitivity to the specialized parameter (which is
+correct: it is no longer a variable) but retains everything it learned
+about the rest of the space.
+
+**Boundaries:**
+- Parent experiments produced by ``Client.configure_experiment`` carry the
+  ``immutable_search_space_and_opt_config`` flag (Ax's default). The bootstrap
+  loader clears it automatically so the search space can be mutated for
+  specialization. Past generator runs remain valid because the flag only
+  meant "don't cache per-trial search-space copies."
+- ``specialize`` keys must exist in the parent search space.
+- Relative ``bootstrap`` paths resolve against the YAML file's directory.
+- Bootstrap does not re-run the seed step from ``SeedDataNode`` or attach
+  duplicate trials; it is strictly *continuation*, not *re-seeding*.
+
+**Contrast with ``SeedDataNode``:** ``SeedDataNode`` imports selected trials
+from a CSV or JSON into a fresh experiment with a new search space and no
+prior GP. ``bootstrap`` keeps the parent experiment and GP wholesale. Use
+``SeedDataNode`` when the search space changes shape; use ``bootstrap`` when
+it does not (or only changes via ``specialize``).""",
+    },
+
 }

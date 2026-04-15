@@ -18,7 +18,12 @@ function configBuilder() {
     docsEntries: [],
     fieldHints: {},
 
+    bootstrapPreview: null,
+    bootstrapLoading: false,
+    bootstrapError: '',
+
     sections: [
+      { id: 'bootstrap', label: 'Bootstrap' },
       { id: 'experiment', label: 'Experiment' },
       { id: 'trial_generation', label: 'Trial Generation' },
       { id: 'baseline', label: 'Baseline' },
@@ -36,6 +41,8 @@ function configBuilder() {
 
     config: {
       version: '1.2.0',
+      bootstrap: null,
+      specialize: null,
       experiment: {
         name: '',
         description: '',
@@ -244,6 +251,14 @@ function configBuilder() {
     buildOutput() {
       const cfg = JSON.parse(JSON.stringify(this.config));
       const out = { version: cfg.version };
+
+      // Bootstrap (emit only if a path is set)
+      if (cfg.bootstrap) {
+        out.bootstrap = cfg.bootstrap;
+        if (cfg.specialize && Object.keys(cfg.specialize).length) {
+          out.specialize = cfg.specialize;
+        }
+      }
 
       // Experiment
       const exp = { name: cfg.experiment.name };
@@ -718,6 +733,48 @@ function configBuilder() {
     },
 
     // --- Preflight / Dry Run ---
+
+    async loadBootstrapPreview() {
+      const path = this.config.bootstrap;
+      this.bootstrapPreview = null;
+      this.bootstrapError = '';
+      if (!path) return;
+      this.bootstrapLoading = true;
+      try {
+        const res = await fetch('/api/v1/config/bootstrap-preview?path=' + encodeURIComponent(path));
+        const data = await res.json();
+        if (!res.ok) {
+          this.bootstrapError = data.error || ('HTTP ' + res.status);
+          return;
+        }
+        this.bootstrapPreview = data;
+        if (this.config.specialize === null) this.config.specialize = {};
+      } catch (err) {
+        this.bootstrapError = 'Could not reach server: ' + err.message;
+      } finally {
+        this.bootstrapLoading = false;
+      }
+    },
+
+    toggleSpecialize(paramName) {
+      if (!this.config.specialize) this.config.specialize = {};
+      if (paramName in this.config.specialize) {
+        delete this.config.specialize[paramName];
+      } else {
+        const p = (this.bootstrapPreview?.parameters || []).find(x => x.name === paramName);
+        const defaultValue = p && p.bounds ? (p.bounds[0] + p.bounds[1]) / 2 : 0;
+        this.config.specialize[paramName] = defaultValue;
+      }
+      // Trigger Alpine reactivity on dict mutation.
+      this.config.specialize = { ...this.config.specialize };
+    },
+
+    clearBootstrap() {
+      this.config.bootstrap = null;
+      this.config.specialize = null;
+      this.bootstrapPreview = null;
+      this.bootstrapError = '';
+    },
 
     async runPreflight() {
       if (!this.validate()) return;
