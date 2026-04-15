@@ -250,6 +250,23 @@ def optimize(cfg, debug=False):
         runner.trial_dependencies = trial_deps
     runner._parameter_groups = exp_cfg.get_parameter_groups()
     runner._metric_names = [m.name for m in opt_cfg.metrics]
+    # Seed runner.trial_registry from the experiment so that dependency
+    # resolution (matching_group / nearest / best / by_index) and API
+    # history views can see inherited trials (bootstrap runs and resumes).
+    # Registry entries for dispatched trials get overwritten each callback.
+    from ax.core.base_trial import TrialStatus as _TS_SEED
+    _seeded = 0
+    for _tidx, _trial in client._experiment.trials.items():
+        _case_path = (_trial.run_metadata.get("case_path") if _trial.run_metadata else None) \
+            or (_trial.run_metadata.get("job", {}).get("case_path") if _trial.run_metadata else None)
+        runner.trial_registry[_tidx] = {
+            "case_path": _case_path,
+            "status": _trial.status.name,
+            "parameters": _trial.arm.parameters if _trial.arm else {},
+        }
+        _seeded += 1
+    if _seeded:
+        log.info("Seeded runner trial_registry with %d inherited trial(s)", _seeded)
     runner._trial_timeout = orch_cfg.trial_timeout
     runner._baseline_execution_time = None  # set after baseline completes
     # Enable streaming data attachment during poll_trial (for early stopping)
@@ -929,10 +946,18 @@ def main():
 
     if args.config_builder:
         from .api_server import app as _app, _state as _srv_state
-        import uvicorn
+        import uvicorn, socket
         _srv_state.standalone = True
         host = "127.0.0.1"
         port = 8098
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind((host, port))
+            except OSError:
+                s.bind((host, 0))
+                new_port = s.getsockname()[1]
+                print(f"Port {port} in use, using {new_port} instead")
+                port = new_port
         print(f"Config Builder running at http://{host}:{port}/config-builder")
         uvicorn.run(_app, host=host, port=port, log_level="warning")
         return

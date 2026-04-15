@@ -6,8 +6,11 @@
 <title>foamBO Config Builder</title>
 <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2/css/pico.min.css">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/config_builder.css">
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="stylesheet" href="/static/dashboard.css">
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
 </head>
 <body>
 <div x-data="configBuilder()" x-init="init()">
@@ -59,10 +62,11 @@
       <!-- Section: Bootstrap -->
       <section x-show="activeSection === 'bootstrap'">
         <h5>Bootstrap from a prior run</h5>
-        <p class="muted">
+        <p class="hint">
           Optional. Point at a saved <code>*_client_state.json</code> to inherit
           search space, fitted GP, and trial history. The current YAML is
-          deep-merged on top. Add a <em>specialize</em> map to pin context
+          deep-merged on top.<br>
+          Add a <em>specialize</em> map to pin context
           parameters from a robust run to concrete values.
         </p>
 
@@ -737,7 +741,7 @@
         <h6>YAML Preview</h6>
         <button class="btn btn-sm" @click="copyYaml()" x-text="copied ? 'Copied!' : 'Copy'"></button>
       </div>
-      <pre class="yaml-output"><code x-text="yamlOutput"></code></pre>
+      <pre class="yaml-output"><code class="language-yaml" x-html="prismYaml(yamlOutput)"></code></pre>
     </aside>
 
   </div>

@@ -852,10 +852,47 @@ function configBuilder() {
       return this.docsEntries.filter(e => e.category === this.docsFilter);
     },
 
+    prismYaml(text) {
+      const t = text || '';
+      try {
+        if (typeof Prism !== 'undefined' && Prism.languages.yaml) {
+          return Prism.highlight(t, Prism.languages.yaml, 'yaml');
+        }
+      } catch (_) { /* fall through */ }
+      return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    },
+
     renderMd(text) {
-      if (typeof marked !== 'undefined' && marked.parse) return marked.parse(text || '');
-      // fallback: wrap in <pre>
-      return '<pre>' + (text || '').replace(/</g, '&lt;') + '</pre>';
+      const t = text || '';
+      try {
+        if (typeof marked !== 'undefined' && marked.parse) {
+          if (!this._markedReady && marked.use) {
+            marked.use({ gfm: true, breaks: false, async: false });
+            this._markedReady = true;
+          }
+          return marked.parse(t);
+        }
+      } catch (e) {
+        console.warn('marked.parse failed, using fallback:', e);
+      }
+      // Minimal fallback: escape, then convert fenced code blocks + headings + paragraphs.
+      const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      let html = '';
+      const parts = t.split(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g);
+      for (let i = 0; i < parts.length; i++) {
+        if (i % 3 === 0) {
+          // prose
+          html += esc(parts[i])
+            .replace(/^(#{1,6})\s+(.+)$/gm, (_, h, t2) => `<h${h.length}>${t2}</h${h.length}>`)
+            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+            .replace(/``([^`]+)``|`([^`]+)`/g, (_, a, b) => `<code>${a||b}</code>`)
+            .replace(/\n{2,}/g, '</p><p>');
+          html = html.startsWith('<') ? html : '<p>' + html + '</p>';
+        } else if (i % 3 === 2) {
+          html += `<pre><code>${esc(parts[i])}</code></pre>`;
+        }
+      }
+      return html;
     },
 
     hint(path) {

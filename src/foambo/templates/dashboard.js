@@ -74,14 +74,18 @@ function app(){return{
     const sm={};ts.forEach(t=>{sm[t.index]=t});
     const mkHover=(n)=>{
       const trial=sm[n];if(!trial)return'T'+n;
-      let txt='<b>T'+n+'</b> ['+trial.status+']';
-      if(trial.gen_node)txt+=' <i>'+trial.gen_node+'</i>';
-      txt+='<br>';
-      const params=trial.parameters||{};const pk=Object.keys(params).slice(0,5);
-      if(pk.length){txt+=pk.map(k=>k+'='+fmtN(params[k])).join(', ');if(Object.keys(params).length>5)txt+=', ...';txt+='<br>'}
+      const lines=['<b>T'+n+'</b> ['+trial.status+']'+(trial.gen_node?' <i>'+trial.gen_node+'</i>':'')];
       const met=trial.metrics||{};const mk=Object.keys(met);
-      if(mk.length)txt+=mk.map(k=>'<b>'+k+'</b>='+fmtN(met[k])).join(', ');
-      return txt;
+      if(mk.length){
+        lines.push('<b>metrics</b>');
+        for(const k of mk)lines.push('  '+k+' = '+fmtN(met[k]));
+      }
+      const params=trial.parameters||{};const pk=Object.keys(params);
+      if(pk.length){
+        lines.push('<b>parameters</b>');
+        for(const k of pk)lines.push('  '+k+' = '+fmtN(params[k]));
+      }
+      return lines.join('<br>');
     };
     // Render one graph per dependency name
     for(const depName of this.getDepNames()){
@@ -422,6 +426,13 @@ function app(){return{
   renderYaml(v,mutable,indent=1){
     if(typeof v!=='object'||v===null)return this._rv(v,mutable,0);
     return':<br>'+this._rv(v,mutable,indent);
+  },
+  prismYaml(v){
+    let t='';
+    try{t=(typeof jsyaml!=='undefined')?jsyaml.dump(v,{noRefs:true,lineWidth:120}):JSON.stringify(v,null,2)}
+    catch(_){t=String(v)}
+    try{if(typeof Prism!=='undefined'&&Prism.languages.yaml)return '<pre class="yaml-output"><code class="language-yaml">'+Prism.highlight(t,Prism.languages.yaml,'yaml')+'</code></pre>'}catch(_){}
+    return '<pre class="yaml-output"><code>'+t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</code></pre>';
   },
   cfgMsg:'',cfgOk:false,
   async applyCfg(){const p={};for(const f of this.cs)if(f.mutable&&this.cv[f.path]!==undefined)p[f.path]=this.cv[f.path];if(!Object.keys(p).length){this.cfgMsg='No mutable fields to update';this.cfgOk=false;return}const r=await this.f('config','PATCH',p);if(!r){this.cfgMsg='Failed to reach server';this.cfgOk=false}else if(r.rejected?.length&&!r.updated?.length){this.cfgMsg='Rejected: '+r.rejected.map(x=>x.path+' ('+x.reason+')').join(', ');this.cfgOk=false}else{this.cfgMsg='Updated: '+r.updated.join(', ')+(r.rejected?.length?' | Rejected: '+r.rejected.map(x=>x.path).join(', '):'');this.cfgOk=!r.rejected?.length}setTimeout(()=>this.cfgMsg='',5000)},

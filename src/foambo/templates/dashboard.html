@@ -6,6 +6,10 @@
 <title>foamBO Dashboard</title>
 <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2/css/pico.min.css">
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-yaml.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4/dist/js-yaml.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/dashboard.css">
@@ -701,7 +705,7 @@
                 <span style="color:var(--pico-secondary);font-size:0.8rem" x-text="'= ' + (cv[f.path]??f.default)"></span>
               </template>
               <template x-if="isComplex(cv[f.path]??f.default)">
-                <div style="font-size:0.8rem" x-html="renderYaml(cv[f.path]??f.default, f.mutable)"></div>
+                <div style="font-size:0.8rem" x-html="prismYaml(cv[f.path]??f.default)"></div>
               </template>
             </div>
           </div>
