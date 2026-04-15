@@ -115,7 +115,9 @@ def _get_doc_models():
         DimensionalityReductionOptions,
     )
     from .metrics import FoamJob, LocalJobMetric
+    from .robustness import RobustOptimizationConfig
     return [
+        (RobustOptimizationConfig,   "robust_optimization"),
         (ExperimentOptions,          "experiment"),
         (TrialGenerationOptions,     "trial_generation"),
         (ModelSpecConfig,            "trial_generation.generation_nodes[].generator_specs[]"),

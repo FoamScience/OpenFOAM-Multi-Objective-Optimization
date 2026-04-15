@@ -542,16 +542,26 @@ def optimize(cfg, debug=False):
         from .analysis import plot_streaming_metrics
         plot_streaming_metrics(raw_cfg, client)
 
-        # Log convergence estimate (Part A) after BO trials
+        # Log convergence estimate (Part A) — throttled to every `window_size`
+        # completed trials (same cadence the global stopping strategy uses).
         try:
             gs = client._generation_strategy
             if gs is not None and gs.adapter is not None:
-                from .analysis import compute_convergence_pi, format_convergence_log
-                _imp_bar = getattr(orch_cfg, 'global_stopping_strategy', None)
-                _imp_bar = getattr(_imp_bar, 'improvement_bar', 0.1) if _imp_bar else 0.1
-                conv = compute_convergence_pi(client, gs, improvement_bar=_imp_bar)
-                if conv.get("estimates"):
-                    log.info("\n%s", format_convergence_log(conv))
+                from ax.core.base_trial import TrialStatus as _TS
+                n_completed = sum(
+                    1 for t in client._experiment.trials.values()
+                    if t.status in (_TS.COMPLETED, _TS.EARLY_STOPPED)
+                )
+                gss = getattr(orch_cfg, 'global_stopping_strategy', None)
+                window = getattr(gss, 'window_size', None) or 5
+                last = getattr(callback, '_last_conv_n', 0)
+                if n_completed > 0 and n_completed - last >= window:
+                    from .analysis import compute_convergence_pi, format_convergence_log
+                    _imp_bar = getattr(gss, 'improvement_bar', 0.1) if gss else 0.1
+                    conv = compute_convergence_pi(client, gs, improvement_bar=_imp_bar)
+                    if conv.get("estimates"):
+                        log.info("\n%s", format_convergence_log(conv))
+                        callback._last_conv_n = n_completed
         except Exception as e:
             log.debug("Convergence estimate failed: %s", e)
 

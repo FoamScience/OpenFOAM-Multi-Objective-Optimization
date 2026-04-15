@@ -504,6 +504,57 @@ objective values. The log drives the dashboard's live event feed and is
 available via ``GET /api/v1/events``.""",
     },
 
+    "concept.robust_optimization": {
+        "category": "Concept",
+        "content": """\
+Robust optimization — designing for performance under context uncertainty.
+
+Instead of optimizing at one nominal operating point, robust mode samples a
+distribution of context values (flowRate, temperature, inlet profile, …) at
+every candidate design and collapses the resulting outcome distribution via a
+risk measure. The optimizer then maximizes the risk-adjusted score, favoring
+designs that stay good across contexts rather than designs that peak at one
+and tank at others.
+
+**YAML:**
+```yaml
+robust_optimization:
+  context_groups: [operating_point]   # parameter groups treated as contexts
+  risk_measure: auto                  # or: cvar, mars
+  robustness: 0.8                     # alpha; higher = more conservative
+  context_samples: 4                  # samples per candidate
+  # context_points: auto-generated via Sobol unless given explicitly
+```
+
+**Risk measures:**
+- ``cvar`` (Conditional Value-at-Risk) — average of the worst ``(1-alpha)``
+  fraction of context outcomes. Single-objective only.
+- ``mars`` (MVaR Approximation via Random Scalarizations) — multi-objective
+  VaR built from random weight vectors; each scalarization reduces the problem
+  to single-objective CVaR, then Ax aggregates. Multi-objective only.
+- ``auto`` — picks CVaR when the optimization has one objective and MARS when
+  it has multiple.
+
+**Mechanism:** foamBO's ``SubstituteContextFeatures`` input transform swaps
+the candidate's context slot for each Sobol-drawn context point at acquisition
+evaluation time. The GP is evaluated once per context sample and the risk
+measure reduces the ``n_contexts`` values to a single score that
+``optimize_acqf`` maximizes.
+
+**Parallelism:** robust trials require ``context_samples`` design evaluations
+each. With ``parallelism: N``, each Ax orchestrator slot still corresponds to
+one design point (the context sweep runs inside the acquisition, not the
+runner), so the runner budget is unchanged.
+
+**Full details, risk-measure math, MOO suitability matrix, and comparisons
+to SAASBO / InputPerturbation:** see ``docs/risk-measures-guide.md``.
+
+**Specialization:** once a robust run converges, pin the context with
+``bootstrap: + specialize: {ctx: value}`` to continue optimizing design
+variables at a concrete operating point. See
+``concept.bootstrap_and_specialize``.""",
+    },
+
     "concept.bootstrap_and_specialize": {
         "category": "Concept",
         "content": """\
