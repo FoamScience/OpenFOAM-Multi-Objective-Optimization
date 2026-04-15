@@ -1,79 +1,68 @@
-# Code design style
+# Code design
 
-## Configuration validation and reporting of possible flags:
+foamBO = Ax + pydantic v2 + foamlib + FastAPI.
 
-## Motivation and Effects
+## Config tree
 
-We take a banana-trick-like approach for user convenience when creating configuration files.
-The goal is to make it easy for users and LLMs to reach a working configuration with trial-and-error.
+Root model: `FoamBOConfig` in `orchestrate.py`. Sub-models validated via `@field_validator`.
+All inherit `FoamBOBaseModel`. Field defaults + `examples=[...]` harvested by `default_config.py::get_default_config()`.
 
-To start, we get a missing top-level key error if it's not there yet. Let's take `orchestration_settings` as an example:
+## Subsystems
 
-```shell
-omegaconf.errors.ConfigKeyError: Missing key orchestration_settings
-    full_key: orchestration_settings
-    object_type=dict
-```
+| File | Job |
+|---|---|
+| `orchestrate.py` | pydantic models (config tree) |
+| `optimize.py` | CLI entry, Ax client lifecycle |
+| `api.py` | `FoamBO` fluent builder |
+| `api_server.py` | FastAPI dashboard + REST + config builder |
+| `preflight.py` | static checks, dry-run |
+| `metrics.py` | `FoamJob`, `LocalJobMetric` |
+| `default_config.py` | defaults + `get_config_docs()` harvest |
+| `docs_concepts.py` | long-form concept entries |
+| `archive.py` | trial archival |
+| `analysis.py` | post-hoc analysis |
+| `config_upgrade.py` | version migration |
 
-If we then assume users don't know what parameters to set in the `orchestration_settings` sub-dict,
-figuring it out is as easy as setting:
+## Orchestration
 
-```yaml
-orchestration_settings: null
-```
+foamBO uses Ax's native `Orchestrator` (poll-based). Harvest latency is
+bounded by `init_seconds_between_polls` in the scheduler options.
 
-```shell
-ValueError: Got an empty configuration for OrchestratorOptions.__init__, but expecting fields
-['max_trials', 'parallelism', 'global_stopping_strategy', 'tolerated_trial_failure_rate=0.5', 'initial_seconds_between_polls=0.1']
-```
+`FoamJobRunner.poll_trial` consumes a push queue at the top of each poll
+cycle so remote runners (SLURM, SSH) can notify completion via HTTP POST:
 
-> Note that defaulted arguments are optional, but it's convenient to be able to see the active defaults.
+- `POST /api/v1/trials/{idx}/push/status`   — writes `_state.trial_status_overrides[idx]`
+- `POST /api/v1/trials/{idx}/push/metrics`  — appends to `_state.trial_pushed_metrics[idx]`
+- `POST /api/v1/trials/{idx}/push/heartbeat` — liveness only
+- `GET  /api/v1/events`                     — dashboard-facing event log
 
-This carries on recursively through the configuration tree. For example, the following configuration:
-```yaml
-# tolerated_trial_failure_rate and initial_seconds_between_polls are defaulted
-orchestration_settings:
-  max_trials: 30
-  parallelism: 4
-  global_stopping_strategy: null
-```
-will result in the following error:
-```shell
-TypeError: OrchestratorOptions.create_global_stopping_strategy() got unexpected arguments from global_stopping_strategy sub-dict.
-Provided: empty configuration
-Expected: ['min_trials', 'window_size', 'improvement_bar']
-```
+Env vars injected into every trial subprocess:
+`FOAMBO_API_ENDPOINT`, `FOAMBO_TRIAL_INDEX`, `FOAMBO_SESSION_ID`.
 
-`src/foambo/common.py` defines some utilities to create objects straight from dictionaries and
-ensure arguments are validated properly. Two usage patterns are common:
+Session-ID validation rejects pushes from stale jobs of prior crashed runs (HTTP 409).
 
+## Key subsystems
 
-### Validate dictionary entries as function arguments
+- **Trial dependencies** — `TrialDependency` / `TrialSelector` / `TrialAction`. Phases: `immediate`, `pre_init`, `pre_mesh`, `pre_solve`, `post_solve`. Hook scripts exposed via `$FOAMBO_PRE_MESH` etc.
+- **Dimensionality reduction** — `DimensionalityReductionOptions` inside `ConfigOrchestratorOptions`. Sobol-based param freezing after N trials.
+- **Parameter groups** — `groups: [...]` tag on each param. Feeds group sensitivity, `matching_group` dep strategy, group-frozen sweeps, what-if in Predict tab.
+- **Config builder UI** — `templates/config_builder.{html,js,css}`. Pico CSS + Alpine. Endpoints: `/config-builder`, `/api/v1/config/{schema,docs,validate,preflight}`.
 
-```python
-# Will throw an exception if generation_config is missing required
-# keys for it to unpack to client.configure_generation_strategy arguments
-validate_args(client.configure_generation_strategy, generation_config)
-client.configure_generation_strategy(**generation_config)
-```
+## Docs pipeline
 
-### Create objects with validation for nested fields creation
+`default_config.py::get_config_docs()` merges:
 
-```python
-@dataclass
-class MyType():
-    setting: int
-    nested_field: AnotherType
+1. Pydantic Field descriptions (`harvest_docs` on `_get_doc_models()`)
+2. Manual YAML examples (`_examples` dict)
+3. `docs_concepts.py::CONCEPTS` — long-form markdown
+4. `load_tutorial_docs()` — `docs/*.md` summaries
 
-    __nested_fields__ : {
-        "nested_field": "create_nested_field"
-    }
+Served at `GET /api/v1/config/docs` for the config builder tooltips + Concepts modal. TUI browses same data via `foamBO --docs`.
 
-    @classmethod
-    def create_nested_field(cls, arg1: int, arg2: float):
-        return AnotherType(arg1=arg1, arg2=arg2)
+## Contributing
 
-obj = instantiate_with_nested_fields(MyType, cfg['my_type'])
-```
-
-This then can be helpful in creating documentation entities for each configuration entry.
+1. Add/modify pydantic model. Use `Field(description=..., examples=[...])` — both are harvested.
+2. If it's a new root section, add to `FoamBOConfig` + `_get_root_models()` + `_get_doc_models()`.
+3. For cross-cutting examples, drop an entry in `_examples` in `default_config.py`.
+4. For concept-level docs, add to `CONCEPTS` in `docs_concepts.py`.
+5. Run `foamBO --preflight <cfg>` on changed configs before commit.

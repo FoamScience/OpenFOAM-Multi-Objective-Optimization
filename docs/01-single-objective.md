@@ -42,8 +42,9 @@ The [single-objective](/examples/single-objective) folder provides a complete ex
 
 The configuration file needs to contain a few sections:
 1. `experiment` to configure experiment meta-data and the parameter space
-1. `trial_generation` to configure the way "new trials are generated"
-1. `existing_trials` to load data for pre-existing trials if any
+1. `trial_generation` to configure the way "new trials are generated". To seed the
+   experiment with pre-existing data (CSV or a saved foamBO JSON state), add a
+   `SeedDataNode` to `trial_generation.generation_nodes` (see `method: custom`).
 1. `baseline` to promote a specific parameter set as a "baseline" for the analysis routines
 1. `optimization` to configure objectives, metrics, how there are computed, and how to handle
    the template case.
@@ -70,8 +71,6 @@ experiment:
   parameter_constraints: []
 trial_generation:            # Automatic trial generation
   method: fast               # Center-of-domain -> A few random ones -> BOtorch
-existing_trials:
-  file_path: ''              # No pre-existing trial data
 baseline:
   parameters: null           # No baseline
 optimization:
