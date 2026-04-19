@@ -374,13 +374,22 @@ class ExperimentOptions(FoamBOBaseModel):
                 "name": key,
                 **item
             }
-            # Extract and store groups (not an Ax parameter field)
+            # Extract and store foamBO-only keys (not Ax parameter fields)
             groups = e.pop("groups", None)
             if groups:
                 if not hasattr(cls, '_parameter_groups'):
                     cls._parameter_groups = {}
                 cls._parameter_groups[e["name"]] = list(groups)
-            if "values" in e.keys():
+            # is_fidelity / target_value are native Ax Parameter attrs but
+            # NOT accepted by RangeParameterConfig / ChoiceParameterConfig
+            # constructors. Pop and store — applied post-configure_experiment.
+            _is_fidelity = e.pop("is_fidelity", None)
+            _target_value = e.pop("target_value", None)
+            if _is_fidelity:
+                if not hasattr(cls, '_fidelity_params'):
+                    cls._fidelity_params = {}
+                cls._fidelity_params[e["name"]] = _target_value
+            if "values" in e:
                 l.append(ChoiceParameterConfig(**e))
             elif "bounds" in e.keys():
                 l.append(RangeParameterConfig(**e))
@@ -454,6 +463,64 @@ def resolve_transforms(
     return result
 
 
+def _resolve_class_refs(kwargs: dict) -> None:
+    """Resolve string class names in generator_kwargs to actual Python classes.
+
+    Handles ``botorch_acqf_class`` and ``surrogate_spec.botorch_model_class``
+    so YAML configs can reference BoTorch/Ax classes by name.
+    """
+    # Build a combined lookup from Ax's reverse registry + well-known extras.
+    _CLASS_LOOKUP: dict[str, type] | None = getattr(_resolve_class_refs, "_cache", None)
+    if _CLASS_LOOKUP is None:
+        _CLASS_LOOKUP = {}
+        try:
+            from ax.storage.botorch_modular_registry import REVERSE_REGISTRY
+            for sub_dict in REVERSE_REGISTRY.values():
+                if isinstance(sub_dict, dict):
+                    _CLASS_LOOKUP.update(sub_dict)
+        except ImportError:
+            pass
+        # Extras not always in registry
+        _extras = [
+            ("botorch.acquisition.multi_objective.hypervolume_knowledge_gradient",
+             "qMultiFidelityHypervolumeKnowledgeGradient"),
+            ("botorch.acquisition.multi_objective.multi_fidelity", "MOMF"),
+            ("botorch.acquisition.knowledge_gradient",
+             "qMultiFidelityKnowledgeGradient"),
+            ("botorch.acquisition.max_value_entropy_search",
+             "qMultiFidelityMaxValueEntropy"),
+            ("botorch.models.gp_regression_fidelity",
+             "SingleTaskMultiFidelityGP"),
+            ("botorch.acquisition.multi_objective.multi_fidelity",
+             "AffineFidelityCostModel"),
+        ]
+        for mod, cls_name in _extras:
+            if cls_name not in _CLASS_LOOKUP:
+                try:
+                    m = __import__(mod, fromlist=[cls_name])
+                    _CLASS_LOOKUP[cls_name] = getattr(m, cls_name)
+                except (ImportError, AttributeError):
+                    pass
+        _resolve_class_refs._cache = _CLASS_LOOKUP
+
+    # Resolve botorch_acqf_class
+    acqf = kwargs.get("botorch_acqf_class")
+    if isinstance(acqf, str):
+        if acqf not in _CLASS_LOOKUP:
+            raise ValueError(
+                f"Unknown botorch_acqf_class '{acqf}'. "
+                f"Available: {sorted(_CLASS_LOOKUP.keys())}"
+            )
+        kwargs["botorch_acqf_class"] = _CLASS_LOOKUP[acqf]
+
+    # Resolve surrogate_spec.botorch_model_class (nested dict from YAML)
+    ss = kwargs.get("surrogate_spec")
+    if isinstance(ss, dict):
+        mc = ss.get("botorch_model_class")
+        if isinstance(mc, str) and mc in _CLASS_LOOKUP:
+            ss["botorch_model_class"] = _CLASS_LOOKUP[mc]
+
+
 class ModelSpecConfig(FoamBOBaseModel):
     """Configuration for a trial generator algorithm."""
     generator_enum: Literal[
@@ -491,6 +558,9 @@ class ModelSpecConfig(FoamBOBaseModel):
         if self.transforms is not None or self.exclude_transforms is not None:
             kwargs["transforms"] = resolve_transforms(
                 only=self.transforms, exclude=self.exclude_transforms)
+        # Resolve string class references to actual Python classes so YAML
+        # configs can specify e.g. botorch_acqf_class: "qMultiFidelityHypervolumeKnowledgeGradient"
+        _resolve_class_refs(kwargs)
         return GeneratorSpec(
             generator_enum=model,
             generator_kwargs=kwargs,

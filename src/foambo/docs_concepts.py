@@ -624,4 +624,157 @@ prior GP. ``bootstrap`` keeps the parent experiment and GP wholesale. Use
 it does not (or only changes via ``specialize``).""",
     },
 
+    "concept.multi_fidelity": {
+        "category": "Concept",
+        "content": """\
+Multi-fidelity optimization — cheap approximations guide expensive evaluations.
+
+When a fast surrogate (eg. coarse mesh) correlates with the
+expensive truth (fine-mesh CFD), multi-fidelity BO spends most of its budget
+on cheap queries and reserves expensive evaluations for the most promising
+candidates. The GP learns the bias between fidelity levels and the
+acquisition function trades information gain against evaluation cost.
+
+**Setup in foamBO:**
+
+1. Add a fidelity parameter with ``is_fidelity: true`` and ``target_value``:
+```yaml
+experiment:
+  parameters:
+    - name: fidelity
+      parameter_type: str
+      values: ["coarse", "fine"]
+      is_fidelity: true
+      target_value: "fine"
+```
+
+2. Mark one metric as the cost signal with ``is_cost: true``:
+```yaml
+optimization:
+  metrics:
+    - name: executionTime
+      command: ["scripts/metric.sh", "executionTime"]
+      is_cost: true
+```
+
+3. Use ``method: fast`` (or any generation strategy — MF is auto-wired):
+```yaml
+trial_generation:
+  method: fast
+```
+
+That's it. No custom generation nodes required for MF.
+
+**Auto-wiring:** when ``is_fidelity`` is detected, foamBO automatically:
+- Selects ``qMultiFidelityHypervolumeKnowledgeGradient`` as the acqf.
+- Sets ``SingleTaskMultiFidelityGP`` as the surrogate.
+- Extracts ``target_fidelities`` from the search space (Ax built-in).
+- Learns ``cost_intercept`` and ``fidelity_weights`` from observed
+  ``is_cost`` metric data each callback cycle.
+
+To override the acqf (e.g. use MOMF instead), use a custom generation node:
+```yaml
+trial_generation:
+  method: custom
+  generation_nodes:
+    - node_name: MF
+      generator_specs:
+        - generator_enum: BOTORCH_MODULAR
+          model_kwargs:
+            botorch_acqf_class: "MOMF"
+```
+
+**Two acquisition functions are supported:**
+
+``qMultiFidelityHypervolumeKnowledgeGradient`` (qMF-HVKG):
+- Multi-objective, cost-aware, one-step lookahead.
+- Maximizes expected hypervolume improvement at target fidelity.
+- Better sample efficiency; slower candidate generation.
+- Takes ``cost_intercept`` + ``fidelity_weights`` via input constructor;
+  foamBO auto-derives these from the ``is_cost`` metric.
+- **Recommended for most use cases** (trial cost dominates gen time).
+
+``MOMF`` (Multi-Objective Multi-Fidelity):
+- Adds fidelity as a pseudo-objective (trust reward for higher fidelity).
+- Faster candidate generation; less sample efficient.
+- Takes ``cost_call`` (a callable) directly.
+- foamBO does NOT auto-wire cost for MOMF; pass ``cost_call`` manually
+  via ``botorch_acqf_options`` if needed.
+
+**Runner dispatch** via ``file_substitution`` (recommended):
+Use a string ``ChoiceParameter`` for fidelity and foamBO's built-in file
+substitution to swap the runner script (or a portion of it) per fidelity level. Place
+``Allrun.coarse`` and ``Allrun.fine`` in the template case:
+```yaml
+optimization:
+  case_runner:
+    file_substitution:
+      - parameter: fidelity
+        file_path: /Allrun
+```
+When ``fidelity=coarse``, the runner copies ``Allrun.coarse`` →
+``Allrun`` before execution. When ``fidelity=fine``, copies
+``Allrun.fine`` → ``Allrun``. No if/else branching in scripts needed.
+
+**Alternative** (continuous fidelity via env var):
+```bash
+if [ "$FIDELITY" = "0" ] || [ "$FIDELITY" = "0.0" ]; then
+    ./Allrun.coarse
+else
+    ./Allrun.fine
+fi
+```
+
+**Cost model evolution:** before any trials complete, uniform cost is
+assumed (cost ratio = 1). As ``is_cost`` data arrives, foamBO recomputes
+per-fidelity mean cost and updates ``cost_intercept`` / ``fidelity_weights``
+each callback — no restart needed.
+
+**Cost scaling warning:** the ``is_cost`` metric should emit *scaled*
+costs, not raw wall-clock seconds. With extreme cost ratios (e.g. coarse
+1s vs fine 3600s = 1:3600), the acquisition function may defer expensive
+evaluations indefinitely — the info-gain-per-cost ratio always favors
+cheap queries when the denominator is 3600× larger.
+
+**Recommendation:** cap the effective ratio to 1:50–1:100 by emitting
+a normalized cost. Use the baseline trial's execution time as the
+reference scale:
+
+- Coarse fidelity metric script: ``echo 1``
+- Fine fidelity metric script: ``echo 50``  (not the raw wall time)
+
+This tells the optimizer "fine is 50× more expensive" — enough to prefer
+coarse for exploration, but not so extreme that fine is never selected.
+Tune the ratio based on how many fine-fidelity evaluations you can afford
+in your budget. A ratio of 1:N means roughly 1 fine trial per N coarse
+trials.
+
+Also consider seeding 3–5 initial trials at target fidelity (via SOBOL
+init phase with ``fixed_features``) so the GP has fine-fidelity signal
+from the start to estimate the coarse→fine bias.
+
+**Composition with robust mode:** fully automatic. When both
+``is_fidelity`` and ``robust_optimization`` are present, foamBO composes
+them into a single acquisition loop:
+
+- **Surrogate**: ``SingleTaskMultiFidelityGP`` (handles fidelity kernel)
+  with ``SubstituteContextFeatures`` (handles context fan-out) as chained
+  input transforms on the same model.
+- **Acquisition**: ``qMultiFidelityHypervolumeKnowledgeGradient`` with a
+  ``RobustMCObjective`` (MARS or CVaR) passed as the ``objective``.
+- **Per-candidate evaluation**: qMFHVKG proposes ``(design, fidelity)``,
+  the GP posterior fans to K context points via SubstituteContextFeatures,
+  the risk-measure objective reduces K contexts to risk-adjusted values,
+  and qMFHVKG computes cost-aware HV improvement at target fidelity.
+
+No extra YAML is needed — setting ``is_fidelity`` on a parameter alongside
+``robust_optimization`` triggers composition automatically. The cost model
+(``is_cost`` metric) works identically in the composed path.
+
+**Staged fallback** is still available for simpler workflows: MF BO at
+nominal context first, then robust verification via ``bootstrap``.
+
+See also: ``concept.robust_optimization``, ``concept.bootstrap_and_specialize``.""",
+    },
+
 }

@@ -852,6 +852,114 @@ def get_config_docs() -> Dict[str, Any]:
             bootstrap loader clears that flag automatically before mutating.
         """).strip(),
     }
+    harvested["experiment.parameters[].is_fidelity"] = {
+        "category": "Config",
+        "content": textwrap.dedent("""
+            Mark a parameter as the fidelity dimension for multi-fidelity BO.
+            The parameter represents evaluation quality — e.g. 0 = cheap
+            meanline, 1 = expensive CFD. Exactly one parameter should have
+            this flag. ``target_value`` is the high-fidelity level the
+            optimizer ultimately cares about.
+
+            ```yaml
+            experiment:
+              parameters:
+                - name: fidelity
+                  parameter_type: float
+                  bounds: [0.0, 1.0]
+                  is_fidelity: true
+                  target_value: 1.0
+            ```
+
+            When detected, foamBO auto-selects ``SingleTaskMultiFidelityGP``
+            as the surrogate and extracts ``target_fidelities`` for the
+            acquisition function. The runner should branch on the fidelity
+            value to dispatch cheap vs expensive evaluations.
+        """).strip(),
+    }
+
+    harvested["optimization.metrics[].is_cost"] = {
+        "category": "Config",
+        "content": textwrap.dedent("""
+            Mark a metric as the cost signal for multi-fidelity acquisition.
+            The metric value should represent actual execution cost (e.g.
+            wall-clock seconds) and must be emitted by the runner at every
+            fidelity level.
+
+            ```yaml
+            optimization:
+              metrics:
+                - name: executionTime
+                  command: ["scripts/metric.sh", "executionTime"]
+                  is_cost: true
+            ```
+
+            Exactly one metric should have ``is_cost: true``. foamBO learns
+            per-fidelity mean cost from observed values and updates the
+            acquisition function's cost model each callback cycle. Without
+            an ``is_cost`` metric, MF acquisition uses uniform cost
+            (no cost-aware fidelity selection).
+        """).strip(),
+    }
+
+    harvested["trial_generation.generation_nodes[].generator_specs[].model_kwargs.botorch_acqf_class"] = {
+        "category": "Config",
+        "content": textwrap.dedent("""
+            Override the default BoTorch acquisition function class. Accepts
+            a string class name that foamBO resolves to the actual Python
+            class. Supported MF acquisition functions:
+
+            ``qMultiFidelityHypervolumeKnowledgeGradient`` (recommended):
+            - Multi-objective, cost-aware, one-step lookahead.
+            - Maximizes expected hypervolume improvement at target fidelity.
+            - Cost model auto-wired from ``is_cost`` metric via
+              ``cost_intercept`` + ``fidelity_weights``.
+
+            ``MOMF`` (alternative):
+            - Multi-objective multi-fidelity via fidelity pseudo-objective.
+            - Faster candidate generation, less sample efficient.
+            - Requires manual ``cost_call`` in ``botorch_acqf_options``.
+
+            ```yaml
+            trial_generation:
+              method: custom
+              generation_nodes:
+                - node_name: MF
+                  generator_specs:
+                    - generator_enum: BOTORCH_MODULAR
+                      model_kwargs:
+                        botorch_acqf_class: "qMultiFidelityHypervolumeKnowledgeGradient"
+            ```
+
+            With ``method: fast``, setting ``botorch_acqf_class`` is not
+            needed — foamBO auto-selects ``qMultiFidelityHypervolumeKnowledgeGradient``
+            when an ``is_fidelity`` parameter is detected. Custom generation
+            nodes are only needed to override the default (e.g. pick MOMF).
+
+            **Runner dispatch (recommended):** use ``file_substitution`` with
+            a string ``ChoiceParameter`` fidelity. Place ``Allrun.meanline``
+            + ``Allrun.CFD`` in the template case:
+            ```yaml
+            experiment:
+              parameters:
+                - name: fidelity
+                  values: ["meanline", "CFD"]
+                  parameter_type: str
+                  is_fidelity: true
+                  target_value: "CFD"
+
+            optimization:
+              case_runner:
+                file_substitution:
+                  - parameter: fidelity
+                    file_path: /Allrun
+            ```
+
+            Other resolvable names: ``qMultiFidelityKnowledgeGradient``
+            (single-objective MF), ``qMultiFidelityMaxValueEntropy``.
+        """).strip(),
+    }
+
     harvested["dashboard"] = {
         "category": "Dashboard",
         "content": textwrap.dedent("""

@@ -206,6 +206,19 @@
                 <label data-hint="experiment.parameters.groups">Groups (comma-separated, optional)</label>
                 <input type="text" :value="(p.groups||[]).join(', ')" @change="p.groups = $event.target.value.split(',').map(s=>s.trim()).filter(Boolean)" placeholder="e.g. context, mesh">
               </div>
+              <!-- Multi-fidelity: mark as fidelity parameter -->
+              <div class="param-grid">
+                <div class="form-group">
+                  <label class="toggle-label">
+                    <input type="checkbox" x-model="p.is_fidelity" role="switch">
+                    Fidelity parameter
+                  </label>
+                </div>
+                <div class="form-group" x-show="p.is_fidelity">
+                  <label>Target value (high-fidelity)</label>
+                  <input type="text" x-model="p.target_value" placeholder="e.g. cfd or 1.0">
+                </div>
+              </div>
             </article>
           </template>
         </div>
@@ -396,6 +409,12 @@
                   <label class="toggle-label">
                     <input type="checkbox" x-model="m.lower_is_better" role="switch">
                     Lower is better
+                  </label>
+                </div>
+                <div class="form-group">
+                  <label class="toggle-label" data-hint="optimization.metrics[].is_cost">
+                    <input type="checkbox" x-model="m.is_cost" role="switch">
+                    MF cost metric
                   </label>
                 </div>
               </div>

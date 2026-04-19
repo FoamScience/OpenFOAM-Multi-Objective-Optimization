@@ -40,7 +40,7 @@ function app(){return{
     return[...objNames,...nonObj];
   },
   isObjective(m){return(this.state.experiment?.objectives||[]).some(o=>o.name===m)},
-  fTrials(){let t=[...(this.state.trials?.trials||[])];if(this.tf!=='all')t=t.filter(x=>x.status===this.tf);return t.sort((a,b)=>(a[this.tsk]>b[this.tsk]?1:-1)*this.tsd)},
+  fTrials(){let t=[...(this.state.trials?.trials||[])];if(this.tf!=='all')t=t.filter(x=>x.status===this.tf);const k=this.tsk;const fp=this.state.status?.multi_fidelity?.fidelity_param;const val=x=>k==='_fidelity'&&fp?x.parameters?.[fp]??'':x.metrics?.[k]??x[k];return t.sort((a,b)=>(val(a)>val(b)?1:-1)*this.tsd)},
   tsort(k){if(this.tsk===k)this.tsd*=-1;else{this.tsk=k;this.tsd=1}},
   gtp(i){return this.state.trials?.trials?.find(t=>t.index===i)?.parameters||{}},
   async fetchViz(){if(this.xt==null||this.tdVizLoading)return;this.tdVizLoading=true;this.tdVizErr='';const r=await this.f('trials/'+this.xt+'/visualization');if(r?.image)this.tdViz=r.image;else{this.tdViz=null;this.tdVizErr=r?._error||r?.error||'Visualization unavailable'}this.tdVizLoading=false},

@@ -315,6 +315,14 @@ class LocalJobMetric(FoamBOBaseModel):
         "Use this when optimization parameters affect simulation speed (e.g. AMR/mesh refinement), "
         "so trials are compared at the same physical time rather than the same poll count."
     ))
+    is_cost: bool = Field(default=False, description=(
+        "Mark this metric as the cost signal for multi-fidelity acquisition (MOMF). "
+        "Exactly one metric must have is_cost=True when using a cost-aware MF acqf. "
+        "The metric value should represent actual execution cost (e.g. wall-clock "
+        "seconds) and must be emitted at every fidelity level. foamBO builds a "
+        "per-fidelity mean-cost lookup from observed values and passes it as "
+        "cost_call to the acquisition function."
+    ))
 
     def to_metric(self):
         cfg = DictConfig({
@@ -419,17 +427,18 @@ def streaming_metric(client: Client, opt_cfg: Dict):
                 metric["progress"]
                     .replace("$FOAMBO_STEP", str(trial_progression_step[trial_idx][metric["name"]]))
                     .replace("$STEP", str(trial_progression_step[trial_idx][metric["name"]]))
-                if "progress" in metric and isinstance(metric["progress"], str)
+                if "progress" in metric and isinstance(metric.get("progress"), str)
                 else [
                     p.replace("$FOAMBO_STEP", str(trial_progression_step[trial_idx][metric["name"]]))
                      .replace("$STEP", str(trial_progression_step[trial_idx][metric["name"]]))
                     if isinstance(p, str) else p
-                    for p in metric["progress"]
+                    for p in metric.get("progress") or []
                 ]
             )
         }
         for metric in metrics_cfg
         if metric["name"] not in objective_names
+        and metric.get("progress") and metric.get("progress") != [] and metric.get("progress") != ""
     ]
     # If we have no eligible progress items (command or callable), skip this
     has_progress_cmd = any(cfg.get("progress") and cfg["progress"] != "" and cfg["progress"] != "none"

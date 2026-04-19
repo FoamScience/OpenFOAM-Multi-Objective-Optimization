@@ -1889,6 +1889,35 @@ def get_status():
             "context_samples": rc.get("context_samples", 10),
         }
 
+    # Multi-fidelity info
+    mf_info = None
+    if raw_cfg:
+        params = raw_cfg.get("experiment", {}).get("parameters", [])
+        fid_params = [p for p in params if (p.get("is_fidelity") if hasattr(p, "get") else getattr(p, "is_fidelity", False))]
+        if fid_params:
+            fp = fid_params[0]
+            fid_name = fp.get("name", "") if hasattr(fp, "get") else getattr(fp, "name", "")
+            fid_target = fp.get("target_value") if hasattr(fp, "get") else getattr(fp, "target_value", None)
+            fid_values = fp.get("values") if hasattr(fp, "get") else getattr(fp, "values", None)
+            cost_metrics = [m.get("name", "") if hasattr(m, "get") else getattr(m, "name", "")
+                           for m in raw_cfg.get("optimization", {}).get("metrics", [])
+                           if (m.get("is_cost") if hasattr(m, "get") else getattr(m, "is_cost", False))]
+            # Count trials per fidelity level
+            fid_counts = {}
+            if client is not None:
+                for t in client._experiment.trials.values():
+                    if t.arm:
+                        fv = t.arm.parameters.get(fid_name)
+                        if fv is not None:
+                            fid_counts[str(fv)] = fid_counts.get(str(fv), 0) + 1
+            mf_info = {
+                "fidelity_param": fid_name,
+                "target_value": fid_target,
+                "levels": fid_values or [],
+                "cost_metric": cost_metrics[0] if cost_metrics else None,
+                "trials_per_fidelity": fid_counts,
+            }
+
     return SafeJSONResponse(content={
         "running": True,
         "uptime_s": round(time.time() - _state.start_time, 1),
@@ -1899,6 +1928,7 @@ def get_status():
         "model_fitted": has_model,
         "timing": getattr(_state, '_timing', None),
         "robust": robust_info,
+        "multi_fidelity": mf_info,
     })
 
 

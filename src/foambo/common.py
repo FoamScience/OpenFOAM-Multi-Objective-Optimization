@@ -321,9 +321,9 @@ def preprocess_case(parameters, cfg):
     if "files" in cfg['templating'].keys() and cfg['templating']['files']:
         for entry in cfg['templating']['files']:
             param_name = entry['parameter']
-            template_path = entry['file_path']
+            template_path = entry['file_path'].lstrip('/')
             if param_name in parameters:
-                shutil.copyfile(
+                shutil.copy2(
                     os.path.join(case.path, template_path + "." + parameters[param_name]),
                     os.path.join(case.path, template_path)
                 )

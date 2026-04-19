@@ -51,6 +51,23 @@
           </div>
         </span>
       </template>
+      <template x-if="state.status?.multi_fidelity">
+        <span class="mf-badge" x-data="{ tip: false }" @mouseenter="tip=true" @mouseleave="tip=false" style="position:relative">
+          <span style="background:#8b5cf6;color:white;padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:600;cursor:default">Multi-Fidelity</span>
+          <div x-show="tip" x-cloak style="position:absolute;top:110%;right:0;z-index:99;background:var(--pico-card-background-color);border:1px solid var(--pico-muted-border-color);border-radius:6px;padding:8px 12px;font-size:0.75rem;box-shadow:0 2px 8px rgba(0,0,0,0.15);min-width:220px">
+            <div><strong>Fidelity:</strong> <span x-text="state.status.multi_fidelity.fidelity_param"></span></div>
+            <div style="color:var(--pico-muted-color)">Target: <span x-text="state.status.multi_fidelity.target_value"></span></div>
+            <div style="color:var(--pico-muted-color)">Levels: <span x-text="(state.status.multi_fidelity.levels||[]).join(', ')"></span></div>
+            <template x-if="state.status.multi_fidelity.cost_metric">
+              <div style="color:var(--pico-muted-color)">Cost metric: <span x-text="state.status.multi_fidelity.cost_metric"></span></div>
+            </template>
+            <div style="margin-top:6px"><strong>Trials per fidelity:</strong></div>
+            <template x-for="(count, level) in state.status.multi_fidelity.trials_per_fidelity || {}" :key="level">
+              <div style="color:var(--pico-muted-color)"><code x-text="level"></code>: <span x-text="count"></span></div>
+            </template>
+          </div>
+        </span>
+      </template>
       <span x-text="lastUpdate"></span>
     </div>
   </header>
@@ -147,6 +164,7 @@
           <th @click="tsort('index')" style="cursor:pointer">Trial</th>
           <th @click="tsort('status')" style="cursor:pointer">Status</th>
           <th @click="tsort('gen_node')" style="cursor:pointer">Gen Node</th>
+          <template x-if="state.status?.multi_fidelity"><th @click="tsort('_fidelity')" style="cursor:pointer;color:#8b5cf6">Fidelity</th></template>
           <th>Source</th>
           <th>Case</th>
           <th @click="tsort('execution_time_s')" style="cursor:pointer" title="Time from dispatch to retrieval">Time</th>
@@ -159,6 +177,7 @@
               <td x-text="'T'+t.index"></td>
               <td><span class="badge" :class="'badge-'+t.status" x-text="t.status"></span></td>
               <td x-text="t.gen_node||'-'" style="font-size:0.75rem"></td>
+              <template x-if="state.status?.multi_fidelity"><td style="font-size:0.75rem;font-weight:600" :style="{color: t.parameters?.[state.status.multi_fidelity.fidelity_param] == state.status.multi_fidelity.target_value ? 'var(--accent)' : '#8b5cf6'}" x-text="t.parameters?.[state.status.multi_fidelity.fidelity_param] ?? '-'"></td></template>
               <td x-text="t.dependencies?.length ? 'T'+t.dependencies[0].source_index : '-'" style="font-size:0.75rem"></td>
               <td style="font-size:0.7rem;color:var(--pico-secondary)" x-text="t.case_path?.split('/').pop()||'-'"></td>
               <td style="font-size:0.75rem;color:var(--pico-secondary)" :style="t.status==='RUNNING'?'color:#3b82f6':''" x-text="fmtDur(t.execution_time_s)" :title="t.execution_time_s!=null?(t.status==='RUNNING'?'Elapsed: '+fmtDur(t.execution_time_s):'Duration: '+fmtDur(t.execution_time_s)):''"></td>

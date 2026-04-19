@@ -242,6 +242,27 @@ def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightRes
     if es and isinstance(es, dict):
         _check_early_stopping_metrics(es, metric_names, objective_names, opt.get("metrics", []), r)
 
+    # Multi-fidelity cost metric check: exactly one is_cost when MF acqf is used
+    metrics = opt.get("metrics", [])
+    cost_metrics = [m["name"] for m in metrics if m.get("is_cost")]
+    has_fidelity = any(p.get("is_fidelity") for p in exp.get("parameters", []))
+    uses_mf_acqf = False
+    tg = cfg.get("trial_generation", {})
+    for node in tg.get("generation_nodes", []):
+        for spec in node.get("generator_specs", []):
+            mk = spec.get("model_kwargs") or {}
+            if mk.get("botorch_acqf_class") in ("MOMF", "qMultiFidelityKnowledgeGradient"):
+                uses_mf_acqf = True
+    if uses_mf_acqf or has_fidelity:
+        if len(cost_metrics) == 1:
+            r.passed(f"Exactly one is_cost metric for MF: {cost_metrics[0]}")
+        elif len(cost_metrics) == 0 and uses_mf_acqf:
+            r.warned("MF cost metric",
+                     "no metric has is_cost=true; MOMF will use uniform cost (no cost-aware selection)")
+        elif len(cost_metrics) > 1:
+            r.failed("MF cost metric",
+                     f"multiple is_cost metrics: {cost_metrics}; exactly one required")
+
     param_names = {p["name"] for p in exp.get("parameters", [])}
     for constraint in exp.get("parameter_constraints", []):
         # Validate with sympy if available, else fall back to token check

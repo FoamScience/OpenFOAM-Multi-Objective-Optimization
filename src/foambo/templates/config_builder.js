@@ -273,6 +273,11 @@ function configBuilder() {
           if (p.step_size) param.step_size = p.step_size;
         }
         if (p.groups?.length) param.groups = p.groups;
+        if (p.is_fidelity) {
+          param.is_fidelity = true;
+          if (p.target_value != null && p.target_value !== '')
+            param.target_value = isNaN(+p.target_value) ? p.target_value : +p.target_value;
+        }
         return param;
       });
       if (cfg.experiment.parameter_constraints?.length) {
@@ -324,6 +329,7 @@ function configBuilder() {
           const metric = { name: m.name, command: m.command };
           if (m.progress?.length) metric.progress = m.progress;
           if (m.lower_is_better) metric.lower_is_better = true;
+          if (m.is_cost) metric.is_cost = true;
           return metric;
         });
       }
@@ -462,6 +468,8 @@ function configBuilder() {
         step_size: null,
         values: [],
         groups: [],
+        is_fidelity: false,
+        target_value: null,
       });
     },
 
@@ -518,6 +526,7 @@ function configBuilder() {
         command: [],
         progress: [],
         lower_is_better: false,
+        is_cost: false,
       });
     },
 
@@ -601,6 +610,8 @@ function configBuilder() {
           step_size: p.step_size || null,
           values: p.values || [],
           groups: p.groups || [],
+          is_fidelity: p.is_fidelity || false,
+          target_value: p.target_value ?? null,
         }));
       }
 
@@ -637,6 +648,7 @@ function configBuilder() {
           command: m.command || [],
           progress: m.progress || [],
           lower_is_better: m.lower_is_better || false,
+          is_cost: m.is_cost || false,
         }));
         if (data.optimization.case_runner) {
           const cr = data.optimization.case_runner;

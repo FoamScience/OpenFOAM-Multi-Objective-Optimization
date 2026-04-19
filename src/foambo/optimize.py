@@ -69,6 +69,65 @@ def _apply_objective_thresholds(client, expressions: list[str], log=None,
 
 
 
+def _update_cost_state(client, mf_cost, log=None):
+    """Recompute cost model params from observed is_cost metric data.
+
+    Reads observed values of the cost metric, computes per-fidelity means,
+    then derives ``cost_intercept`` and ``fidelity_weights`` for the
+    ``AffineFidelityCostModel`` that qMFHVKG's input constructor builds
+    internally. Writes directly into the acqf_opts dict so the next
+    acquisition construction picks up updated values.
+
+    AffineFidelityCostModel: cost(x) = cost_intercept + Σ(w_i × s_i)
+    With two fidelity levels (s=0 cheap, s=1 expensive):
+      cost_intercept = mean_cost_at_s0
+      fidelity_weight = mean_cost_at_s1 - mean_cost_at_s0
+    """
+    from ax.core.base_trial import TrialStatus as _TS
+    from collections import defaultdict
+    cost_metric_name = mf_cost["metric"]
+    fidelity_param_name = mf_cost["fidelity_param"]
+    # Collect observed costs per fidelity level
+    sums = defaultdict(float)
+    counts = defaultdict(int)
+    df = client._experiment.lookup_data().df
+    for trial in client._experiment.trials.values():
+        if trial.status not in (_TS.COMPLETED, _TS.EARLY_STOPPED):
+            continue
+        fid_val = trial.arm.parameters.get(fidelity_param_name)
+        if fid_val is None:
+            continue
+        sub = df[(df.trial_index == trial.index) & (df.metric_name == cost_metric_name)]
+        if sub.empty:
+            continue
+        sums[float(fid_val)] += float(sub["mean"].iloc[-1])
+        counts[float(fid_val)] += 1
+    per_f = {fv: sums[fv] / counts[fv] for fv in sums if counts[fv] > 0}
+    if not per_f or per_f == mf_cost["state"]["per_fidelity"]:
+        return  # no change
+    mf_cost["state"]["per_fidelity"] = per_f
+    # Derive AffineFidelityCostModel params
+    fid_vals = sorted(per_f.keys())
+    costs = [per_f[fv] for fv in fid_vals]
+    cost_intercept = min(costs)  # cheapest fidelity floor
+    # Weights: slope per fidelity unit. For discrete {0,1}: w = cost_high - cost_low.
+    # For continuous: linear fit.
+    fid_range = fid_vals[-1] - fid_vals[0]
+    if fid_range > 0:
+        fid_weight = (max(costs) - min(costs)) / fid_range
+    else:
+        fid_weight = 1.0
+    # Write into acqf_opts — Ax passes these to the input constructor
+    opts = mf_cost["acqf_opts_ref"]
+    opts["cost_intercept"] = max(cost_intercept, 1e-6)
+    opts["fidelity_weights"] = {
+        int(k): fid_weight for k in mf_cost["state"]["per_fidelity"]
+    }
+    if log:
+        log.info("Multi-fidelity cost updated: intercept=%.2f, weight=%.2f "
+                 "(from %d fidelity levels)", cost_intercept, fid_weight, len(per_f))
+
+
 def optimize(cfg, debug=False):
     """Main optimization loop.
 
@@ -196,6 +255,19 @@ def optimize(cfg, debug=False):
     if not has_experiment:
         client.configure_experiment(**exp_cfg.to_dict())
 
+    # Apply is_fidelity / target_value to Ax parameters after configure_experiment.
+    # These attrs are stripped by generate_parameter_space (Ax config dataclasses
+    # don't accept them) and stored on ExperimentOptions._fidelity_params.
+    _fidelity_cfg = getattr(exp_cfg, '_fidelity_params', None) or \
+                    getattr(type(exp_cfg), '_fidelity_params', None)
+    if _fidelity_cfg:
+        for pname, target_val in _fidelity_cfg.items():
+            p = client._experiment.search_space.parameters.get(pname)
+            if p is not None:
+                p._is_fidelity = True
+                p._target_value = target_val
+                log.info("Fidelity parameter: %s (target_value=%s)", pname, target_val)
+
     ## 2.0 Trial generation
     # Suppress Ax's verbose GenerationStrategy repr log
     _ax_client_log = logging.getLogger("ax.api.client")
@@ -205,6 +277,66 @@ def optimize(cfg, debug=False):
     _ax_client_log.setLevel(_ax_client_orig_level)
 
     gs = client._generation_strategy
+
+    # Auto-inject multi-fidelity surrogate when the search space has a
+    # fidelity parameter and no explicit surrogate_spec was configured.
+    _fidelity_params = [
+        p for p in client._experiment.search_space.parameters.values()
+        if getattr(p, "is_fidelity", False)
+    ]
+    _mf_cost = None  # set below if is_cost metric found; consumed by callback
+    # Skip standalone MF injection when robust_cfg is present — robust augment
+    # handles the combined surrogate + acqf setup via multifidelity=True.
+    if _fidelity_params and robust_cfg is None:
+        from ax.adapter.registry import Generators
+        for node in gs._nodes:
+            for spec in node.generator_specs:
+                if spec.generator_enum != Generators.BOTORCH_MODULAR:
+                    continue
+                gk = spec.generator_kwargs
+                # Auto-inject MF acqf class if not already set
+                if "botorch_acqf_class" not in gk:
+                    try:
+                        from botorch.acquisition.multi_objective.hypervolume_knowledge_gradient import (
+                            qMultiFidelityHypervolumeKnowledgeGradient,
+                        )
+                        gk["botorch_acqf_class"] = qMultiFidelityHypervolumeKnowledgeGradient
+                        log.info("Multi-fidelity: auto-selected qMultiFidelityHypervolumeKnowledgeGradient")
+                    except ImportError:
+                        log.warning("Multi-fidelity: qMFHVKG not available; using default acqf")
+                if gk.get("surrogate_spec") is not None:
+                    continue
+                try:
+                    from botorch.models.gp_regression_fidelity import SingleTaskMultiFidelityGP
+                    from ax.generators.torch.botorch_modular.surrogate import SurrogateSpec
+                    gk["surrogate_spec"] = SurrogateSpec(
+                        botorch_model_class=SingleTaskMultiFidelityGP,
+                    )
+                    log.info("Multi-fidelity: auto-selected SingleTaskMultiFidelityGP surrogate "
+                             "(fidelity param: %s)", _fidelity_params[0].name)
+                    # Wire cost model for MF acquisition.
+                    # qMFHVKG input constructor takes fidelity_weights + cost_intercept
+                    # (builds AffineFidelityCostModel internally).
+                    # MOMF takes cost_call directly.
+                    # When is_cost metric exists, we learn these from observed data
+                    # and update each callback.
+                    if gk.get("botorch_acqf_class") is not None:
+                        cost_metrics = [m for m in opt_cfg.metrics if getattr(m, "is_cost", False)]
+                        if cost_metrics:
+                            _mf_cost = {
+                                "state": {"per_fidelity": {}},
+                                "metric": cost_metrics[0].name,
+                                "fidelity_param": _fidelity_params[0].name,
+                                "acqf_opts_ref": gk.setdefault("botorch_acqf_options", {}),
+                            }
+                            # Set initial defaults (updated from data in callback)
+                            acqf_opts = _mf_cost["acqf_opts_ref"]
+                            acqf_opts.setdefault("cost_intercept", 1.0)
+                            log.info("Multi-fidelity: cost from metric '%s' "
+                                     "(updated each callback)", _mf_cost["metric"])
+                except ImportError:
+                    log.warning("Multi-fidelity: could not import SingleTaskMultiFidelityGP")
+
     phases = []
     for node in gs._nodes:
         specs = ", ".join(s.generator_enum.value for s in node.generator_specs)
@@ -292,10 +424,35 @@ def optimize(cfg, debug=False):
         log.info("Nonlinear parameter constraints active: %s", nl_exprs)
 
     # Wire robust optimization (context variables + risk measures)
+    # When both robust + MF fidelity params are present, compose them:
+    # augment_generator_specs(multifidelity=True) sets up the combined
+    # surrogate (SubstituteContextFeatures + SingleTaskMultiFidelityGP)
+    # and passes RobustMCObjective config to qMFHVKG.
     _robust_state = None
     if robust_cfg is not None:
         from foambo.robustness import augment_generator_specs
-        _robust_state = augment_generator_specs(client, exp_cfg, robust_cfg)
+        _is_mf_robust = bool(_fidelity_params)
+        _robust_state = augment_generator_specs(
+            client, exp_cfg, robust_cfg, multifidelity=_is_mf_robust)
+        if _is_mf_robust:
+            log.info("MF+robust composition active: qMFHVKG + SubstituteContextFeatures + risk measure")
+            # Wire cost model for the composed MF+robust path
+            cost_metrics = [m for m in opt_cfg.metrics if getattr(m, "is_cost", False)]
+            if cost_metrics:
+                from ax.adapter.registry import Generators as _Gen
+                for node in gs._nodes:
+                    for spec in node.generator_specs:
+                        if spec.generator_enum == _Gen.BOTORCH_MODULAR:
+                            gk = spec.generator_kwargs
+                            acqf_opts = gk.setdefault("botorch_acqf_options", {})
+                            _mf_cost = {
+                                "state": {"per_fidelity": {}},
+                                "metric": cost_metrics[0].name,
+                                "fidelity_param": _fidelity_params[0].name,
+                                "acqf_opts_ref": acqf_opts,
+                            }
+                            acqf_opts.setdefault("cost_intercept", 1.0)
+                            log.info("MF+robust: cost from metric '%s'", _mf_cost["metric"])
 
     client.set_early_stopping_strategy(orch_cfg.early_stopping_strategy)
 
@@ -529,6 +686,9 @@ def optimize(cfg, debug=False):
         store_cfg.save(client)
         _maybe_reduce_dimensions()
         streaming_metric(client, raw_cfg["optimization"])
+        # Update MF cost model from observed is_cost metric data
+        if _mf_cost is not None:
+            _update_cost_state(client, _mf_cost, log=log)
         # Cycle context point for next robust BO gen call
         if _robust_state is not None:
             from foambo.robustness import cycle_context
