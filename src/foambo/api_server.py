@@ -648,8 +648,6 @@ def _parse_trial_deps(runner, trial_index: int, trial) -> list:
                 "name": name,
                 "source_index": info["source_trial_index"],
                 "source_path": info.get("source_case_path", ""),
-                "actions_applied": info.get("actions_applied", 0),
-                "phased_actions": info.get("phased_actions", []),
             })
     return deps
 

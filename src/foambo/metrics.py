@@ -29,7 +29,6 @@ log : Logger = get_logger(__name__)
 METRIC_EVAL_TIMEOUT = 600       # metric command evaluation (blocking, may be heavy)
 REMOTE_QUERY_TIMEOUT = 60       # remote status query / remote kill
 PROGRESSION_CMD_TIMEOUT = 30    # progression source command (runs each poll cycle)
-DEPENDENCY_ACTION_TIMEOUT = 120 # trial dependency action (e.g. file copy, mapFields)
 PROCESS_REAP_TIMEOUT = 5        # wait for killed process to exit
 
 jobs : Dict[int, sb.Popen] = {}
@@ -557,6 +556,30 @@ class FoamJobRunner(IRunner):
         if not completed:
             return None
 
+        # Apply fidelity filter
+        fid_param = getattr(self, '_fidelity_param_name', None)
+        if fid_param:
+            fid_filter = getattr(selector, 'fidelity_filter', None) or "same"
+            if fid_filter != "any":
+                if fid_filter == "same":
+                    match_val = target_params.get(fid_param)
+                else:
+                    # Explicit value — coerce to match the param type
+                    match_val = fid_filter
+                    try:
+                        match_val = float(match_val)
+                    except (ValueError, TypeError):
+                        pass
+                def _fid_match(entry_params):
+                    v = entry_params.get(fid_param)
+                    if isinstance(v, float) and isinstance(match_val, (int, float)):
+                        return abs(v - match_val) < 1e-6
+                    return v == match_val
+                completed = {k: v for k, v in completed.items()
+                             if _fid_match(v.get("parameters", {}))}
+                if not completed:
+                    return None
+
         strategy = selector.strategy
         if strategy == "baseline":
             entry = completed.get(0)
@@ -634,73 +657,19 @@ class FoamJobRunner(IRunner):
                 return None
         return None
 
-    # Well-known hook phases and their environment variable names
-    HOOK_PHASES = ("pre_init", "pre_mesh", "pre_solve", "post_solve")
-
-    def _substitute_cmd(self, cmd: str | List[str], source_path: str, target_path: str) -> str:
-        """Apply $FOAMBO_SOURCE_TRIAL / $FOAMBO_TARGET_TRIAL substitution, return a single shell string."""
-        if isinstance(cmd, list):
-            cmd = " ".join(cmd)
-        return (cmd
-                .replace("$FOAMBO_SOURCE_TRIAL", source_path).replace("$SOURCE_TRIAL", source_path)
-                .replace("$FOAMBO_TARGET_TRIAL", target_path).replace("$TARGET_TRIAL", target_path))
-
-    def _execute_dependency_actions(self, dep, source_path: str, target_path: str) -> List[str]:
-        """Execute a dependency's immediate actions, return list of action types applied."""
-        applied = []
-        for action in dep.actions:
-            if action.phase != "immediate":
-                continue
-            if action.type == "run_command":
-                cmd = self._substitute_cmd(action.command, source_path, target_path)
-                try:
-                    sb.check_call(cmd, shell=True, cwd=target_path, timeout=DEPENDENCY_ACTION_TIMEOUT)
-                    applied.append("run_command")
-                except Exception as e:
-                    log.warning(f"Dependency '{dep.name}' action failed: {e}")
-        return applied
-
-    def _write_hook_scripts(self, target_path: str, phase_commands: Dict[str, List[str]]) -> Dict[str, str]:
-        """Write per-phase hook scripts into the trial case directory.
-
-        Returns a mapping of ``FOAMBO_<PHASE>`` env-var names to script paths.
-        Phases with no commands get a no-op script so Allrun scripts never fail.
-        """
-        hook_env: Dict[str, str] = {}
-        for phase in self.HOOK_PHASES:
-            env_name = f"FOAMBO_{phase.upper()}"
-            script_path = os.path.join(target_path, f".foambo_{phase}.sh")
-            cmds = phase_commands.get(phase, [])
-            with open(script_path, "w") as f:
-                f.write("#!/bin/bash\n")
-                f.write(f"# foamBO hook: {phase}\n")
-                f.write("set -e\n")
-                if cmds:
-                    for cmd in cmds:
-                        f.write(f"{cmd}\n")
-                else:
-                    f.write("# (no actions for this phase)\n")
-                    f.write("true\n")
-            os.chmod(script_path, 0o755)
-            hook_env[env_name] = script_path
-        return hook_env
-
     def _resolve_dependencies(self, trial_index: int, target_path: str,
                               parameterization: dict) -> Dict[str, Any]:
-        """Resolve all enabled trial dependencies.
+        """Resolve all enabled trial dependencies and write a manifest.
 
-        * ``immediate`` actions execute inline (before the runner starts).
-        * Phased actions (``pre_mesh``, ``post_mesh``, ``pre_solve``) are
-          written to hook scripts inside the trial case directory and exposed
-          to the runner via ``$FOAMBO_PRE_MESH``, ``$FOAMBO_POST_MESH``,
-          ``$FOAMBO_PRE_SOLVE`` environment variables.
+        Writes ``.foambo_deps.json`` to the trial case directory with
+        per-dependency resolution results.  The manifest path is exported
+        to the runner via ``$FOAMBO_DEPS``.
 
         Returns a metadata dict with per-dependency info and a ``hook_env``
         mapping for the runner subprocess.
         """
         dep_meta: Dict[str, Any] = {}
-        phase_commands: Dict[str, List[str]] = {}
-        last_source_path: str | None = None
+        manifest: Dict[str, Any] = {}
 
         for dep in self.trial_dependencies:
             if not dep.enabled:
@@ -711,37 +680,37 @@ class FoamJobRunner(IRunner):
                     raise RuntimeError(
                         f"Dependency '{dep.name}': no source trial found and fallback is 'error'")
                 log.debug(f"Dependency '{dep.name}': no source trial found, skipping")
+                manifest[dep.name] = {"resolved": False}
                 continue
 
             source_index, source_path = result
-            last_source_path = source_path
-            log.info(f"Trial {trial_index}: resolving dependency '{dep.name}' from trial {source_index} at {source_path}")
-
-            # Execute immediate actions now
-            applied = self._execute_dependency_actions(dep, source_path, target_path)
-
-            # Collect phased actions for hook scripts
-            phased = []
-            for action in dep.actions:
-                if action.phase != "immediate" and action.type == "run_command":
-                    resolved_cmd = self._substitute_cmd(action.command, source_path, target_path)
-                    phase_commands.setdefault(action.phase, []).append(resolved_cmd)
-                    phased.append(action.phase)
+            log.info(f"Trial {trial_index}: resolved dependency '{dep.name}' → trial {source_index} at {source_path}")
 
             dep_meta[dep.name] = {
                 "source_trial_index": source_index,
                 "source_case_path": source_path,
-                "actions_applied": applied,
-                "phased_actions": phased,
             }
+            manifest_entry: Dict[str, Any] = {
+                "resolved": True,
+                "source_trial_index": source_index,
+                "source_path": source_path,
+            }
+            # Include source fidelity in manifest when a fidelity param exists
+            fid_param = getattr(self, '_fidelity_param_name', None)
+            if fid_param:
+                source_entry = self.trial_registry.get(source_index, {})
+                source_fidelity = source_entry.get("parameters", {}).get(fid_param)
+                if source_fidelity is not None:
+                    manifest_entry["source_fidelity"] = source_fidelity
+            manifest[dep.name] = manifest_entry
 
-        # Always write hook scripts (no-op when empty) so env vars are always set
-        hook_env = self._write_hook_scripts(target_path, phase_commands)
-        hook_env["FOAMBO_TARGET_TRIAL"] = target_path
-        # Only set FOAMBO_SOURCE_TRIAL if a source was actually resolved
-        if last_source_path is not None:
-            hook_env["FOAMBO_SOURCE_TRIAL"] = last_source_path
-        dep_meta["_hook_env"] = hook_env
+        # Write manifest
+        import json
+        manifest_path = os.path.join(target_path, ".foambo_deps.json")
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+
+        dep_meta["_hook_env"] = {"FOAMBO_DEPS": manifest_path}
 
         return dep_meta
 

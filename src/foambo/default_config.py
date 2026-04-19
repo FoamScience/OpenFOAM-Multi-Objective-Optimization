@@ -111,7 +111,7 @@ def _get_doc_models():
         SeedDataNodeConfig,
         OptimizationOptions, FoamJobRunnerOptions, VariableSubstOptions,
         FileSubstOptions, BaselineOptions, StoreOptions,
-        TrialSelector, TrialAction, TrialDependency,
+        TrialSelector, TrialDependency,
         DimensionalityReductionOptions,
     )
     from .metrics import FoamJob, LocalJobMetric
@@ -135,7 +135,6 @@ def _get_doc_models():
         (StoreOptions,               "store"),
         (TrialDependency,            "trial_dependencies[]"),
         (TrialSelector,              "trial_dependencies[].source"),
-        (TrialAction,                "trial_dependencies[].actions[]"),
         (FoamJob,                    "internal.FoamJob"),
     ]
 
@@ -210,13 +209,6 @@ def get_default_config() -> Dict[str, Any]:
                 "strategy": "best",
                 "fallback": "skip",
             },
-            "actions": [
-                {
-                    "type": "run_command",
-                    "command": "cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0",
-                    "phase": "immediate",
-                },
-            ],
         },
         {
             "name": "reuse_mesh",
@@ -226,13 +218,6 @@ def get_default_config() -> Dict[str, Any]:
                 "group": "geometry",
                 "fallback": "skip",
             },
-            "actions": [
-                {
-                    "type": "run_command",
-                    "command": "cp -rT $FOAMBO_SOURCE_TRIAL/constant/polyMesh $FOAMBO_TARGET_TRIAL/constant/polyMesh",
-                    "phase": "pre_mesh",
-                },
-            ],
         },
     ]
 
@@ -571,93 +556,82 @@ def get_config_docs() -> Dict[str, Any]:
                 source:
                   strategy: best
                   fallback: skip
-                actions:
-                  - type: run_command
-                    command: "cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0"
-                    phase: immediate  # default — runs before the runner starts
             ```
 
-            Copy mesh before meshing (deferred to `$FOAMBO_PRE_MESH` hook):
+            Reuse mesh when geometry parameters haven't changed:
             ```yaml
             trial_dependencies:
-              - name: mesh_inherit
+              - name: reuse_mesh
+                source:
+                  strategy: matching_group
+                  group: "geometry"
+                  fallback: skip
+              - name: warm_fields
                 source:
                   strategy: nearest
+                  similarity_threshold: 0.3
                   fallback: skip
-                actions:
-                  - type: run_command
-                    command: "cp -rT $FOAMBO_SOURCE_TRIAL/constant/polyMesh $FOAMBO_TARGET_TRIAL/constant/polyMesh"
-                    phase: pre_mesh
             ```
 
-            Use mapFields after meshing (deferred to `$FOAMBO_PRE_SOLVE` hook):
-            ```yaml
-            trial_dependencies:
-              - name: map_fields
-                source:
-                  strategy: best
-                  fallback: skip
-                actions:
-                  - type: run_command
-                    command: "mapFields $FOAMBO_SOURCE_TRIAL -sourceTime latestTime -case $FOAMBO_TARGET_TRIAL"
-                    phase: pre_solve
-            ```
-
-            With the corresponding Allrun script calling the hooks:
-            ```bash
-            #!/bin/bash
-            $FOAMBO_PRE_INIT       # no-op unless configured
-            blockMesh
-            $FOAMBO_PRE_MESH       # no-op unless configured
-            $FOAMBO_PRE_SOLVE      # runs mapFields from source trial
-            simpleFoam
-            $FOAMBO_POST_SOLVE     # no-op unless configured
-            ```
-
-            **Phases and environment variables:**
-            - `immediate` (default): action runs before the runner starts
-            - `pre_init` / `pre_mesh` / `pre_solve` / `post_solve`: action is
-              written to a hook script (`.foambo_<phase>.sh`) in the case directory
-              and exposed via `$FOAMBO_<PHASE>` environment variable
-
-            Reuse mesh when geometry parameters haven't changed (`matching_group`):
+            With parameters tagged by group:
             ```yaml
             experiment:
               parameters:
                 - name: angle1
                   bounds: [20, 40]
-                  groups: ["geometry"]    # tag parameters with groups
+                  groups: ["geometry"]
                 - name: relaxation
-                  bounds: [0.1, 0.9]     # no group — changes freely
-
-            trial_dependencies:
-              - name: reuse_mesh
-                source:
-                  strategy: matching_group
-                  group: "geometry"       # match on all params tagged "geometry"
-                  fallback: skip          # mesh from scratch if no match
-                actions:
-                  - type: run_command
-                    command: "cp -rT $FOAMBO_SOURCE_TRIAL/constant/polyMesh $FOAMBO_TARGET_TRIAL/constant/polyMesh"
-                    phase: pre_mesh
+                  bounds: [0.1, 0.9]
             ```
-            When the new trial's geometry parameters exactly match a completed trial,
-            the mesh is copied instead of regenerated. Parameters can belong to
-            multiple groups (e.g. `groups: ["geometry", "mesh"]`).
 
-            All hooks default to no-op on the first trial (no source yet).
+            **How it works:** foamBO resolves each dependency and writes
+            `.foambo_deps.json` to the trial case directory.  The manifest
+            path is available via `$FOAMBO_DEPS`.  The runner script reads
+            it and decides what to do:
 
-            **Additional env vars available to the runner:**
-            - `$FOAMBO_CASE_PATH` / `$FOAMBO_CASE_NAME` — trial case directory
-            - `$FOAMBO_SOURCE_TRIAL` — resolved source path (unset if no match)
-            - `$FOAMBO_TARGET_TRIAL` — current trial path
+            ```bash
+            #!/bin/bash
+            deps="$FOAMBO_DEPS"
 
-            **Non-shell runners** (Python, binary) can execute hook scripts directly:
+            # Mesh: reuse or generate
+            if jq -e '.reuse_mesh.resolved' "$deps" >/dev/null 2>&1; then
+                src=$(jq -r '.reuse_mesh.source_path' "$deps")
+                cp -rT "$src/constant/polyMesh" constant/polyMesh
+            else
+                blockMesh
+            fi
+
+            # Fields: warm-start or cold start
+            if jq -e '.warm_fields.resolved' "$deps" >/dev/null 2>&1; then
+                src=$(jq -r '.warm_fields.source_path' "$deps")
+                mapFields "$src" -sourceTime latestTime
+            else
+                potentialFoam -writep > log.potentialFoam 2>&1
+            fi
+
+            simpleFoam
+            ```
+
+            **Non-shell runners** (Python, binary):
             ```python
-            import subprocess, os
-            subprocess.run(os.environ["FOAMBO_PRE_SOLVE"])
-            # or: subprocess.run("./.foambo_pre_solve.sh")
+            import json, os
+            deps = json.load(open(os.environ["FOAMBO_DEPS"]))
+            if deps["reuse_mesh"]["resolved"]:
+                shutil.copytree(deps["reuse_mesh"]["source_path"] + "/constant/polyMesh",
+                                "constant/polyMesh", dirs_exist_ok=True)
             ```
+
+            **Manifest format** (`.foambo_deps.json`):
+            ```json
+            {
+              "reuse_mesh": {"resolved": true, "source_trial_index": 3, "source_path": "/path/to/trial_0003"},
+              "warm_fields": {"resolved": false}
+            }
+            ```
+
+            **Environment variables available to the runner:**
+            - `$FOAMBO_DEPS` — path to `.foambo_deps.json`
+            - `$FOAMBO_CASE_PATH` / `$FOAMBO_CASE_NAME` — trial case directory
 
             The dependency resolution result is recorded in
             `run_metadata["dependencies"]` for traceability.
@@ -1064,11 +1038,8 @@ def get_config_docs() -> Dict[str, Any]:
                 .stop(max_trials=50, improvement_bar=0.1)
                 .early_stop(type="percentile", metric_names=["residuals"],
                             percentile_threshold=25, min_progression=5)
-                .depend("warm_start", source="best",
-                        command="cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0")
-                .depend("map_fields", source="nearest",
-                        command="mapFields $FOAMBO_SOURCE_TRIAL -case $FOAMBO_TARGET_TRIAL -sourceTime latestTime",
-                        phase="pre_solve")
+                .depend("warm_start", source="best")
+                .depend("reuse_mesh", source="matching_group", group="geometry")
                 .run(parallelism=3, poll_interval=10, ttl=600)
             )
             predictions = client.predict([{"x": 10, "y": "A"}])
@@ -1114,7 +1085,7 @@ def get_config_docs() -> Dict[str, Any]:
             - `.stop(max_trials, improvement_bar)` — global stopping
             - `.early_stop(type, ...)` — trial-level early stopping
             - `.reduce(after_trials, min_importance)` — auto-fix irrelevant parameters
-            - `.depend(name, source, command)` — trial-to-trial dependencies
+            - `.depend(name, source)` — trial-to-trial dependencies
             - `.preflight(dry_run=True)` — validate config before running
             - `.run(parallelism, ...)` — execute and return the Ax Client
             - `FoamBO.load(name)` — load a saved experiment for analysis

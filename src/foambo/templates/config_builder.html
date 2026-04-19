@@ -720,34 +720,7 @@
               <input type="text" x-model="dep.source.command" placeholder="script that prints trial index">
             </div>
 
-            <!-- Actions -->
-            <div class="section-header" style="margin-top:0.5rem">
-              <h6 class="subsection-title" style="margin:0">Actions</h6>
-              <button class="btn" @click="addTrialAction(dep)">+ Add</button>
-            </div>
-            <template x-for="(act, ai) in dep.actions" :key="ai">
-              <div class="param-card" style="margin:0.3rem 0;padding:0.5rem">
-                <div class="param-grid">
-                  <div class="form-group">
-                    <label>Phase</label>
-                    <select x-model="act.phase">
-                      <option value="immediate">immediate</option>
-                      <option value="pre_init">pre_init</option>
-                      <option value="pre_mesh">pre_mesh</option>
-                      <option value="pre_solve">pre_solve</option>
-                      <option value="post_solve">post_solve</option>
-                    </select>
-                  </div>
-                  <div class="form-group" style="flex:0 0 auto">
-                    <button class="btn btn-danger btn-sm" @click="dep.actions.splice(ai, 1)" style="margin-top:1.2rem">&times;</button>
-                  </div>
-                </div>
-                <div class="form-group">
-                  <label>Command</label>
-                  <input type="text" x-model="act.command" placeholder="e.g. cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0">
-                </div>
-              </div>
-            </template>
+            <p class="hint" style="margin-top:0.5rem">Resolution results are written to <code>.foambo_deps.json</code> (<code>$FOAMBO_DEPS</code>). Your runner script reads the manifest to decide what to do.</p>
           </article>
         </template>
       </section>

@@ -287,37 +287,20 @@ def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightRes
             r.failed(f"Parameter constraint parse error: {constraint}",
                      str(e))
 
-    phased_hooks_used = set()
-    for dep in cfg.get("trial_dependencies", []):
-        if not dep.get("enabled", True):
-            continue
-        for action in dep.get("actions", []):
-            cmd = action.get("command", "")
-            cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
-            phase = action.get("phase", "immediate")
-
-            if ("$FOAMBO_SOURCE_TRIAL" not in cmd_str and "$SOURCE_TRIAL" not in cmd_str
-                    and "$FOAMBO_TARGET_TRIAL" not in cmd_str and "$TARGET_TRIAL" not in cmd_str):
-                r.warned(f"Dependency '{dep['name']}' action",
-                         "command has no $FOAMBO_SOURCE_TRIAL or $FOAMBO_TARGET_TRIAL substitution")
-
-            if phase != "immediate":
-                phased_hooks_used.add(phase)
-
-    runner_cfg = opt.get("case_runner", {})
-    template = runner_cfg.get("template_case", "")
-    if phased_hooks_used:
+    enabled_deps = [dep for dep in cfg.get("trial_dependencies", [])
+                    if dep.get("enabled", True)]
+    if enabled_deps:
+        runner_cfg = opt.get("case_runner", {})
         runner_cmd = runner_cfg.get("runner", "")
         runner_str = runner_cmd if isinstance(runner_cmd, str) else " ".join(runner_cmd or [])
-        # Check if runner is a script file that might contain hook references
+        template = runner_cfg.get("template_case", "")
+        # Try to read the runner script for FOAMBO_DEPS references
         runner_is_script = runner_str and (
             runner_str.strip().startswith("./") or runner_str.strip().startswith("/")
             or runner_str.strip().startswith("bash") or runner_str.strip().startswith("sh"))
-        # Try to read the runner script for hook references
         hook_file_content = ""
         if runner_is_script:
             script_path = runner_str.split()[0] if runner_str else ""
-            # Resolve relative to template case
             for candidate in [script_path,
                               os.path.join(template, script_path.lstrip("./")) if template else ""]:
                 if candidate and os.path.isfile(candidate):
@@ -329,19 +312,17 @@ def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightRes
                     break
 
         search_text = runner_str + " " + hook_file_content
-        for phase in phased_hooks_used:
-            env_var = f"FOAMBO_{phase.upper()}"
-            if f"${env_var}" in search_text or env_var in search_text:
-                r.passed(f"Hook reference: ${env_var}",
-                         "found in runner command or script")
-            elif hook_file_content:
-                r.warned(f"Hook reference: ${env_var}",
-                         f"dependency uses phase '{phase}' but ${env_var} not found in runner script. "
-                         f"Call ${env_var} in your Allrun to execute the hook")
-            else:
-                r.warned(f"Hook reference: ${env_var}",
-                         f"dependency uses phase '{phase}' — ensure your runner calls ${env_var}. "
-                         f"For non-shell runners, execute the script at .foambo_{phase}.sh in the case directory")
+        if "FOAMBO_DEPS" in search_text or ".foambo_deps.json" in search_text:
+            r.passed("Trial dependencies manifest",
+                     f"{len(enabled_deps)} dep(s) configured, runner references $FOAMBO_DEPS")
+        elif hook_file_content:
+            r.warned("Trial dependencies manifest",
+                     f"{len(enabled_deps)} dep(s) configured but $FOAMBO_DEPS / .foambo_deps.json "
+                     "not found in runner script. Read the manifest to act on resolved dependencies")
+        else:
+            r.warned("Trial dependencies manifest",
+                     f"{len(enabled_deps)} dep(s) configured — ensure your runner reads $FOAMBO_DEPS "
+                     "to act on resolved dependencies")
 
     return r
 

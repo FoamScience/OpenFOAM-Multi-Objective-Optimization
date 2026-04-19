@@ -424,11 +424,6 @@ function configBuilder() {
           if (dep.source.strategy === 'nearest' && dep.source.similarity_threshold != null) src.similarity_threshold = dep.source.similarity_threshold;
           if (dep.source.strategy === 'custom' && dep.source.command) src.command = dep.source.command;
           d.source = src;
-          d.actions = dep.actions.map(a => {
-            const act = { type: a.type, command: a.command };
-            if (a.phase !== 'immediate') act.phase = a.phase;
-            return act;
-          });
           return d;
         });
       }
@@ -510,12 +505,7 @@ function configBuilder() {
         name: '',
         enabled: true,
         source: { strategy: 'best', fallback: 'skip', index: null, group: null, command: null, similarity_threshold: null },
-        actions: [{ type: 'run_command', command: '', phase: 'immediate' }],
       });
-    },
-
-    addTrialAction(dep) {
-      dep.actions.push({ type: 'run_command', command: '', phase: 'immediate' });
     },
 
     // --- Optimization helpers ---
@@ -711,11 +701,6 @@ function configBuilder() {
             command: dep.source?.command ?? null,
             similarity_threshold: dep.source?.similarity_threshold ?? null,
           },
-          actions: (dep.actions || []).map(a => ({
-            type: a.type || 'run_command',
-            command: a.command || '',
-            phase: a.phase || 'immediate',
-          })),
         }));
       }
 

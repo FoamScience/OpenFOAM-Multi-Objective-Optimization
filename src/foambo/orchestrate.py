@@ -940,8 +940,8 @@ class FoamJobRunnerOptions(FoamBOBaseModel):
         "Shell command to run the trial (e.g. `./Allrun`). "
         "Supports `$FOAMBO_CASE_NAME`/`$FOAMBO_CASE_PATH` substitution. "
         "These are also available as environment variables, along with "
-        "`$FOAMBO_PRE_INIT`, `$FOAMBO_PRE_MESH`, `$FOAMBO_PRE_SOLVE`, `$FOAMBO_POST_SOLVE` "
-        "hook scripts from trial dependencies. Empty = no execution"),
+        "`$FOAMBO_DEPS` (path to `.foambo_deps.json` manifest) when trial "
+        "dependencies are configured. Empty = no execution"),
                                examples=["./run_on_cluster.sh $FOAMBO_CASE_NAME"])
     log_runner: bool | None = Field(default=False, description="Write runner stdout to `log.runner` in the trial folder instead of discarding it")
     remote_status_query: str | None = Field(default="", description="Command returning SLURM-like job status (required for mode=remote)",
@@ -1166,87 +1166,40 @@ class TrialSelector(FoamBOBaseModel):
         description="Maximum normalized L2 distance for `nearest` strategy. "
         "If the nearest trial exceeds this threshold, the dependency is treated as unresolved (applies fallback). "
         "Range: 0.0 (exact match) to 1.0+ (no restriction). Default: no threshold.")
+    fidelity_filter: str | None = Field(default=None,
+        description=(
+            "Filter source trials by fidelity level. Only applies when an "
+            "``is_fidelity`` parameter is configured.\n\n"
+            "- ``\"same\"`` — source must match the target trial's fidelity value "
+            "(exact for categorical, within 1e-6 tolerance for continuous)\n"
+            "- ``\"any\"`` — no fidelity filtering\n"
+            "- ``\"<value>\"`` — source must have this specific fidelity value "
+            "(e.g. ``\"cfd\"`` or ``\"0.5\"``)\n\n"
+            "Default: ``\"same\"`` when a fidelity parameter exists, otherwise no filtering."
+        ))
     fallback: Literal["skip", "error"] = Field(default="skip",
         description="What to do when no suitable source trial exists. 'skip' proceeds without the dependency, 'error' fails the trial")
 
 
-class TrialAction(FoamBOBaseModel):
-    """An action to execute using the resolved source trial."""
-    type: Literal["run_command"] = Field(
-        description="Action type. `run_command` executes a shell command with `$FOAMBO_SOURCE_TRIAL` and `$FOAMBO_TARGET_TRIAL` substitution",
-        examples=["run_command"])
-    command: str | List[str] = Field(
-        description=(
-            "Shell command to execute. Supports substitution variables:\n"
-            "- `$FOAMBO_SOURCE_TRIAL`: absolute path to the source trial's case directory\n"
-            "- `$FOAMBO_TARGET_TRIAL`: absolute path to the new trial's case directory\n\n"
-            "Example: `cp -rT $FOAMBO_SOURCE_TRIAL/0.5 $FOAMBO_TARGET_TRIAL/0`"
-        ), examples=["cp -rT $FOAMBO_SOURCE_TRIAL/constant/polyMesh $FOAMBO_TARGET_TRIAL/constant/polyMesh"])
-    phase: Literal["immediate", "pre_init", "pre_mesh", "pre_solve", "post_solve"] = Field(
-        default="immediate",
-        description=(
-            "When the action executes in the trial lifecycle:\n"
-            "- `immediate`: executed during dependency resolution, before the runner starts (default)\n"
-            "- `pre_init`, `pre_mesh`, `pre_solve`, `post_solve`: deferred to hook scripts "
-            "that the runner can invoke via environment variables.\n\n"
-            "Hook scripts are written to `.foambo_<phase>.sh` in the trial case directory "
-            "and exposed as environment variables to the runner subprocess:\n"
-            "- `$FOAMBO_PRE_INIT`  — before any case initialisation\n"
-            "- `$FOAMBO_PRE_MESH`  — before mesh generation\n"
-            "- `$FOAMBO_PRE_SOLVE` — after meshing, before the solver\n"
-            "- `$FOAMBO_POST_SOLVE` — after the solver finishes\n\n"
-            "Hooks default to no-op (`true`) when no actions target that phase, "
-            "so runner scripts work safely from the very first trial (before any "
-            "source trial exists).\n\n"
-            "Additional environment variables available to the runner:\n"
-            "- `$FOAMBO_CASE_PATH` / `$FOAMBO_CASE_NAME` — trial case directory\n"
-            "- `$FOAMBO_SOURCE_TRIAL` — resolved source trial path (empty on first trial)\n"
-            "- `$FOAMBO_TARGET_TRIAL` — current trial path (same as `$FOAMBO_CASE_PATH`)\n\n"
-            "Example Allrun (shell):\n"
-            "  $FOAMBO_PRE_INIT\n"
-            "  blockMesh\n"
-            "  $FOAMBO_PRE_SOLVE\n"
-            "  simpleFoam\n"
-            "  $FOAMBO_POST_SOLVE\n\n"
-            "For non-shell runners (Python, binary), execute the hook script directly:\n"
-            "  subprocess.run(os.environ['FOAMBO_PRE_SOLVE'])  # Python\n"
-            "  ./.foambo_pre_solve.sh                          # from case directory"
-        ))
-
-
 class TrialDependency(FoamBOBaseModel):
-    """A dependency relationship between a source trial and the trial being created.
+    """A dependency that resolves a source trial for the trial being created.
 
-    Each dependency selects a source trial and runs one or more actions.
-    Actions with ``phase: immediate`` execute before the runner starts.
-    Actions with a named phase (``pre_init``, ``pre_mesh``, ``pre_solve``,
-    ``post_solve``) are deferred to hook scripts that the runner invokes
-    via ``$FOAMBO_<PHASE>`` environment variables.
+    Each dependency selects a source trial using a configurable strategy.
+    Resolution results are written to a ``.foambo_deps.json`` manifest in
+    the trial case directory and exposed via the ``$FOAMBO_DEPS`` environment
+    variable.  The runner script reads the manifest to decide what to do
+    (copy mesh, warm-start fields, etc.).
 
     On the first trial (no completed source yet), dependencies with
-    ``fallback: skip`` are silently skipped and all hooks are no-ops.
+    ``fallback: skip`` are silently marked as unresolved in the manifest.
     """
     name: str = Field(
         description="A label for this dependency (e.g. 'warm_start', 'mesh_inherit'). Recorded in trial metadata for traceability",
         examples=["warm_start"])
     source: TrialSelector = Field(
         description="How to select the source trial")
-    actions: List[TrialAction] = Field(
-        description=(
-            "Actions to execute after source trial is resolved. "
-            "`immediate` actions run inline before the runner command. "
-            "Phased actions are written to hook scripts invoked by the runner "
-            "via `$FOAMBO_PRE_INIT`, `$FOAMBO_PRE_MESH`, `$FOAMBO_PRE_SOLVE`, `$FOAMBO_POST_SOLVE`"
-        ))
     enabled: bool = Field(default=True,
         description="Toggle this dependency on/off without removing the configuration")
-
-    @field_validator("actions", mode="before")
-    @classmethod
-    def parse_actions(cls, v):
-        if v and isinstance(v[0], dict | DictConfig):
-            return [TrialAction.model_validate(dict(item)) for item in v]
-        return v
 
     @field_validator("source", mode="before")
     @classmethod

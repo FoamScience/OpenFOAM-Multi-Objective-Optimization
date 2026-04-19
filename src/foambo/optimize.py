@@ -382,6 +382,11 @@ def optimize(cfg, debug=False):
         runner.trial_dependencies = trial_deps
     runner._parameter_groups = exp_cfg.get_parameter_groups()
     runner._metric_names = [m.name for m in opt_cfg.metrics]
+    # Expose fidelity param name to runner for dependency resolution filtering
+    _fid_cfg = getattr(exp_cfg, '_fidelity_params', None) or \
+               getattr(type(exp_cfg), '_fidelity_params', None)
+    if _fid_cfg:
+        runner._fidelity_param_name = next(iter(_fid_cfg))
     # Seed runner.trial_registry from the experiment so that dependency
     # resolution (matching_group / nearest / best / by_index) and API
     # history views can see inherited trials (bootstrap runs and resumes).
@@ -1209,6 +1214,11 @@ def main():
                 if hasattr(p, "get") and p.get("groups"):
                     param_groups[p["name"]] = list(p["groups"])
             runner._parameter_groups = param_groups
+            # Restore fidelity param name for dependency resolution filtering
+            for p in cfg.get("experiment", {}).get("parameters", []):
+                if hasattr(p, "get") and p.get("is_fidelity"):
+                    runner._fidelity_param_name = p["name"]
+                    break
             # Restore trial dependencies
             if 'trial_dependencies' in cfg:
                 from .orchestrate import TrialDependency

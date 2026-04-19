@@ -82,12 +82,10 @@ Trial dependencies let new trials reuse work from previous ones.
 - ``by_index``: specific trial number
 - ``custom``: external command that prints a trial index
 
-**Phases** control when actions execute:
-- ``immediate``: before the runner starts (default)
-- ``pre_init`` / ``pre_mesh`` / ``pre_solve`` / ``post_solve``: deferred to hook scripts
-
-The runner exposes hook scripts via environment variables (``$FOAMBO_PRE_MESH``, etc.)
-that the Allrun script calls at the right moment.""",
+foamBO resolves each dependency and writes a ``.foambo_deps.json`` manifest
+to the trial case directory.  The manifest path is available via ``$FOAMBO_DEPS``.
+The runner script reads the manifest and decides what actions to take
+(copy mesh, warm-start fields, etc.).""",
     },
 
     "concept.early_stopping": {
@@ -407,15 +405,29 @@ in some trade-off.
 trial_dependencies:
   - name: reuse_mesh
     source: {strategy: matching_group, group: geometry, fallback: skip}
-    actions: [{type: run_command, phase: pre_mesh,
-               command: "cp -rT $FOAMBO_SOURCE_TRIAL/constant/polyMesh $FOAMBO_TARGET_TRIAL/constant/polyMesh"}]
   - name: warm_fields
     source: {strategy: nearest, similarity_threshold: 0.3, fallback: skip}
-    actions: [{type: run_command, phase: pre_solve,
-               command: "mapFields $FOAMBO_SOURCE_TRIAL -sourceTime latestTime -case $FOAMBO_TARGET_TRIAL"}]
+```
+The Allrun reads ``$FOAMBO_DEPS`` to decide what to do:
+```bash
+deps="$FOAMBO_DEPS"
+if jq -e '.reuse_mesh.resolved' "$deps" >/dev/null 2>&1; then
+    src=$(jq -r '.reuse_mesh.source_path' "$deps")
+    cp -rT "$src/constant/polyMesh" constant/polyMesh
+else
+    blockMesh
+fi
+if jq -e '.warm_fields.resolved' "$deps" >/dev/null 2>&1; then
+    src=$(jq -r '.warm_fields.source_path' "$deps")
+    mapFields "$src" -sourceTime latestTime
+else
+    potentialFoam -writep > log.potentialFoam 2>&1
+fi
+simpleFoam
 ```
 This reuses the mesh when geometry matches AND warm-starts solver fields from
-the nearest trial — two independent dependencies working together.""",
+the nearest trial — two independent dependencies, each with its own resolved
+source and its own fallback logic.""",
     },
 
     "concept.orchestration": {
@@ -459,13 +471,19 @@ consumes the push queue at the top of each poll cycle:
 **Allrun integration example (remote runner):**
 ```bash
 #!/bin/bash
-blockMesh
-$FOAMBO_PRE_MESH
-snappyHexMesh
-$FOAMBO_PRE_SOLVE
+deps="$FOAMBO_DEPS"
+
+# Mesh: reuse or generate
+if jq -e '.reuse_mesh.resolved' "$deps" >/dev/null 2>&1; then
+    src=$(jq -r '.reuse_mesh.source_path' "$deps")
+    cp -rT "$src/constant/polyMesh" constant/polyMesh
+else
+    blockMesh
+    snappyHexMesh
+fi
+
 simpleFoam
 EXIT_CODE=$?
-$FOAMBO_POST_SOLVE
 
 # Notify foamBO of completion
 curl -s -X POST "$FOAMBO_API_ENDPOINT/trials/$FOAMBO_TRIAL_INDEX/push/status" \\
