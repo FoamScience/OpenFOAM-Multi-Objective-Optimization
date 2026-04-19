@@ -87,7 +87,7 @@ def _update_cost_state(client, mf_cost, log=None):
     from collections import defaultdict
     cost_metric_name = mf_cost["metric"]
     fidelity_param_name = mf_cost["fidelity_param"]
-    # Collect observed costs per fidelity level
+    # Collect observed costs per fidelity level (keyed by raw fidelity value)
     sums = defaultdict(float)
     counts = defaultdict(int)
     df = client._experiment.lookup_data().df
@@ -100,19 +100,30 @@ def _update_cost_state(client, mf_cost, log=None):
         sub = df[(df.trial_index == trial.index) & (df.metric_name == cost_metric_name)]
         if sub.empty:
             continue
-        sums[float(fid_val)] += float(sub["mean"].iloc[-1])
-        counts[float(fid_val)] += 1
+        sums[fid_val] += float(sub["mean"].iloc[-1])
+        counts[fid_val] += 1
     per_f = {fv: sums[fv] / counts[fv] for fv in sums if counts[fv] > 0}
     if not per_f or per_f == mf_cost["state"]["per_fidelity"]:
         return  # no change
     mf_cost["state"]["per_fidelity"] = per_f
-    # Derive AffineFidelityCostModel params
-    fid_vals = sorted(per_f.keys())
-    costs = [per_f[fv] for fv in fid_vals]
+
+    # Build numeric mapping for AffineFidelityCostModel.
+    # For numeric fidelity: use values directly.
+    # For categorical (str) fidelity: map to ordinal indices sorted by cost.
+    raw_keys = sorted(per_f.keys(), key=lambda k: per_f[k])
+    is_numeric = all(isinstance(k, (int, float)) for k in raw_keys)
+    if is_numeric:
+        fid_vals = sorted(float(k) for k in raw_keys)
+        costs = [per_f[k] for k in sorted(per_f.keys())]
+    else:
+        # Map categorical levels to 0..N-1 ordered by ascending cost
+        fid_vals = list(range(len(raw_keys)))
+        costs = [per_f[k] for k in raw_keys]
+
     cost_intercept = min(costs)  # cheapest fidelity floor
     # Weights: slope per fidelity unit. For discrete {0,1}: w = cost_high - cost_low.
     # For continuous: linear fit.
-    fid_range = fid_vals[-1] - fid_vals[0]
+    fid_range = fid_vals[-1] - fid_vals[0] if len(fid_vals) > 1 else 0
     if fid_range > 0:
         fid_weight = (max(costs) - min(costs)) / fid_range
     else:
@@ -121,11 +132,12 @@ def _update_cost_state(client, mf_cost, log=None):
     opts = mf_cost["acqf_opts_ref"]
     opts["cost_intercept"] = max(cost_intercept, 1e-6)
     opts["fidelity_weights"] = {
-        int(k): fid_weight for k in mf_cost["state"]["per_fidelity"]
+        int(fv): fid_weight for fv in fid_vals
     }
     if log:
         log.info("Multi-fidelity cost updated: intercept=%.2f, weight=%.2f "
-                 "(from %d fidelity levels)", cost_intercept, fid_weight, len(per_f))
+                 "(from %d fidelity levels: %s)", cost_intercept, fid_weight,
+                 len(per_f), list(per_f.keys()))
 
 
 def optimize(cfg, debug=False):
