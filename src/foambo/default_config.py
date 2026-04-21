@@ -911,22 +911,23 @@ def get_config_docs() -> Dict[str, Any]:
             nodes are only needed to override the default (e.g. pick MOMF).
 
             **Runner dispatch (recommended):** use ``file_substitution`` with
-            a string ``ChoiceParameter`` fidelity. Place ``Allrun.meanline``
-            + ``Allrun.CFD`` in the template case:
+            ``value_map`` to map numeric fidelity to file suffixes. Place
+            ``Allrun.meanline`` + ``Allrun.CFD`` in the template case:
             ```yaml
             experiment:
               parameters:
                 - name: fidelity
-                  values: ["meanline", "CFD"]
-                  parameter_type: str
+                  bounds: [0, 1]
+                  parameter_type: int
                   is_fidelity: true
-                  target_value: "CFD"
+                  target_value: 1
 
             optimization:
               case_runner:
                 file_substitution:
                   - parameter: fidelity
                     file_path: /Allrun
+                    value_map: {0: "meanline", 1: "CFD"}
             ```
 
             Other resolvable names: ``qMultiFidelityKnowledgeGradient``

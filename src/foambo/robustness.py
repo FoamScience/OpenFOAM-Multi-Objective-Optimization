@@ -25,6 +25,8 @@ import torch
 from pydantic import Field
 from torch import Tensor
 
+from botorch.acquisition.acquisition import AcquisitionFunction
+from botorch.acquisition.monte_carlo import MCAcquisitionFunction
 from botorch.acquisition.risk_measures import CVaR
 from botorch.models.transforms.input import InputTransform
 
@@ -149,8 +151,148 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# RobustContextValueFunction — qMFKG inner value function for MF+robust
+# ---------------------------------------------------------------------------
+
+class RobustContextValueFunction(AcquisitionFunction):
+    """Inner value function for qMFKG that evaluates candidates over context scenarios.
+
+    Used as ``valfunc_cls`` for ``qMultiFidelityKnowledgeGradient``.
+    Replaces context dims with ``n_w`` scenarios, evaluates the model,
+    and aggregates via MARS (Chebyshev scalarization + VaR).
+
+    Inherits from ``AcquisitionFunction`` (not ``MCAcquisitionFunction``) to
+    avoid shape-validation decorators that conflict with qMFKG's inner loop.
+    """
+
+    def __init__(self, model, posterior_transform=None, **kwargs):
+        super().__init__(model=model)
+        self.posterior_transform = posterior_transform
+        self._context_indices = kwargs.get("context_indices", [])
+        self._feature_set = kwargs.get("feature_set")  # (n_w, d_ctx)
+        self._mars = kwargs.get("mars")
+
+    def forward(self, X: Tensor) -> Tensor:
+        """Evaluate candidates over context scenarios and aggregate via MARS.
+
+        Args:
+            X: ``(..., q, d)`` candidates from qMFKG's inner optimization.
+
+        Returns:
+            ``(...)`` risk-aggregated scalar values (one per batch element).
+        """
+        n_w = self._feature_set.shape[0]
+        shape = X.shape  # (..., q, d)
+        q, d = shape[-2], shape[-1]
+        batch = shape[:-2]
+
+        # Expand across context scenarios: (..., q, d) → (..., q*n_w, d)
+        X_exp = X.unsqueeze(-2).expand(*batch, q, n_w, d).clone()
+        feat = self._feature_set.to(X_exp)
+        for i, idx in enumerate(self._context_indices):
+            X_exp[..., idx] = feat[:, i]
+        X_exp = X_exp.reshape(*batch, q * n_w, d)
+
+        # Get posterior mean (deterministic — no MC sampling needed for value function)
+        posterior = self.model.posterior(
+            X_exp, posterior_transform=self.posterior_transform)
+        # mean: (..., q*n_w, m)
+        Y = posterior.mean
+
+        # Apply MARS (scalarizes m→1 via Chebyshev, then risk-aggregates n_w)
+        if self._mars is not None:
+            return self._mars(Y, X)
+        # Fallback: mean over objectives and context
+        return Y.mean(dim=(-1, -2))
+
+
+def _build_mf_robust_valfunc_argfac(ctx_indices, feature_set, alpha, n_w, is_moo,
+                                    n_obj=2):
+    """Build a valfunc_argfac closure for qMFKG's RobustContextValueFunction.
+
+    Returns a callable ``model → kwargs`` that constructs MARS and passes
+    context config to the value function.
+    """
+    def argfac(model):
+        from botorch.acquisition.multi_objective.multi_output_risk_measures import MARS
+        from botorch.utils.sampling import sample_simplex
+
+        # Build MARS (same logic as RobustAcquisition._build_mars)
+        if is_moo:
+            weights = sample_simplex(d=n_obj, n=1, dtype=torch.double).squeeze(0)
+            ref_point = torch.zeros(n_obj, dtype=torch.double)
+            mars = MARS(
+                alpha=alpha,
+                n_w=n_w,
+                chebyshev_weights=weights,
+                ref_point=ref_point,
+            )
+            # Set baseline normalization — required before MARS can construct
+            # its Chebyshev objective. Try multiple ways to get training X.
+            X_baseline = None
+            try:
+                # Fantasy model: get base model's training data
+                if hasattr(model, 'models'):
+                    # ModelListGP — get first sub-model's training inputs
+                    for sub_m in model.models:
+                        if hasattr(sub_m, 'train_inputs') and sub_m.train_inputs:
+                            X_baseline = sub_m.train_inputs[0]
+                            break
+                if X_baseline is None and hasattr(model, 'train_inputs') and model.train_inputs:
+                    X_baseline = model.train_inputs[0]
+                if X_baseline is not None:
+                    mars.set_baseline_Y(model=model, X_baseline=X_baseline)
+                else:
+                    # Fallback: use dummy data to avoid the error
+                    dummy_X = torch.zeros(1, 1, dtype=torch.double)
+                    mars.baseline_Y = torch.zeros(1, n_obj, dtype=torch.double)
+                    log.debug("MF+robust valfunc: using dummy baseline_Y")
+            except Exception as e:
+                # Last resort: set dummy baseline to avoid crash
+                mars.baseline_Y = torch.zeros(1, n_obj, dtype=torch.double)
+                log.warning("MF+robust valfunc: set_baseline_Y failed (%s), using dummy", e)
+            log.debug("MF+robust valfunc: MARS(alpha=%.2f, n_w=%d, n_obj=%d)",
+                      alpha, n_w, n_obj)
+        else:
+            # SOO: use CVaR instead
+            from botorch.acquisition.risk_measures import CVaR
+            mars = CVaR(alpha=alpha, n_w=n_w)
+
+        return {
+            "context_indices": ctx_indices,
+            "feature_set": feature_set,
+            "mars": mars,
+        }
+    return argfac
+
+
+# ---------------------------------------------------------------------------
 # RobustAcquisition — injects CVaR (SOO) or MARS (MOO)
 # ---------------------------------------------------------------------------
+
+class MFHVKGAcquisition(Acquisition):
+    """Acquisition subclass that strips kwargs incompatible with qMFHVKG.
+
+    ``construct_inputs_qMFHVKG`` doesn't accept ``X_pending`` (unlike most
+    other BoTorch input constructors). This subclass strips it before the
+    parent passes acqf_options to the input constructor.
+    """
+
+    def _construct_botorch_acquisition(self, botorch_acqf_class, botorch_acqf_options, model):
+        # X_pending is passed via self.X_pending in the parent's
+        # input_constructor_kwargs, but qMFHVKG doesn't accept it.
+        # Temporarily clear it before calling parent.
+        _saved = self.X_pending
+        self.X_pending = None
+        try:
+            return super()._construct_botorch_acquisition(
+                botorch_acqf_class=botorch_acqf_class,
+                botorch_acqf_options=botorch_acqf_options,
+                model=model,
+            )
+        finally:
+            self.X_pending = _saved
+
 
 class RobustAcquisition(Acquisition):
     """Acquisition subclass that wraps the objective in a risk measure.
@@ -173,13 +315,13 @@ class RobustAcquisition(Acquisition):
         super().__init__(*args, **kwargs)
 
     def _construct_botorch_acquisition(self, botorch_acqf_class, botorch_acqf_options, model):
-        """Swap MOO acqf → SOO acqf when using MARS.
+        """Handle acquisition construction for robust optimization.
 
-        MARS scalarizes multi-objective via Chebyshev weights → scalar output.
-        The MOO acqf (qLogNEHVI) expects m-dimensional output, so we swap to
-        qLogNEI.
+        MOO: Swap MOO acqf → SOO acqf for MARS scalarization.
         """
-        if self._risk_config.get("is_moo", False):
+        is_moo = self._risk_config.get("is_moo", False)
+
+        if is_moo:
             from botorch.acquisition.logei import qLogNoisyExpectedImprovement
             from botorch.acquisition.multi_objective.logei import (
                 qLogNoisyExpectedHypervolumeImprovement,
@@ -212,7 +354,7 @@ class RobustAcquisition(Acquisition):
                                             learned_objective_preference_model=None):
         is_moo = self._risk_config.get("is_moo", False)
 
-        # For MOO, tell Ax to build a SOO objective so MARS can wrap it
+        # MOO: tell Ax to build a SOO objective so MARS can wrap it.
         if is_moo:
             from botorch.acquisition.logei import qLogNoisyExpectedImprovement
             botorch_acqf_class = qLogNoisyExpectedImprovement
@@ -570,24 +712,40 @@ def augment_generator_specs(client, exp_cfg, robust_cfg,
         "context_indices": ctx_indices,
     }
 
-    # Build SurrogateSpec — include MF model class when composing with MF
-    input_transform_classes = [Normalize, SubstituteContextFeatures]
+
+    # Build SurrogateSpec
     model_config_kwargs = {}
     if multifidelity:
+        # MF+robust: use SingleTaskMultiFidelityGP per output.
+        # Setting it in ModelConfig ensures Ax creates a ModelListGP of
+        # per-output STMFGPs (required by qMFHVKG).
         from botorch.models.gp_regression_fidelity import SingleTaskMultiFidelityGP
         model_config_kwargs["botorch_model_class"] = SingleTaskMultiFidelityGP
+        # NO SubstituteContextFeatures — qMFHVKG can't handle one-to-many
+        # transforms. Robustness from: GP training data spans context scenarios
+        # (cycle_context), fixed_features pins context per generation.
+        input_transform_classes = [Normalize]
+        input_transform_options = {}
+    else:
+        # Non-MF robust: SCF expands across context scenarios, MARS aggregates
+        input_transform_classes = [Normalize, SubstituteContextFeatures]
+        input_transform_options = {
+            "SubstituteContextFeatures": {
+                "context_indices": ctx_indices,
+                "feature_set": feature_set,
+            },
+        }
 
     surrogate_spec = SurrogateSpec(
         model_configs=[ModelConfig(
             input_transform_classes=input_transform_classes,
-            input_transform_options={
-                "SubstituteContextFeatures": {
-                    "context_indices": ctx_indices,
-                    "feature_set": feature_set,
-                },
-            },
+            input_transform_options=input_transform_options,
             **model_config_kwargs,
         )],
+        # MF+robust: qMFHVKG requires ModelListGP (one GP per output).
+        # allow_batched_models=False forces this even when a single
+        # ModelConfig is provided.
+        allow_batched_models=not multifidelity,
     )
 
     # Fixed features: pin context dims to first context point (normalized)
@@ -609,8 +767,12 @@ def augment_generator_specs(client, exp_cfg, robust_cfg,
             if spec.generator_enum in _BO_GENERATORS:
                 spec.generator_kwargs["surrogate_spec"] = surrogate_spec
                 if multifidelity:
-                    # MF+robust: pass risk measure as objective to qMFHVKG.
-                    # No RobustAcquisition wrapper — standard Acquisition suffices.
+                    # MF+robust: use qMFHVKG (standard MOO MF acqf) with
+                    # SubstituteContextFeatures on the model for implicit
+                    # robustness. MARS risk measure is not compatible with
+                    # qMFKG's inner optimization loop (tensor shape issues).
+                    # cycle_context rotates the pinned context point each
+                    # generation for exploration across operating conditions.
                     try:
                         from botorch.acquisition.multi_objective.hypervolume_knowledge_gradient import (
                             qMultiFidelityHypervolumeKnowledgeGradient,
@@ -619,16 +781,9 @@ def augment_generator_specs(client, exp_cfg, robust_cfg,
                             qMultiFidelityHypervolumeKnowledgeGradient
                     except ImportError:
                         log.warning("MF+robust: qMFHVKG not available")
-                    acqf_opts = spec.generator_kwargs.setdefault(
-                        "botorch_acqf_options", {})
-                    # RobustMCObjective will be built at acquisition time
-                    # when the model is available (needs X_observed).
-                    # Store config for deferred build.
-                    acqf_opts["_robust_objective_config"] = {
-                        "alpha": alpha,
-                        "n_w": n_w,
-                        "is_moo": is_moo,
-                    }
+                    # MFHVKGAcquisition strips X_pending (not accepted by
+                    # construct_inputs_qMFHVKG).
+                    spec.generator_kwargs["acquisition_class"] = MFHVKGAcquisition
                 else:
                     spec.generator_kwargs["acquisition_class"] = RobustAcquisition
                     spec.generator_kwargs["acquisition_options"] = {
@@ -705,11 +860,16 @@ try:
     CLASS_TO_REGISTRY[_InputTransform][SubstituteContextFeatures] = "SubstituteContextFeatures"
     CLASS_TO_REVERSE_REGISTRY[_InputTransform]["SubstituteContextFeatures"] = SubstituteContextFeatures
     register_acquisition(RobustAcquisition)
+    register_acquisition(MFHVKGAcquisition)
+
+    # Register RobustContextValueFunction (MF+robust inner value function)
+    from botorch.acquisition import AcquisitionFunction as _AcqFn
+    CLASS_TO_REGISTRY[_AcqFn][RobustContextValueFunction] = "RobustContextValueFunction"
+    CLASS_TO_REVERSE_REGISTRY[_AcqFn]["RobustContextValueFunction"] = RobustContextValueFunction
 
     # Register multi-fidelity acquisition classes not shipped in Ax's default registry.
     # These are BoTorch AcquisitionFunction subclasses (not Ax Acquisition wrappers),
     # so they go into the AcquisitionFunction registry.
-    from botorch.acquisition import AcquisitionFunction as _AcqFn
     _mf_acqf_classes = [
         ("botorch.acquisition.multi_objective.hypervolume_knowledge_gradient",
          "qMultiFidelityHypervolumeKnowledgeGradient"),

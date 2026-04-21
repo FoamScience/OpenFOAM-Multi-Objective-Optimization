@@ -263,6 +263,31 @@ def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightRes
             r.failed("MF cost metric",
                      f"multiple is_cost metrics: {cost_metrics}; exactly one required")
 
+    # MF + robust + string choice params: qMFKG requires continuous optimizer,
+    # string categoricals can't be relaxed to continuous.
+    has_robust = cfg.get("robust_optimization") is not None
+    if has_fidelity:
+        choice_params = [p["name"] for p in exp.get("parameters", [])
+                         if "values" in p and p.get("parameter_type") == "str"]
+        if choice_params:
+            if has_robust:
+                r.failed("MF + robust + string params",
+                         f"string choice parameters {choice_params} are incompatible with "
+                         "multi-fidelity + robust optimization (qMFKG requires continuous optimizer). "
+                         "Use numeric encoding with file_substitution.value_map instead")
+            else:
+                r.warned("MF + string params",
+                         f"string choice parameters {choice_params} may cause issues with "
+                         "multi-fidelity acquisition (KG-family requires continuous optimizer). "
+                         "Consider numeric encoding with file_substitution.value_map")
+        # Fidelity param itself must be numeric
+        fid_params = [p for p in exp.get("parameters", []) if p.get("is_fidelity")]
+        for fp in fid_params:
+            if "values" in fp:
+                r.failed(f"Fidelity parameter '{fp['name']}'",
+                         "must be numeric (bounds + parameter_type int/float), not a choice parameter. "
+                         "Ax requires numeric fidelity for the GP kernel")
+
     param_names = {p["name"] for p in exp.get("parameters", [])}
     for constraint in exp.get("parameter_constraints", []):
         # Validate with sympy if available, else fall back to token check

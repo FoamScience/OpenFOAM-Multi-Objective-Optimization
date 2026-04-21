@@ -85,6 +85,11 @@ def _update_cost_state(client, mf_cost, log=None):
     """
     from ax.core.base_trial import TrialStatus as _TS
     from collections import defaultdict
+
+    def _get_fidelity_feature_index(cl, fid_param_name):
+        """Return the feature index of the fidelity parameter in the search space."""
+        param_names = list(cl._experiment.search_space.parameters.keys())
+        return param_names.index(fid_param_name)
     cost_metric_name = mf_cost["metric"]
     fidelity_param_name = mf_cost["fidelity_param"]
     # Collect observed costs per fidelity level (keyed by raw fidelity value)
@@ -128,12 +133,15 @@ def _update_cost_state(client, mf_cost, log=None):
         fid_weight = (max(costs) - min(costs)) / fid_range
     else:
         fid_weight = 1.0
-    # Write into acqf_opts — Ax passes these to the input constructor
+    # Write into acqf_opts — Ax passes these to the input constructor.
+    # fidelity_weights is keyed by feature index (same as target_fidelities),
+    # NOT by fidelity values.  Ax extracts the fidelity feature index from
+    # search_space_digest.fidelity_features.
     opts = mf_cost["acqf_opts_ref"]
     opts["cost_intercept"] = max(cost_intercept, 1e-6)
-    opts["fidelity_weights"] = {
-        int(fv): fid_weight for fv in fid_vals
-    }
+    # Determine the fidelity parameter's feature index
+    fid_feature_idx = _get_fidelity_feature_index(client, mf_cost["fidelity_param"])
+    opts["fidelity_weights"] = {fid_feature_idx: fid_weight}
     if log:
         log.info("Multi-fidelity cost updated: intercept=%.2f, weight=%.2f "
                  "(from %d fidelity levels: %s)", cost_intercept, fid_weight,
@@ -273,12 +281,15 @@ def optimize(cfg, debug=False):
     _fidelity_cfg = getattr(exp_cfg, '_fidelity_params', None) or \
                     getattr(type(exp_cfg), '_fidelity_params', None)
     if _fidelity_cfg:
+        from ax.core.parameter import FixedParameter
         for pname, target_val in _fidelity_cfg.items():
             p = client._experiment.search_space.parameters.get(pname)
-            if p is not None:
+            if p is not None and not isinstance(p, FixedParameter):
                 p._is_fidelity = True
                 p._target_value = target_val
                 log.info("Fidelity parameter: %s (target_value=%s)", pname, target_val)
+            elif isinstance(p, FixedParameter):
+                log.info("Fidelity parameter %s is fixed (specialized) — skipping MF wiring", pname)
 
     ## 2.0 Trial generation
     # Suppress Ax's verbose GenerationStrategy repr log
@@ -321,9 +332,16 @@ def optimize(cfg, debug=False):
                 try:
                     from botorch.models.gp_regression_fidelity import SingleTaskMultiFidelityGP
                     from ax.generators.torch.botorch_modular.surrogate import SurrogateSpec
+                    from ax.generators.torch.botorch_modular.utils import ModelConfig
+                    from foambo.robustness import MFHVKGAcquisition
                     gk["surrogate_spec"] = SurrogateSpec(
-                        botorch_model_class=SingleTaskMultiFidelityGP,
+                        model_configs=[ModelConfig(
+                            botorch_model_class=SingleTaskMultiFidelityGP,
+                        )],
+                        allow_batched_models=False,
                     )
+                    # qMFHVKG input constructor doesn't accept X_pending
+                    spec.generator_kwargs["acquisition_class"] = MFHVKGAcquisition
                     log.info("Multi-fidelity: auto-selected SingleTaskMultiFidelityGP surrogate "
                              "(fidelity param: %s)", _fidelity_params[0].name)
                     # Wire cost model for MF acquisition.

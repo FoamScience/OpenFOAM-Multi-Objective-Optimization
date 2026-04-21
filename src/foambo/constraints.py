@@ -148,6 +148,10 @@ def _patched_optimize_acqf(*args, **kwargs):
     # --- Inject nonlinear constraints ---
     if _active_nl_constraints and "nonlinear_inequality_constraints" not in kwargs:
         kwargs["nonlinear_inequality_constraints"] = _active_nl_constraints
+        # ic_generator is required when nonlinear constraints are present
+        if "ic_generator" not in kwargs:
+            from botorch.optim.initializers import gen_batch_initial_conditions
+            kwargs["ic_generator"] = gen_batch_initial_conditions
         log.debug("Injected %d nonlinear constraint(s) into optimize_acqf",
                   len(_active_nl_constraints))
 

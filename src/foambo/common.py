@@ -323,8 +323,12 @@ def preprocess_case(parameters, cfg):
             param_name = entry['parameter']
             template_path = entry['file_path'].lstrip('/')
             if param_name in parameters:
+                val = str(parameters[param_name])
+                value_map = entry.get('value_map')
+                if value_map:
+                    val = value_map.get(val, val)
                 shutil.copy2(
-                    os.path.join(case.path, template_path + "." + parameters[param_name]),
+                    os.path.join(case.path, template_path + "." + val),
                     os.path.join(case.path, template_path)
                 )
     # Process parameters with foamlib

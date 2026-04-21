@@ -655,15 +655,17 @@ acquisition function trades information gain against evaluation cost.
 
 **Setup in foamBO:**
 
-1. Add a fidelity parameter with ``is_fidelity: true`` and ``target_value``:
+1. Add a **numeric** fidelity parameter with ``is_fidelity: true`` and ``target_value``.
+   Ax requires fidelity to be a ``RangeParameter`` (numeric), not a ``ChoiceParameter``.
+   Use ``int`` for discrete levels or ``float`` for continuous:
 ```yaml
 experiment:
   parameters:
     - name: fidelity
-      parameter_type: str
-      values: ["coarse", "fine"]
+      parameter_type: int
+      bounds: [0, 1]        # 0=cheap, 1=expensive
       is_fidelity: true
-      target_value: "fine"
+      target_value: 1
 ```
 
 2. Mark one metric as the cost signal with ``is_cost: true``:
@@ -719,29 +721,22 @@ trial_generation:
 - foamBO does NOT auto-wire cost for MOMF; pass ``cost_call`` manually
   via ``botorch_acqf_options`` if needed.
 
-**Runner dispatch** via ``file_substitution`` (recommended):
-Use a string ``ChoiceParameter`` for fidelity and foamBO's built-in file
-substitution to swap the runner script (or a portion of it) per fidelity level. Place
-``Allrun.coarse`` and ``Allrun.fine`` in the template case:
+**Runner dispatch** via ``file_substitution`` with ``value_map`` (recommended):
+Since fidelity must be numeric, use ``value_map`` to map numeric values to
+human-readable file suffixes. Place ``Allrun.meanline`` and ``Allrun.CFD``
+in the template case:
 ```yaml
 optimization:
   case_runner:
     file_substitution:
       - parameter: fidelity
         file_path: /Allrun
+        value_map: {0: "meanline", 1: "CFD"}
 ```
-When ``fidelity=coarse``, the runner copies ``Allrun.coarse`` →
-``Allrun`` before execution. When ``fidelity=fine``, copies
-``Allrun.fine`` → ``Allrun``. No if/else branching in scripts needed.
-
-**Alternative** (continuous fidelity via env var):
-```bash
-if [ "$FIDELITY" = "0" ] || [ "$FIDELITY" = "0.0" ]; then
-    ./Allrun.coarse
-else
-    ./Allrun.fine
-fi
-```
+When ``fidelity=0``, copies ``Allrun.meanline`` → ``Allrun``.
+When ``fidelity=1``, copies ``Allrun.CFD`` → ``Allrun``.
+Without ``value_map``, the raw numeric value is used as the suffix
+(e.g. ``Allrun.0``, ``Allrun.1``).
 
 **Cost model evolution:** before any trials complete, uniform cost is
 assumed (cost ratio = 1). As ``is_cost`` data arrives, foamBO recomputes

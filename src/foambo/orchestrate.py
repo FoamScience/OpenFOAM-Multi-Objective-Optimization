@@ -917,11 +917,26 @@ class VariableSubstOptions(FoamBOBaseModel):
 
 
 class FileSubstOptions(FoamBOBaseModel):
-    """Replaces a case file with a variant based on a choice parameter value."""
-    parameter: str = Field(description="Name of the choice parameter whose value selects the file variant",
+    """Replaces a case file with a variant based on a parameter value."""
+    parameter: str = Field(description="Name of the parameter whose value selects the file variant",
                             examples=["y"])
     file_path: str = Field(description="Relative path to the file (e.g. `/system/fvSolution`). Variants must exist as `<file_path>.<value>`",
                             examples=["/constant/y"])
+    value_map: Dict[str, str] | None = Field(default=None,
+        description=(
+            "Optional mapping from parameter values to file suffixes. "
+            "Useful for numeric parameters (e.g. fidelity) where the file "
+            "variant has a human-readable name.\n\n"
+            "Example: ``{0: meanline, 1: CFD}`` maps fidelity=0 to "
+            "``Allrun.meanline`` and fidelity=1 to ``Allrun.CFD``."
+        ))
+
+    @field_validator("value_map", mode="before")
+    @classmethod
+    def coerce_value_map_keys(cls, v):
+        if isinstance(v, dict | DictConfig):
+            return {str(k): str(val) for k, val in v.items()}
+        return v
 
 
 class FoamJobRunnerOptions(FoamBOBaseModel):
@@ -1043,8 +1058,14 @@ class OptimizationOptions(FoamBOBaseModel):
         }
 
     def to_tracking_metrics_dict(self):
+        # Register non-objective, non-cost metrics as tracking so they appear
+        # in experiment.signature_to_metric (required by early stopping).
+        # is_cost metrics are excluded — they inflate objective_weights
+        # (size mismatch with GP model outputs) and their data is fetched
+        # by the runner anyway (just not modeled by the GP).
         return {
-            "metrics": [m.to_metric() for m in self.metrics if not m.name in self.objective]
+            "metrics": [m.to_metric() for m in self.metrics
+                        if m.name not in self.objective and not m.is_cost]
         }
 
     def to_runner_dict(self):
