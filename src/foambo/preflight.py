@@ -238,6 +238,38 @@ def _check_config_coherence(cfg: DictConfig, r: PreflightResult) -> PreflightRes
                 r.failed(f"Outcome constraint metric: {cname}",
                          f"'{cname}' in constraint '{constraint}' not in metrics list")
 
+    # Expression metrics: free symbols must match parameter names. Catches
+    # typos at preflight time (otherwise fails inside fetch on every trial).
+    param_names = {p.get("name") for p in exp.get("parameters", []) if p.get("name")}
+    for m in opt.get("metrics", []):
+        e = m.get("expression")
+        if not e:
+            continue
+        try:
+            import sympy
+            sym_names = {s.name for s in sympy.sympify(e).free_symbols}
+        except Exception as _exc:
+            r.failed(f"Expression metric: {m.get('name')}",
+                     f"could not parse expression '{e}': {_exc}")
+            continue
+        unknown = sym_names - param_names
+        if unknown:
+            r.failed(f"Expression metric: {m.get('name')}",
+                     f"references unknown symbol(s) {sorted(unknown)} — "
+                     f"expression must only reference parameter names")
+        else:
+            r.passed(f"Expression metric: {m.get('name')}",
+                     f"expression='{e}', symbols={sorted(sym_names)}")
+        if m.get("command"):
+            r.failed(f"Expression metric: {m.get('name')}",
+                     "`command` and `expression` are mutually exclusive")
+        if m.get("progress"):
+            r.failed(f"Expression metric: {m.get('name')}",
+                     "`progress` is not supported on expression metrics")
+        if m.get("is_cost"):
+            r.failed(f"Expression metric: {m.get('name')}",
+                     "`is_cost` is not supported on expression metrics")
+
     es = orch.get("early_stopping_strategy")
     if es and isinstance(es, dict):
         _check_early_stopping_metrics(es, metric_names, objective_names, opt.get("metrics", []), r)

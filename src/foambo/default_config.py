@@ -852,6 +852,39 @@ def get_config_docs() -> Dict[str, Any]:
         """).strip(),
     }
 
+    harvested["optimization.metrics[].expression"] = {
+        "category": "Config",
+        "content": textwrap.dedent("""
+            Sympy expression over parameter names. The metric value is
+            computed at trial completion by substituting the trial's
+            parameter values into the expression — no command runs.
+
+            ```yaml
+            optimization:
+              metrics:
+                - name: Q_over_RPM
+                  expression: "flowRate / rpm"
+                  lower_is_better: false
+              outcome_constraints:
+                - "Q_over_RPM <= 5.0e-6"
+                - "Q_over_RPM >= 2.0e-6"
+            ```
+
+            Use to express derived quantities (ratios, products, log/sqrt
+            transforms) you want to track or constrain. Mutually exclusive
+            with ``command``; ``progress`` and ``is_cost`` are not
+            supported on expression metrics. Free symbols must match
+            parameter names exactly.
+
+            Common use case — physical envelope as ``outcome_constraint``
+            instead of ``parameter_constraints`` (avoids thin-polytope
+            BoTorch sampling failures while still steering BO away from
+            unphysical designs).
+
+            See concept: ``expression_metric``.
+        """).strip(),
+    }
+
     harvested["optimization.metrics[].is_cost"] = {
         "category": "Config",
         "content": textwrap.dedent("""
