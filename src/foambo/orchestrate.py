@@ -537,6 +537,15 @@ class ModelSpecConfig(FoamBOBaseModel):
         "BO_MIXED",
     ] = Field(description="Generator algorithm name (e.g. SOBOL for random init, BOTORCH_MODULAR for BO)")
     model_kwargs: Dict | None = Field(default=None, description="Extra keyword arguments passed to the generator (e.g. seed for SOBOL)")
+    fixed_features: Dict | None = Field(
+        default=None,
+        description=(
+            "Map of {param_name: value} pinned during generation. Honored by "
+            "Sobol and most BO generators. Useful to seed initial trials at "
+            "a specific fidelity (``{fidelity: 1}``) so the MF GP gets "
+            "target-fidelity anchors before BO starts."
+        ),
+    )
     transforms: List[str] | None = Field(default=None, description=(
         "Explicit list of transform names to use, in order. "
         "Overrides the default Ax transform chain. "
@@ -561,10 +570,14 @@ class ModelSpecConfig(FoamBOBaseModel):
         # Resolve string class references to actual Python classes so YAML
         # configs can specify e.g. botorch_acqf_class: "qMultiFidelityHypervolumeKnowledgeGradient"
         _resolve_class_refs(kwargs)
-        return GeneratorSpec(
+        spec = GeneratorSpec(
             generator_enum=model,
             generator_kwargs=kwargs,
         )
+        if self.fixed_features:
+            from ax.core.observation import ObservationFeatures
+            spec.fixed_features = ObservationFeatures(parameters=dict(self.fixed_features))
+        return spec
 
 TRANSITION_MAP = {
     "max_trials": MinTrials,
@@ -1058,14 +1071,14 @@ class OptimizationOptions(FoamBOBaseModel):
         }
 
     def to_tracking_metrics_dict(self):
-        # Register non-objective, non-cost metrics as tracking so they appear
-        # in experiment.signature_to_metric (required by early stopping).
-        # is_cost metrics are excluded — they inflate objective_weights
-        # (size mismatch with GP model outputs) and their data is fetched
-        # by the runner anyway (just not modeled by the GP).
+        # Register non-objective metrics (including is_cost) as tracking so
+        # their observations land in experiment.lookup_data().
+        # is_cost: must be excluded from objectives (GP must not model it)
+        # but MUST be tracked so _update_cost_state can learn per-fidelity
+        # costs. Tracking metrics do not contribute to objective_weights.
         return {
             "metrics": [m.to_metric() for m in self.metrics
-                        if m.name not in self.objective and not m.is_cost]
+                        if m.name not in self.objective]
         }
 
     def to_runner_dict(self):
@@ -1284,6 +1297,7 @@ class FoamBOConfig(FoamBOBaseModel):
             from foambo.robustness import RobustOptimizationConfig
             return RobustOptimizationConfig.model_validate(dict(v) if isinstance(v, DictConfig) else v)
         return v
+
 
     @field_validator("trial_dependencies", mode="before")
     @classmethod

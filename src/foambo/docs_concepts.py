@@ -221,6 +221,50 @@ Outcome constraints and objective thresholds serve different purposes in MOO.
 - Use **thresholds** for "we want at least this good" preferences""",
     },
 
+    "concept.expression_metric": {
+        "category": "Concept",
+        "content": """\
+Expression metrics — derived quantities computed from parameters, no command runs.
+
+A metric with ``expression: <sympy>`` is evaluated at trial completion by
+substituting trial parameter values into the expression. No external
+command runs, no progress streaming. Useful for derived ratios,
+products, log-transforms, and any function of the parameters that you
+want to track or use in ``outcome_constraints``.
+
+```yaml
+optimization:
+  metrics:
+    - name: efficiency
+      command: ["scripts/metric.sh", "efficiency"]
+    - name: Q_over_RPM
+      expression: "flowRate / rpm"      # sympy expression over params
+      lower_is_better: false
+  outcome_constraints:
+    - "Q_over_RPM <= 5.0e-6"             # affinity-law envelope
+    - "Q_over_RPM >= 2.0e-6"
+```
+
+**Why use this:** sometimes a *physical envelope* (Q/RPM stays in
+meanline's valid regime, blade thickness ratio capped, etc.) is naturally
+expressed as a constraint on a derived quantity. Expressing it via
+``parameter_constraints`` creates a thin polytope that BoTorch's
+constraint sampler can struggle with. Moving the constraint to an
+``outcome_constraint`` on a derived expression metric:
+- avoids polytope-feasibility crashes,
+- lets the GP learn the boundary,
+- still steers BO away from violating designs.
+
+**Rules / limits:**
+- ``expression`` and ``command`` are mutually exclusive.
+- ``progress`` and ``is_cost`` are not supported on expression metrics.
+- The expression's free symbols must all match parameter names.
+- Sympy supports ``log``, ``exp``, ``sin``, ``cos``, ``sqrt``, ``Abs``,
+  ``Min``, ``Max``, etc. — same surface as ``parameter_constraints``.
+
+See also: ``concept.constraints_vs_thresholds``.""",
+    },
+
     "concept.acquisition_functions": {
         "category": "Concept",
         "content": """\
@@ -787,7 +831,50 @@ No extra YAML is needed — setting ``is_fidelity`` on a parameter alongside
 **Staged fallback** is still available for simpler workflows: MF BO at
 nominal context first, then robust verification via ``bootstrap``.
 
-See also: ``concept.robust_optimization``, ``concept.bootstrap_and_specialize``.""",
+**Stratified Sobol init (target-fidelity anchors):** in practice,
+qMFHVKG's cost-aware info-gain ranking can stick on the cheap level
+forever when the MF GP has too few target-fidelity observations to
+estimate the cheap↔expensive correlation ``ρ``. The fix is structural:
+seed a few initial trials *pinned* at target fidelity so the GP starts
+with anchors. Use a stratified custom generation strategy with two
+Sobol nodes — one with ``fixed_features`` pinning fidelity to target,
+followed by a free Sobol that mixes both:
+
+```yaml
+trial_generation:
+  method: custom
+  generation_nodes:
+    - next_node_name: sobol_anchor
+    - node_name: sobol_anchor
+      generator_specs:
+        - generator_enum: SOBOL
+          model_kwargs: {seed: 42}
+          fixed_features:
+            fidelity: 1          # target fidelity — anchors for ρ
+      transition_criteria:
+        - {type: max_trials, threshold: 4, transition_to: sobol,
+           use_all_trials_in_exp: true}
+    - node_name: sobol
+      generator_specs:
+        - generator_enum: SOBOL
+          model_kwargs: {seed: 43}    # different seed than anchors
+      transition_criteria:
+        - {type: max_trials, threshold: 8, transition_to: bo,
+           use_all_trials_in_exp: true}
+    - node_name: bo
+      generator_specs:
+        - generator_enum: BOTORCH_MODULAR
+      transition_criteria: []
+```
+
+Note: ``fixed_features`` on a generator spec is honored by Sobol and
+most BO generators, but **not** by ``qMultiFidelityHypervolumeKnowledgeGradient``
+on the fidelity dimension specifically — it always optimizes over fidelity
+itself as part of the cost-aware lookahead. So pinning happens *upstream*
+via the Sobol anchor node, not as a runtime override on the BO node.
+
+See also: ``concept.robust_optimization``, ``concept.bootstrap_and_specialize``,
+``concept.generation_strategy``.""",
     },
 
 }

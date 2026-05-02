@@ -66,6 +66,69 @@ def _apply_objective_thresholds(client, expressions: list[str], log=None,
         log.info(f"Objective thresholds set: {summary}")
 
 
+def _apply_outcome_constraints(client, expressions: list[str], log=None,
+                               baseline_data: dict[str, float] | None = None):
+    """Resolve and apply baseline-relative outcome_constraints.
+
+    Mirrors :func:`_apply_objective_thresholds` but writes into
+    ``optimization_config._outcome_constraints``. Without this, Ax sees
+    relative bounds (``"pressureHead >= 0.7*baseline"``) without a
+    ``derelativize_with_raw_status_quo=True`` flag and silently fails
+    BO acquisition optimization, leading to ``OrchestratorInternalError``.
+    """
+    from ax.core.outcome_constraint import OutcomeConstraint
+    from ax.core.types import ComparisonOp
+
+    opt_config = client._experiment.optimization_config
+    if not hasattr(opt_config, 'outcome_constraints'):
+        return
+
+    # Index existing constraints by (metric_name, op) to preserve absolute ones
+    existing = list(opt_config._outcome_constraints or [])
+    keep = []
+    resolved_keys = set()  # (metric_name, op_str) we will replace
+    for expr in expressions:
+        expr = expr.strip()
+        if "baseline" not in expr:
+            continue  # absolute constraint already handled by Ax
+        if ">=" in expr:
+            name, rhs = expr.split(">=", 1)
+            op = ComparisonOp.GEQ
+        elif "<=" in expr:
+            name, rhs = expr.split("<=", 1)
+            op = ComparisonOp.LEQ
+        else:
+            continue
+        name = name.strip()
+        rhs = rhs.strip()
+        if baseline_data is None:
+            continue
+        bl_val = baseline_data.get(name)
+        if bl_val is None:
+            if log:
+                log.warning(f"Outcome constraint: no baseline value for '{name}', skipping")
+            continue
+        bound = float(eval(rhs.replace("baseline", str(bl_val))))
+        if name not in opt_config.metrics:
+            if log:
+                log.warning(f"Outcome constraint metric '{name}' not registered")
+            continue
+        metric = opt_config.metrics[name]
+        keep.append(OutcomeConstraint(metric=metric, bound=bound, op=op, relative=False))
+        resolved_keys.add((name, ">=" if op == ComparisonOp.GEQ else "<="))
+
+    # Drop any pre-existing relative constraints we just resolved; keep the rest as-is
+    for oc in existing:
+        op_s = ">=" if oc.op == ComparisonOp.GEQ else "<="
+        if (oc.metric.name, op_s) in resolved_keys:
+            continue
+        keep.append(oc)
+    opt_config._outcome_constraints = keep
+    if log and resolved_keys:
+        log.info("Outcome constraints resolved from baseline: "
+                 + ", ".join(f"{k[0]} {k[1]}" for k in resolved_keys))
+
+
 
 
 
@@ -310,6 +373,13 @@ def optimize(cfg, debug=False):
     _mf_cost = None  # set below if is_cost metric found; consumed by callback
     # Skip standalone MF injection when robust_cfg is present — robust augment
     # handles the combined surrogate + acqf setup via multifidelity=True.
+    if _fidelity_params:
+        # Eagerly import to trigger Ax storage-registry side effects
+        # (qMFHVKG, MOMF, MFHVKGAcquisition) — needed for JSON save of
+        # any MF experiment, regardless of whether MF surrogate auto-inject
+        # runs below.
+        import foambo.robustness  # noqa: F401
+
     if _fidelity_params and robust_cfg is None:
         from ax.adapter.registry import Generators
         for node in gs._nodes:
@@ -386,6 +456,27 @@ def optimize(cfg, debug=False):
         client.configure_optimization(**opt_cfg.to_optimization_dict())
         client.configure_metrics(**opt_cfg.to_objective_metrics_dict())
         client.configure_metrics(**opt_cfg.to_tracking_metrics_dict())
+        # Workaround for Ax bug: _overwrite_metric returns after the first
+        # match in outcome_constraints. When the same metric appears in
+        # multiple constraints (e.g. a two-sided bound on an expression
+        # metric), the second constraint keeps Ax's default MapMetric
+        # stub → metric.fetch is never called → no observations → BO
+        # silently fails. Sweep every outcome_constraint and force the
+        # FoamJobMetric instance built from the user's metrics list.
+        _opt_config = client._experiment.optimization_config
+        if _opt_config is not None and _opt_config.outcome_constraints:
+            _by_name = {m.name: m.to_metric() for m in opt_cfg.metrics}
+            _fixed = 0
+            for oc in _opt_config._outcome_constraints:
+                target = _by_name.get(oc.metric.name)
+                if target is not None and type(oc._metric) is not type(target):
+                    oc._metric = target
+                    _fixed += 1
+            if _fixed:
+                log.debug(
+                    "Outcome-constraint metric stubs replaced (Ax double-bound bug): %d",
+                    _fixed,
+                )
         # Apply explicit objective thresholds for multi-objective (prevents Ax inference crash)
         if opt_cfg.objective_thresholds:
             _apply_objective_thresholds(client, opt_cfg.objective_thresholds, log=log)
@@ -404,6 +495,13 @@ def optimize(cfg, debug=False):
     if client._experiment._tracking_metrics:
         names = sorted(m.name for m in client._experiment._tracking_metrics.values())
         log.info("Tracking metrics: %s", ", ".join(names))
+    # Also surface constraint metrics so users see expression metrics
+    # (e.g. Q_over_RPM) used in outcome_constraints — these are *not*
+    # tracking metrics in Ax's bucket.
+    _oc = getattr(client._experiment.optimization_config, "outcome_constraints", None)
+    if _oc:
+        cnames = sorted({c.metric.name for c in _oc})
+        log.info("Constraint metrics: %s", ", ".join(cnames))
         log.info("=================================================")
     client.configure_runner(**opt_cfg.to_runner_dict())
     # Wire trial dependencies and metric names onto the runner
@@ -833,14 +931,25 @@ def optimize(cfg, debug=False):
         client._experiment.status_quo = assert_is_instance(
             client._experiment.trials[baseline_index], Trial
         ).arm
-        # Resolve baseline-relative objective thresholds now that baseline data exists
-        if opt_cfg.objective_thresholds and any("baseline" in e for e in opt_cfg.objective_thresholds):
+        # Resolve baseline-relative objective thresholds + outcome constraints
+        # now that baseline data exists. Without this, Ax sees relative bounds
+        # and either skips winsorization (thresholds) or silently fails BO gen
+        # (outcome_constraints) — we resolve to absolute up-front.
+        _has_bl_obj = (opt_cfg.objective_thresholds
+                       and any("baseline" in e for e in opt_cfg.objective_thresholds))
+        _has_bl_oc  = (getattr(opt_cfg, "outcome_constraints", None)
+                       and any("baseline" in e for e in opt_cfg.outcome_constraints))
+        if _has_bl_obj or _has_bl_oc:
             data = client._experiment.fetch_data().df
             sq_name = client._experiment.status_quo.name
             bl_data = {row["metric_name"]: row["mean"]
                        for _, row in data[data["arm_name"] == sq_name].iterrows()}
-            _apply_objective_thresholds(client, opt_cfg.objective_thresholds,
-                                       log=log, baseline_data=bl_data)
+            if _has_bl_obj:
+                _apply_objective_thresholds(client, opt_cfg.objective_thresholds,
+                                           log=log, baseline_data=bl_data)
+            if _has_bl_oc:
+                _apply_outcome_constraints(client, opt_cfg.outcome_constraints,
+                                          log=log, baseline_data=bl_data)
 
     _db_settings = (db_settings_from_storage_config(client._storage_config)
                      if client._storage_config is not None else None)

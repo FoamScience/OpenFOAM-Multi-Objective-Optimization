@@ -840,7 +840,14 @@ def cycle_context(client, robust_state: dict, trial_index: int) -> None:
     for node in client._generation_strategy._nodes:
         for spec in node.generator_specs:
             if spec.generator_enum in _BO_GENERATORS:
-                spec.fixed_features = ObservationFeatures(parameters=ctx_values)
+                # Merge with existing fixed_features so upstream pinning
+                # (e.g. MF force-schedule on fidelity dim) is preserved.
+                existing = spec.fixed_features
+                merged = (
+                    dict(existing.parameters) if existing is not None else {}
+                )
+                merged.update(ctx_values)
+                spec.fixed_features = ObservationFeatures(parameters=merged)
 
     log.debug("Context cycle: trial=%d → context[%d]=%s", trial_index, ctx_idx, ctx_values)
 
