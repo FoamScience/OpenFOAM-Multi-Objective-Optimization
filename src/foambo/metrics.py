@@ -7,7 +7,7 @@ from omegaconf import DictConfig, DictKeyType, OmegaConf
 from .common import preprocess_case, process_input_command, parse_outcome_for_metric, FoamBOBaseModel
 from .common import SLURM_STATUS_MAP, case_preprocessor, CasePreprocessor
 import inspect
-from pydantic import Field
+from pydantic import Field, model_validator
 from foamlib import FoamCase
 import subprocess as sb
 import numpy as np
@@ -37,6 +37,7 @@ trial_progression_step : Dict[int, Dict[str, int]] = {}
 
 # Python callable registry for metrics: metric_name -> callable
 # Populated by the fluent API; bypasses subprocess dispatch when set.
+_global_runner_ref: Dict[str, Any] = {}  # latest FoamJobRunner instance, used by metric fetch fallback
 _fn_registry: Dict[str, Any] = {}       # metric_name -> fn(parameters, [case_path]) -> float | (float, float)
 _progress_fn_registry: Dict[str, Any] = {}  # metric_name -> fn(parameters, [case_path, step]) -> float | (float, float)
 def init_trial_progression(trial_index: int, metrics):
@@ -262,10 +263,20 @@ class FoamJobMetric(IMetric):
         self.cfg = cfg
         self.lower_is_better = cfg['evaluate']['lower_is_better'] if 'lower_is_better' in cfg['evaluate'].keys() else None
     def fetch(self, trial_index: int, trial_metadata: Mapping[str, Any]) -> tuple[int, float | tuple[float, float]]:
-        # Check for Python callable first (registered by fluent API)
+        # Check for Python callable first (registered by fluent API or expression metric)
         fn = _fn_registry.get(self.name)
         if fn is not None:
             params = trial_metadata.get("parameters", {})
+            # Fallback: when Ax calls fetch with raw run_metadata it lacks
+            # `parameters` (only the streaming path injects it). Look the
+            # arm parameters up via the runner's registry; required by
+            # expression metrics whose value depends purely on parameters.
+            if not params:
+                try:
+                    reg = getattr(_global_runner_ref.get("runner"), "trial_registry", {})
+                    params = reg.get(trial_index, {}).get("parameters", {})
+                except Exception:
+                    params = {}
             case_path = None
             if "job" in trial_metadata and trial_metadata["job"]:
                 case_path = trial_metadata["job"].get("case_path")
@@ -322,13 +333,66 @@ class LocalJobMetric(FoamBOBaseModel):
         "per-fidelity mean-cost lookup from observed values and passes it as "
         "cost_call to the acquisition function."
     ))
+    @model_validator(mode="after")
+    def _check_command_xor_expression(self):
+        if self.expression is not None:
+            if self.command is not None:
+                raise ValueError(
+                    f"Metric '{self.name}': `expression` and `command` are "
+                    "mutually exclusive."
+                )
+            if self.progress is not None:
+                raise ValueError(
+                    f"Metric '{self.name}': `progress` is not supported on "
+                    "expression-based metrics (no streaming evaluator)."
+                )
+            if self.is_cost:
+                raise ValueError(
+                    f"Metric '{self.name}': `is_cost` is not supported on "
+                    "expression-based metrics."
+                )
+        return self
+
+    expression: str | None = Field(default=None, description=(
+        "Sympy expression over parameter names; the metric value is computed "
+        "from the trial's parameters at completion (no command runs). Useful "
+        "for derived quantities like ratios that you want to track or use in "
+        "outcome_constraints. Mutually exclusive with `command` and `progress`."
+        "\n\nExample: ``flowRate / rpm`` to track Q/RPM ratio per trial."
+    ))
 
     def to_metric(self):
+        if self.expression is not None:
+            # Compile sympy expression once → register as a Python callable
+            # under the metric name, so FoamJobMetric.fetch picks the fn path
+            # (no command runs). The fn signature is fn(parameters, case_path=None).
+            import sympy
+            expr = sympy.sympify(self.expression)
+            free = sorted(s.name for s in expr.free_symbols)
+            sym_objs = [sympy.Symbol(n) for n in free]
+            fn = sympy.lambdify(sym_objs, expr, modules=["numpy", "math"])
+            param_names = list(free)
+            metric_name = self.name
+
+            def _eval(parameters, *_args, **_kwargs):
+                try:
+                    args = [parameters[n] for n in param_names]
+                except KeyError as e:
+                    raise KeyError(
+                        f"Metric '{metric_name}' expression '{expr}' references "
+                        f"parameter {e} not present in trial parameters "
+                        f"({list(parameters)})."
+                    )
+                return float(fn(*args))
+
+            _fn_registry[self.name] = _eval
+
         cfg = DictConfig({
             "evaluate": {
                 "mode": "local",
                 "progress": self.progress,
-                "command": self.command,
+                "command": self.command if self.expression is None
+                           else f"__expr__{self.name}",
                 "lower_is_better": self.lower_is_better
             }
         })
@@ -521,7 +585,11 @@ class FoamJobRunner(IRunner):
 
     @property
     def run_metadata_report_keys(self) -> list[str]:
-        return ["case_path"]
+        # Include "parameters" so expression metrics (which compute from
+        # arm parameters) can read them from trial.run_metadata at fetch
+        # time. Without this Ax persists only "case_path" and fetch falls
+        # back to empty params → expression eval fails silently.
+        return ["case_path", "parameters"]
 
     dispatcher = {
         "local": FoamJob.local_case_run,
@@ -540,6 +608,10 @@ class FoamJobRunner(IRunner):
         self.cfg = cfg
         self.mode = cfg['template_case']['mode']
         self.preprocessor = preprocessor or case_preprocessor
+        # Register the latest runner instance so FoamJobMetric.fetch can
+        # look up arm parameters when Ax passes only run_metadata
+        # (expression metrics depend on parameters).
+        _global_runner_ref["runner"] = self
 
     @classmethod
     def serialize_init_args(cls, obj):
