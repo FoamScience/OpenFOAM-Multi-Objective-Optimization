@@ -707,10 +707,13 @@ def _simulate_convergence(model, bounds, best_f, minimize, threshold, max_steps=
                 ei, bounds=bounds_t, q=1, num_restarts=4, raw_samples=32,
             )
 
-            # Fantasize: get posterior mean at candidate as the "observation"
+            # Fantasize via posterior sample (not mean).
+            # Mean-fantasy collapses variance → rollout underestimates
+            # remaining uncertainty → biased-low "trials remaining".
+            # One rsample keeps the noise channel honest.
             with torch.no_grad():
                 posterior = current_model.posterior(candidate)
-                y_fantasy = posterior.mean.squeeze(-1)
+                y_fantasy = posterior.rsample().squeeze(0).squeeze(-1)
 
             # Update best_f
             y_val = y_fantasy.item()
@@ -748,18 +751,45 @@ def _simulate_convergence(model, bounds, best_f, minimize, threshold, max_steps=
     return max_steps
 
 
-def _find_observed_best_f(sub_model, minimize):
-    """Get the best observed value from the model's training targets.
+def _find_observed_best_f(sub_model, minimize, fid_idx=None, fid_target=None):
+    """GP-denoised incumbent: best of posterior mean at training X.
 
-    Uses the actual training data (not GP prediction) so PI measures
-    the probability of improving over what we've actually seen.
+    Raw train_targets carry observation noise — a spuriously low draw
+    inflates PI vs reality. Using μ(X_train) averages noise across the
+    kernel. Matches Frazier (2018) "Tutorial on Bayesian Optimization"
+    §4.1 noise-aware incumbent and BoTorch best_point_utils convention.
+
+    In MF setups, restrict incumbent to target-fidelity rows: mixed
+    training X contains cheap-fidelity samples where μ is smoother and
+    often artificially better, which would bias PI low.
     """
     import torch
-    Y = sub_model.train_targets  # (n,)
-    if minimize:
-        return float(Y.min().item())
-    else:
-        return float(Y.max().item())
+    X = sub_model.train_inputs[0]
+    if fid_idx is not None and fid_target is not None:
+        mask = torch.isclose(
+            X[:, fid_idx],
+            torch.tensor(float(fid_target), dtype=X.dtype),
+            atol=1e-6,
+        )
+        if mask.any():
+            X = X[mask]
+        # else: no target-fidelity rows yet → fall through to full X
+    with torch.no_grad():
+        mu = sub_model.posterior(X).mean.squeeze(-1)
+    return float(mu.min().item()) if minimize else float(mu.max().item())
+
+
+def _get_fidelity_info(client):
+    """Return (feature_index, target_value) for fidelity param, or (None, None).
+
+    Index is in parameter-order space; matches the convention used by
+    _update_cost_state and Ax's fidelity_features search_space_digest.
+    """
+    params = client._experiment.search_space.parameters
+    for idx, (name, p) in enumerate(params.items()):
+        if getattr(p, "is_fidelity", False):
+            return idx, p.target_value
+    return None, None
 
 
 def _estimate_trials_remaining(pi_history, threshold):
@@ -789,10 +819,18 @@ def _estimate_trials_remaining(pi_history, threshold):
     return min(remaining, 999)
 
 
-def compute_convergence_pi(client, gs, improvement_bar=0.1):
-    """Part A: Per-objective max PI for convergence tracking.
+def compute_convergence_pi(client, gs, improvement_bar=0.05):
+    """Per-objective max PI + MOO joint EHVI diagnostic.
 
-    Returns dict with per-metric estimates and metadata.
+    Per-objective PI follows Lorenz et al. (2015) style: stop when
+    max_x P(f(x) improves over incumbent) < bar. For MOO, per-obj PI
+    misses tradeoff convergence (one obj can plateau while Pareto
+    still expands via the other). We add a joint EHVI diagnostic
+    (Daulton et al. 2020) that measures remaining relative Pareto
+    improvement: max_x EHVI(x) / HV_current < bar.
+
+    Default bar=0.05 matches the literature-standard range 0.01-0.05
+    (previous default 0.1 was permissive).
     """
     import torch
     from ax.core.objective import MultiObjective
@@ -814,27 +852,39 @@ def compute_convergence_pi(client, gs, improvement_bar=0.1):
     else:
         obj_info = {opt_config.objective.metric.name: opt_config.objective.minimize}
 
-    # Disable context transforms for clean per-point PI
+    # Fidelity handling: pin target fidelity in optimize_acqf so PI / EHVI
+    # argmax can't drift into cheap regions where GP is over-confident.
+    fid_idx, fid_target = _get_fidelity_info(client)
+    fixed_features = (
+        {fid_idx: float(fid_target)}
+        if fid_idx is not None and fid_target is not None
+        else None
+    )
+
+    # Disable context (SCF) transforms for all acqf work — posterior calls
+    # must not one-to-many expand or EHVI/PI shapes explode.
     from .api_server import _disable_context_transforms, _restore_context_transforms
     _disabled = _disable_context_transforms(gs)
 
     estimates = {}
+    moo_diag = None
     try:
         for i, (sub_model, outcome_name) in enumerate(zip(models, outcomes)):
             if outcome_name not in obj_info:
                 continue
             minimize = obj_info[outcome_name]
 
-            # Find GP-predicted best
-            best_f = _find_observed_best_f(sub_model, minimize)
+            # GP-denoised incumbent, restricted to target-fidelity rows in MF
+            best_f = _find_observed_best_f(
+                sub_model, minimize, fid_idx=fid_idx, fid_target=fid_target,
+            )
             if best_f is None:
                 estimates[outcome_name] = {"status": "insufficient_data", "max_pi": None}
                 continue
 
-            # For minimize objectives, PosteriorMean returns the minimum but PI needs
-            # the best_f in the model's native scale. Use the raw posterior mean value.
             max_pi = _compute_max_pi_for_model(
                 sub_model, bounds, best_f, minimize,
+                fixed_features=fixed_features,
             )
             if max_pi is None:
                 estimates[outcome_name] = {"status": "insufficient_data", "max_pi": None}
@@ -851,19 +901,160 @@ def compute_convergence_pi(client, gs, improvement_bar=0.1):
                 "best_so_far": round(best_f, 6),
                 "convergence_pct": round((1 - min(max_pi, 1.0)) * 100, 1),
             }
+
+        # MOO joint diagnostic: max EHVI / HV_current.
+        # Per-obj PI can mislabel Pareto progress (one obj plateaued ≠ front
+        # stopped expanding). EHVI over the joint model captures front-level
+        # remaining gain. Daulton et al. (2020) "Differentiable EHVI".
+        # Kept inside the transform-disable guard so SCF is bypassed.
+        if isinstance(opt_config.objective, MultiObjective) and len(models) >= 2:
+            try:
+                moo_diag = _compute_moo_ehvi_diag(
+                    client, gs, models, outcomes, obj_info, bounds,
+                    improvement_bar, fixed_features=fixed_features,
+                )
+            except Exception as e:
+                _log.debug("EHVI diag failed: %s", e)
+                moo_diag = {"error": str(e)}
     finally:
         _restore_context_transforms(_disabled)
 
     n_completed = sum(1 for t in exp.trials.values()
                       if t.status.name == "COMPLETED")
+
     return {
         "trial": n_completed,
         "estimates": estimates,
         "pi_threshold": improvement_bar,
+        "moo_ehvi": moo_diag,
     }
 
 
-def compute_specialization_cost(client, gs, context_point, improvement_bar=0.1):
+def _compute_moo_ehvi_diag(client, gs, models, outcomes, obj_info, bounds,
+                           improvement_bar, fixed_features=None):
+    """Compute max_x qLogEHVI(x) normalized by current observed HV."""
+    import torch
+    from botorch.acquisition.multi_objective.logei import (
+        qLogExpectedHypervolumeImprovement,
+    )
+    from botorch.models.model_list_gp_regression import ModelListGP
+    from botorch.utils.multi_objective.box_decompositions.non_dominated import (
+        FastNondominatedPartitioning,
+    )
+    from botorch.utils.multi_objective.pareto import is_non_dominated
+    from botorch.optim import optimize_acqf
+
+    # Build ModelList on the objective submodels (in outcome order).
+    obj_names = [n for n in outcomes if n in obj_info]
+    idxs = [outcomes.index(n) for n in obj_names]
+    mlist = ModelListGP(*[models[i] for i in idxs])
+
+    # Pull observed Y for these objectives, signed so "bigger = better".
+    exp = client._experiment
+    df = exp.lookup_data().df
+
+    # MF: restrict HV / Pareto frontier to target-fidelity trials. Mixed
+    # fidelities in Y_t would distort ref_point and hv_current.
+    target_trial_idxs = None
+    for p in exp.search_space.parameters.values():
+        if getattr(p, "is_fidelity", False):
+            tgt = p.target_value
+            target_trial_idxs = {
+                i for i, t in exp.trials.items()
+                if t.arm is not None
+                and t.arm.parameters.get(p.name) == tgt
+            }
+            break
+
+    per_trial = {}
+    for _, row in df.iterrows():
+        if row["metric_name"] not in obj_names:
+            continue
+        idx = int(row["trial_index"])
+        if target_trial_idxs is not None and idx not in target_trial_idxs:
+            continue
+        per_trial.setdefault(idx, {})[row["metric_name"]] = float(row["mean"])
+    Y = []
+    for _, vals in per_trial.items():
+        if all(n in vals for n in obj_names):
+            Y.append([
+                -vals[n] if obj_info[n] else vals[n]
+                for n in obj_names
+            ])
+    if len(Y) < 2:
+        return {"error": "insufficient observations"}
+    Y_t = torch.tensor(Y, dtype=torch.double)
+    pareto_mask = is_non_dominated(Y_t)
+    pareto_Y = Y_t[pareto_mask]
+
+    # Reference point priority:
+    #  1) user-declared objective_thresholds (stable across runs)
+    #  2) observed nadir with 1% padding (fallback)
+    # With few target-fidelity points, observed nadir collapses to the
+    # worst of those few and makes HV_current tiny → EHVI/HV ratio
+    # artificially huge. User thresholds are the principled ref.
+    opt_config = exp.optimization_config
+    ref = None
+    if getattr(opt_config, "objective_thresholds", None):
+        ot_map = {ot.metric.name: ot for ot in opt_config.objective_thresholds}
+        try:
+            # Sign to match Y_t convention: bigger=better → threshold flipped for minimize.
+            ref_vals = []
+            for n in obj_names:
+                ot = ot_map[n]
+                v = float(ot.bound)
+                ref_vals.append(-v if obj_info[n] else v)
+            ref = torch.tensor(ref_vals, dtype=torch.double)
+        except (KeyError, AttributeError):
+            ref = None
+    if ref is None:
+        ref = (Y_t.min(dim=0).values - 0.01 * (Y_t.max(dim=0).values
+                                               - Y_t.min(dim=0).values).abs())
+
+    # Guard: only keep Pareto points that dominate the ref point (otherwise
+    # FastNondominatedPartitioning produces HV=0 and the ratio still blows up).
+    feasible_mask = (pareto_Y > ref).all(dim=-1)
+    if not feasible_mask.any():
+        return {"error": "no Pareto points dominate reference point"}
+    pareto_Y = pareto_Y[feasible_mask]
+
+    partitioning = FastNondominatedPartitioning(ref_point=ref, Y=pareto_Y)
+    hv_current = float(partitioning.compute_hypervolume().item())
+    if hv_current <= 0:
+        return {"error": "HV_current <= 0"}
+
+    acqf = qLogExpectedHypervolumeImprovement(
+        model=mlist, ref_point=ref, partitioning=partitioning,
+    )
+    bounds_t = torch.tensor(bounds, dtype=torch.double).T
+    # Pin fidelity (and any other fixed feature) by collapsing bounds.
+    if fixed_features:
+        for dim_idx, val in fixed_features.items():
+            bounds_t[0, dim_idx] = val
+            bounds_t[1, dim_idx] = val
+    try:
+        _, ehvi_max = optimize_acqf(
+            acq_function=acqf, bounds=bounds_t, q=1,
+            num_restarts=8, raw_samples=64,
+            fixed_features=fixed_features,
+        )
+        # qLogEHVI returns log(EHVI) → exp
+        ehvi_val = float(torch.exp(ehvi_max).item())
+    except Exception as e:
+        return {"error": f"acqf opt failed: {e}"}
+
+    ratio = ehvi_val / hv_current
+    return {
+        "max_ehvi": round(ehvi_val, 6),
+        "hv_current": round(hv_current, 6),
+        "ehvi_ratio": round(ratio, 4),
+        "status": "plateau" if ratio < improvement_bar else "active",
+        "convergence_pct": round((1 - min(ratio / max(improvement_bar, 1e-9),
+                                          1.0)) * 100, 1),
+    }
+
+
+def compute_specialization_cost(client, gs, context_point, improvement_bar=0.05):
     """Part B: Per-objective PI at fixed context using a specialized GP.
 
     Fits a fresh GP on training data near the specified context point
@@ -1022,21 +1213,39 @@ def compute_specialization_cost(client, gs, context_point, improvement_bar=0.1):
 
 
 def format_convergence_log(convergence_result, specialization_result=None):
-    """Format convergence + specialization for stdout logging."""
+    """Format convergence + specialization for stdout logging.
+
+    Wording notes: PI < bar ≠ "converged" in a guarantee sense. It means
+    the GP sees no likely improvement over the current incumbent at its
+    current belief — a *plateau* indicator. Pareto-level progress is
+    reported via the EHVI-ratio diagnostic (MOO only).
+    """
     lines = []
     trial = convergence_result.get("trial", "?")
-    lines.append(f"--- Convergence (trial {trial}) ---")
+    bar = convergence_result.get("pi_threshold", 0.05)
+    lines.append(f"--- Plateau diagnostic (trial {trial}, bar={bar:g}) ---")
     for metric, est in convergence_result.get("estimates", {}).items():
         status = est.get("status", "?")
         pi = est.get("max_pi")
         pct = est.get("convergence_pct")
         if status == "converged":
-            lines.append(f"  {metric:20s}: converged  (PI={pi:.3f})")
+            lines.append(f"  {metric:20s}: plateau  (PI={pi:.3f})")
         elif status == "improving":
-            remaining = est.get("estimated_trials_remaining", "?")
-            lines.append(f"  {metric:20s}: improving  (PI={pi:.3f}, {pct:.0f}% converged)")
+            lines.append(f"  {metric:20s}: active   (PI={pi:.3f}, {pct:.0f}% toward plateau)")
         else:
             lines.append(f"  {metric:20s}: {status}")
+
+    moo = convergence_result.get("moo_ehvi")
+    if moo and "ehvi_ratio" in moo:
+        st = moo.get("status", "?")
+        r = moo.get("ehvi_ratio")
+        hv = moo.get("hv_current")
+        pct = moo.get("convergence_pct", 0)
+        tag = "plateau" if st == "plateau" else "active "
+        lines.append(f"  {'Pareto (EHVI/HV)':20s}: {tag}  "
+                     f"(ratio={r:.4f}, HV={hv:.3g}, {pct:.0f}% toward plateau)")
+    elif moo and "error" in moo:
+        lines.append(f"  {'Pareto (EHVI/HV)':20s}: n/a ({moo['error']})")
 
     if specialization_result and specialization_result.get("estimates"):
         ctx = specialization_result.get("context_point", {})
