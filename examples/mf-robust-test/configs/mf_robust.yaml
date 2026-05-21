@@ -1,0 +1,130 @@
+version: 1.3.0
+# MF + Robust: full composition
+experiment:
+  name: MFRobust
+  description: Multi-fidelity + robust MOO (qMFHVKG + cycle_context)
+  parameters:
+    - name: fidelity
+      parameter_type: int
+      bounds: [0, 1]
+      is_fidelity: true
+      target_value: 1
+    - name: x
+      bounds: [-100.0, 200.0]
+      parameter_type: float
+    - name: load
+      bounds: [0.8, 1.2]
+      parameter_type: float
+      groups: [operating_conditions]
+    - name: speed
+      bounds: [0.9, 1.1]
+      parameter_type: float
+      groups: [operating_conditions]
+  parameter_constraints: []
+
+trial_generation:
+  # Stratified Sobol: target-fidelity anchors first, then free Sobol, then BO.
+  # Anchors are required so the MF GP can estimate cheap↔expensive
+  # correlation; without them qMFHVKG never has reason to promote.
+  method: custom
+  generation_nodes:
+    - next_node_name: sobol_anchor
+    - node_name: sobol_anchor
+      generator_specs:
+        - generator_enum: SOBOL
+          model_kwargs:
+            seed: 42
+          fixed_features:
+            fidelity: 1
+      transition_criteria:
+        - type: max_trials
+          threshold: 4
+          transition_to: sobol
+          use_all_trials_in_exp: true
+    - node_name: sobol
+      generator_specs:
+        - generator_enum: SOBOL
+          model_kwargs:
+            seed: 43
+      transition_criteria:
+        - type: max_trials
+          threshold: 8
+          transition_to: bo
+          use_all_trials_in_exp: true
+    - node_name: bo
+      generator_specs:
+        - generator_enum: BOTORCH_MODULAR
+      transition_criteria: []
+
+baseline:
+  parameters:
+    fidelity: 1
+    x: 0.0
+    load: 1.0
+    speed: 1.0
+
+optimization:
+  metrics:
+    - name: F1
+      command: ["python3", "metric.py", "F1"]
+      lower_is_better: true
+    - name: F2
+      command: ["python3", "metric.py", "F2"]
+      lower_is_better: true
+    - name: cost
+      command: ["python3", "metric.py", "cost"]
+      is_cost: true
+      lower_is_better: true
+
+  objective: "-F1, -F2"
+  objective_thresholds:
+    - "F1 <= 200"
+    - "F2 <= 70"
+  outcome_constraints: []
+
+  case_runner:
+    template_case: ../../case
+    mode: local
+    runner: null
+    log_runner: false
+    trial_destination: ./trials
+    artifacts_folder: ./artifacts
+    file_substitution: []
+    variable_substitution:
+      - file: /params.json
+        format: json
+        parameter_scopes:
+          x: x
+          load: load
+          speed: speed
+          fidelity: fidelity
+
+robust_optimization:
+  context_groups: [operating_conditions]
+  robustness: 0.8
+  context_samples: 4
+
+trial_dependencies:
+  - name: warm_start
+    enabled: true
+    source:
+      strategy: nearest
+      fidelity_filter: same
+      fallback: skip
+
+orchestration_settings:
+  max_trials: 30
+  parallelism: 1
+  tolerated_trial_failure_rate: 0.3
+  initial_seconds_between_polls: 1
+  seconds_between_polls_backoff_factor: 1.0
+  timeout_hours: 1
+  ttl_seconds_for_trials: 30
+  global_stopping_strategy: null
+  early_stopping_strategy: null
+
+store:
+  save_to: json
+  read_from: nowhere
+  backend_options:
+    url: null

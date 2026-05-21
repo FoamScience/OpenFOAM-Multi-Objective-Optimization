@@ -1,0 +1,20 @@
+version: 1.3.0
+# Specialization: bootstrap from mf_robust, pin nominal operating point
+bootstrap: ../results/mf_robust/artifacts/MFRobust_client_state.json
+
+specialize:
+  load: 1.0
+  speed: 1.0
+  fidelity: 1
+
+robust_optimization: null
+
+experiment:
+  name: MFRobustSpecNom
+
+orchestration_settings:
+  max_trials: 40
+
+store:
+  save_to: json
+  read_from: json
