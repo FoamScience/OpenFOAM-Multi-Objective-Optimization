@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.12"
-# dependencies = [ "numpy", "foamlib" ]
+# dependencies = [ "numpy" ]
 # ///
 """
 Benchmark functions from:
@@ -40,8 +40,7 @@ def foambo_metric(func_name, k=1, m=0, lb=0.01):
     return metric
 
 if __name__ == '__main__':
-    import sys, os, argparse
-    from foamlib import FoamFile
+    import sys, os, argparse, json
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--F', type=str, help='Function to test')
@@ -59,8 +58,14 @@ if __name__ == '__main__':
         fig.update_layout(xaxis_title='x', yaxis_title=args.F, width=2048, height=768)
         fig.write_image(f"{args.F}.png")
 
-    foamfile = FoamFile(os.path.join(os.getcwd(), "FxDict"))
-    x = float(foamfile['x'])
+    json_path = os.path.join(os.getcwd(), "FxDict.json")
+    legacy_path = os.path.join(os.getcwd(), "FxDict")
+    if os.path.isfile(json_path):
+        with open(json_path, "r") as f:
+            x = float(json.load(f)["x"])
+    else:
+        from foamlib import FoamFile
+        x = float(FoamFile(legacy_path)['x'])
     if args.n == 1:
         print(Fs[args.F](np.array([x, x]), args.k, args.m, args.lb)[0])
         sys.exit(0)

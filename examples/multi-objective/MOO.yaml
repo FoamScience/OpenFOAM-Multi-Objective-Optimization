@@ -53,9 +53,6 @@ experiment:
 trial_generation:
   method: fast
 
-existing_trials:
-  file_path: ''
-
 baseline:
   parameters:
     viscosity: 0.01
@@ -96,7 +93,7 @@ optimization:
     log_runner: False # active only when mode=local
     runner: "/tmp/data/scripts/run_on_cluster.sh" # or: ./Allrun /tmp/data/openfoam-paraview.sif
     remote_status_query: "/tmp/data/scripts/state_on_cluster.sh" # optional, only if mode=remote
-    remote_early_stop: "docker exec slurm-head scancel --name $CASE_NAME" # also optional
+    remote_early_stop: "docker exec slurm-head scancel --name $FOAMBO_CASE_NAME" # also optional
     trial_destination: /tmp/data/trials
     artifacts_folder: ./artifacts
     file_substitution: []

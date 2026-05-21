@@ -9,8 +9,6 @@ experiment:
   parameter_constraints: []
 trial_generation:
   method: fast
-existing_trials:
-  file_path: ''
 baseline:
   parameters: null
 optimization:
@@ -31,7 +29,8 @@ optimization:
     artifacts_folder: ./artifacts
     file_substitution: []
     variable_substitution:
-    - file: /FxDict
+    - file: /FxDict.json
+      format: json
       parameter_scopes:
         x: x
 orchestration_settings:
