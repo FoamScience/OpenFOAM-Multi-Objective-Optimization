@@ -93,6 +93,94 @@ class DimensionalityReductionOptions(FoamBOBaseModel):
     ))
 
 
+class RegionOption(FoamBOBaseModel):
+    """A single screening region tied to an existing parameter group.
+
+    The ``cmd`` is executed once per completed trial (in the trial's case dir)
+    and must print a single scalar to stdout (e.g. a sectional pressure drop in
+    Pa). Spread of those scalars across trials is compared to ``min_delta`` /
+    ``min_delta_frac`` to decide whether the region is *inactive* — in which
+    case all parameters belonging to ``group`` are fixed.
+
+    Substitutions available in ``command``: ``$FOAMBO_CASE_PATH``, ``$FOAMBO_CASE_NAME``,
+    ``$FOAMBO_PARAM_REGION`` (group name), ``$FOAMBO_TRIAL_INDEX``.
+    """
+    group: str = Field(description="Parameter group name (must exist on declared parameters)")
+    command: str = Field(description=(
+        "Shell command printing one scalar to stdout. Run inside the trial case dir. "
+        "Substitutions: $FOAMBO_CASE_PATH, $FOAMBO_CASE_NAME, $FOAMBO_PARAM_REGION, "
+        "$FOAMBO_TRIAL_INDEX."
+    ))
+    min_delta: float | None = Field(default=None, description=(
+        "Absolute spread threshold (max-min across trials). If region spread is "
+        "below this, the group's parameters are fixed. Mutually exclusive with min_delta_frac."
+    ))
+    min_delta_frac: float | None = Field(default=None, description=(
+        "Fractional spread threshold (relative to the largest |scalar| seen). "
+        "Example: 0.02 = 2%%. Mutually exclusive with min_delta."
+    ))
+
+    @model_validator(mode="after")
+    def _check_threshold(self):
+        if (self.min_delta is None) == (self.min_delta_frac is None):
+            raise ValueError(
+                f"Region '{self.group}': specify exactly one of min_delta or min_delta_frac"
+            )
+        return self
+
+
+class RegionScreeningOptions(FoamBOBaseModel):
+    """User-declared, group-based screening complementary to Sobol-driven dim reduction.
+
+    Two non-destructive modes are supported (no hard fixing of parameters):
+
+    - ``advise``: only log/report. The dashboard surfaces region spreads,
+      thresholds, and which groups are flagged inactive. Search space is never
+      mutated. Equivalent to a Morris-style pre-screen.
+
+    - ``shrink``: when a group has been flagged inactive for ``confirm_passes``
+      consecutive screening passes, the group's range parameters are tightened
+      around the best-so-far parameterization by ``shrink_factor`` of their
+      original range. The parameter remains tunable — much safer than fixing,
+      and the search continues exploring its neighborhood.
+
+    Hard fixing is intentionally not offered here: prefer
+    ``dimensionality_reduction`` (Sobol-driven, gated on CV) for that.
+    """
+    enabled: bool = Field(default=False, description="Enable region-based screening")
+    mode: Literal["advise", "shrink"] = Field(default="shrink", description=(
+        "advise: report only, never mutate. "
+        "shrink: tighten parameter ranges around the best-so-far value for "
+        "groups confirmed inactive."
+    ))
+    after_trials: int = Field(default=3, description=(
+        "Run screening after this many completed trials. Region scalars come "
+        "from a user command, not the BO model, so this can fire much earlier "
+        "than Sobol-based dimensionality_reduction."
+    ))
+    confirm_passes: int = Field(default=2, description=(
+        "Require a region to be flagged inactive in this many consecutive "
+        "screening passes before acting (in `shrink` mode). One pass = noise; "
+        "two or more = signal. Ignored in `advise` mode."
+    ))
+    shrink_factor: float = Field(default=0.25, description=(
+        "Fraction of the original parameter range retained around the "
+        "best-so-far value when a group is shrunk. Example: 0.25 keeps a "
+        "window of width 25%% of the original range, centered on the best."
+    ))
+    max_shrink_fraction: float = Field(default=0.5, description=(
+        "Cap on the fraction of total parameters that can be shrunk across all "
+        "groups in one pass. At least one parameter always remains at full range."
+    ))
+    cmd_timeout: int = Field(default=60, description=(
+        "Per-trial timeout in seconds for the region scalar command."
+    ))
+    regions: List[RegionOption] = Field(default_factory=list, description=(
+        "List of regions to screen. Each region binds a parameter group to a "
+        "scalar-emitting command and a sensitivity threshold."
+    ))
+
+
 class ConfigOrchestratorOptions(FoamBOBaseModel):
     """Controls for timeouts, poll times, early-stopping and convergence criteria."""
     max_trials: int = Field(description="Maximum number of trials to run, baseline included", examples=[20])
@@ -192,12 +280,26 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
         default_factory=lambda: DimensionalityReductionOptions(enabled=False),
         description="Automatic parameter fixing based on Sobol sensitivity analysis after an exploration phase"
     )
+    region_screening: RegionScreeningOptions = Field(
+        default_factory=lambda: RegionScreeningOptions(enabled=False),
+        description=(
+            "User-declared, parameter-group-based screening: drop groups whose "
+            "sectional scalar (e.g. region ΔP) shows little variation across trials."
+        ),
+    )
 
     @field_validator("dimensionality_reduction", mode="before")
     @classmethod
     def parse_dim_reduction(cls, v):
         if isinstance(v, dict | DictConfig):
             return DimensionalityReductionOptions.model_validate(dict(v))
+        return v
+
+    @field_validator("region_screening", mode="before")
+    @classmethod
+    def parse_region_screening(cls, v):
+        if isinstance(v, dict | DictConfig):
+            return RegionScreeningOptions.model_validate(dict(v))
         return v
 
     @field_validator("global_stopping_strategy", mode="before")
@@ -254,7 +356,7 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
 
     @model_validator(mode="after")
     def unlock_search_space_for_dim_reduction(self):
-        if self.dimensionality_reduction.enabled:
+        if self.dimensionality_reduction.enabled or self.region_screening.enabled:
             object.__setattr__(self, 'immutable_search_space', False)
         return self
 

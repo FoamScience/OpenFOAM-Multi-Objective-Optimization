@@ -113,6 +113,7 @@ def _get_doc_models():
         FileSubstOptions, BaselineOptions, StoreOptions,
         TrialSelector, TrialDependency,
         DimensionalityReductionOptions,
+        RegionScreeningOptions, RegionOption,
     )
     from .metrics import FoamJob, LocalJobMetric
     from .robustness import RobustOptimizationConfig
@@ -132,6 +133,8 @@ def _get_doc_models():
         (FileSubstOptions,           "optimization.case_runner.file_substitution[]"),
         (ConfigOrchestratorOptions,  "orchestration_settings"),
         (DimensionalityReductionOptions, "orchestration_settings.dimensionality_reduction"),
+        (RegionScreeningOptions,     "orchestration_settings.region_screening"),
+        (RegionOption,               "orchestration_settings.region_screening.regions[]"),
         (StoreOptions,               "store"),
         (TrialDependency,            "trial_dependencies[]"),
         (TrialSelector,              "trial_dependencies[].source"),
@@ -1273,6 +1276,93 @@ def get_config_docs() -> Dict[str, Any]:
 
             The reduced state persists across save/load — fixed parameters
             remain fixed on restart.
+            """,
+    }
+
+    harvested["python.region_screening"] = {
+        "category": "Python snippet",
+        "content": """
+            **User-declared region screening (advise / shrink)**
+
+            Complementary to Sobol-driven ``dimensionality_reduction``: uses
+            *physical structure* (existing parameter ``groups``) plus a user
+            command that prints a sectional scalar (e.g. ΔP across a region)
+            to decide which groups are not driving the objective.
+
+            Two non-destructive modes are offered (no hard fixing):
+            ``advise`` (report-only) and ``shrink`` (tighten range parameters
+            around best-so-far).
+
+            **YAML config — pump example with two regions:**
+            ```yaml
+            experiment:
+              parameters:
+                - name: blade_angle
+                  bounds: [10, 40]
+                  groups: [impeller]
+                - name: blade_thickness
+                  bounds: [0.5, 5.0]
+                  groups: [impeller]
+                - name: volute_throat
+                  bounds: [20, 60]
+                  groups: [volute]
+                - name: tongue_clearance
+                  bounds: [1, 8]
+                  groups: [volute]
+
+            orchestration_settings:
+              region_screening:
+                enabled: true
+                mode: shrink           # or "advise" for report-only
+                after_trials: 3        # fires earlier than Sobol-based reduction
+                confirm_passes: 2      # require two consecutive inactive passes
+                shrink_factor: 0.25    # keep 25%% of original range, centered on best
+                max_shrink_fraction: 0.5
+                cmd_timeout: 60
+                regions:
+                  - group: impeller
+                    command: "foamDictionary -entry value postProcessing/dpImpeller/0/dp"
+                    min_delta: 50.0          # absolute Pa
+                  - group: volute
+                    command: "python tools/region_dp.py"
+                    min_delta_frac: 0.02     # 2%% of |max ΔP_volute| seen so far
+            ```
+
+            **How regions are evaluated:**
+            1. Each region's ``command`` runs once per completed trial inside
+               that trial's case directory. Output is parsed as a single float.
+            2. A consecutive-inactive streak is tracked per region; reset on
+               any active pass.
+            3. Once the streak reaches ``confirm_passes``: ``advise`` logs an
+               event, ``shrink`` tightens the group's range parameters around
+               the best-so-far value.
+
+            **Available substitutions / env vars in ``command``:**
+            ``$FOAMBO_CASE_PATH``, ``$FOAMBO_CASE_NAME``,
+            ``$FOAMBO_PARAM_REGION`` (group name), ``$FOAMBO_TRIAL_INDEX``.
+
+            **Composing with Sobol-based dim reduction:**
+            Region screening is structural and fires early. Sobol-based
+            ``dimensionality_reduction`` is statistical and fires once the
+            BO model is well fitted. They run in the same callback — region
+            screening first, then Sobol — and operate on the same
+            ``immutable_search_space=False`` mode.
+
+            **Suggested region splits:**
+            - Centrifugal pump: ``inlet``, ``impeller``, ``diffuser``,
+              ``volute``, ``clearance``.
+            - Axial pump / fan: ``inlet_guide_vanes``, ``rotor``, ``stator``,
+              ``outlet_diffuser``.
+            - Multi-stage: one region per stage (``stage1_impeller``,
+              ``stage1_diffuser``, ...) plus crossovers.
+
+            **Dashboard / API:**
+            - ``GET /api/v1/region-screening`` — live per-region state
+              (samples, spread, threshold, status, streak, action log,
+              original bounds for any tightened parameters).
+            - ``GET /api/v1/experiment.region_screening`` — static config.
+            - ``orchestration_settings.region_screening.*`` is mutable
+              mid-run via the config-patch endpoint.
             """,
     }
 

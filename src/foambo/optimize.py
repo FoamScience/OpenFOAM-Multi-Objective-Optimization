@@ -200,11 +200,30 @@ def _update_cost_state(client, mf_cost, log=None):
     # fidelity_weights is keyed by feature index (same as target_fidelities),
     # NOT by fidelity values.  Ax extracts the fidelity feature index from
     # search_space_digest.fidelity_features.
+    #
+    # Positivity floor: BoTorch's InverseCostWeightedUtility requires
+    # cost(X) > 0 over the entire acqf domain. Symptom: ValueError
+    # "Costs must be strictly positive" in cost_aware.py. Root cause:
+    # Ax extends INT-fidelity model-space bounds by ±0.5 (the rounding
+    # half-step), so AffineFidelityCostModel sees fid ∈ [-0.5, 1.5] not
+    # [0, 1]. cost(X) = intercept + weight × X must stay > 0 across
+    # that full range → intercept ≥ 0.5 × weight + ε.
+    # We also normalize to keep costs O(1) (qMFHVKG tolerates large
+    # absolute values poorly).
+    max_cost = max(costs) if max(costs) > 0 else 1.0
+    cost_intercept_norm = cost_intercept / max_cost
+    fid_weight_norm     = fid_weight     / max_cost
+    cost_intercept_safe = max(cost_intercept_norm, 0.5 * fid_weight_norm + 1e-3)
     opts = mf_cost["acqf_opts_ref"]
-    opts["cost_intercept"] = max(cost_intercept, 1e-6)
+    opts["cost_intercept"] = max(cost_intercept_safe, 1e-6)
+    if log:
+        log.debug("MF cost normalized: raw intercept=%.3f weight=%.3f max_cost=%.3f → "
+                  "intercept=%.3f weight=%.3f",
+                  cost_intercept, fid_weight, max_cost,
+                  cost_intercept_safe, fid_weight_norm)
     # Determine the fidelity parameter's feature index
     fid_feature_idx = _get_fidelity_feature_index(client, mf_cost["fidelity_param"])
-    opts["fidelity_weights"] = {fid_feature_idx: fid_weight}
+    opts["fidelity_weights"] = {fid_feature_idx: fid_weight_norm}
     if log:
         log.info("Multi-fidelity cost updated: intercept=%.2f, weight=%.2f "
                  "(from %d fidelity levels: %s)", cost_intercept, fid_weight,
@@ -503,6 +522,15 @@ def optimize(cfg, debug=False):
         cnames = sorted({c.metric.name for c in _oc})
         log.info("Constraint metrics: %s", ", ".join(cnames))
         log.info("=================================================")
+    # Re-register expression-metric callables into _fn_registry every run
+    # (including reload). The registry is module-level and not persisted in
+    # JSON state; if we skip configure_metrics on reload, the registry stays
+    # empty and FoamJobMetric.fetch falls through to subprocess dispatch,
+    # trying to exec the "__expr__<name>" sentinel string as a binary.
+    for _m in opt_cfg.metrics:
+        if getattr(_m, "expression", None) is not None:
+            _m.to_metric()  # side-effect: populates _fn_registry[_m.name]
+
     client.configure_runner(**opt_cfg.to_runner_dict())
     # Wire trial dependencies and metric names onto the runner
     runner = client._experiment.runner
@@ -744,6 +772,213 @@ def optimize(cfg, debug=False):
                  f"{len(param_names) - len(to_fix)} remaining active")
         _dim_reduction_done = True
 
+    # Region screening runtime state — published to the API for dashboard use.
+    _region_state: dict = {
+        "enabled": False,
+        "mode": None,
+        "regions": {},     # group -> {samples, spread, threshold, threshold_kind, status, streak}
+        "actions": [],     # list of {ts, group, action, params:[...], detail}
+        "shrunk_groups": [],
+        "original_bounds": {},  # pname -> (lower, upper) — captured before first shrink
+    }
+    _region_scalars: dict[str, dict[int, float]] = {}  # group -> {trial_index: scalar}
+    _region_streak: dict[str, int] = {}                # group -> consecutive inactive passes
+    _publish_region_state = lambda s: None             # replaced when api server starts
+
+    def _maybe_screen_regions():
+        rs = orch_cfg.region_screening
+        if not rs.enabled or not rs.regions:
+            return
+        exp = client._experiment
+        from ax.core.base_trial import TrialStatus as AxTrialStatus
+        completed = [(tidx, t) for tidx, t in exp.trials.items()
+                     if t.status == AxTrialStatus.COMPLETED]
+        if len(completed) < rs.after_trials:
+            return
+
+        import os
+        import time as _time
+        import subprocess as _sb
+        groups_map = exp_cfg.get_parameter_groups()  # name -> [groups]
+
+        all_groups = {g for groups in groups_map.values() for g in groups}
+        unknown = [r.group for r in rs.regions if r.group not in all_groups]
+        if unknown and not _region_state.get("warned_unknown"):
+            log.warning(f"Region screening: unknown parameter group(s) {unknown}; "
+                        f"will be ignored. Known groups: {sorted(all_groups)}")
+            _region_state["warned_unknown"] = True
+
+        # 1) Collect (or refresh) scalars per region per completed trial. Cached.
+        for region in rs.regions:
+            if region.group not in all_groups:
+                continue
+            cache = _region_scalars.setdefault(region.group, {})
+            for tidx, trial in completed:
+                if tidx in cache:
+                    continue
+                case_path = (trial.run_metadata or {}).get("case_path") \
+                    or (trial.run_metadata or {}).get("job", {}).get("case_path")
+                if not case_path or not os.path.isdir(case_path):
+                    continue
+                cmd_str = (region.command
+                           .replace("$FOAMBO_CASE_PATH", str(case_path))
+                           .replace("$FOAMBO_CASE_NAME", os.path.basename(case_path))
+                           .replace("$FOAMBO_PARAM_REGION", region.group)
+                           .replace("$FOAMBO_TRIAL_INDEX", str(tidx)))
+                env = os.environ.copy()
+                env["FOAMBO_CASE_PATH"] = str(case_path)
+                env["FOAMBO_CASE_NAME"] = os.path.basename(case_path)
+                env["FOAMBO_PARAM_REGION"] = region.group
+                env["FOAMBO_TRIAL_INDEX"] = str(tidx)
+                try:
+                    out = _sb.check_output(
+                        cmd_str, shell=True, cwd=case_path, env=env,
+                        timeout=rs.cmd_timeout, text=True,
+                    ).strip()
+                    cache[tidx] = float(out.split()[-1])
+                except Exception as e:
+                    log.warning(f"Region screening: cmd failed for group "
+                                f"'{region.group}' on trial {tidx}: {e}")
+
+        # 2) Evaluate spreads and update streaks; build per-region status snapshot.
+        regions_status: dict[str, dict] = {}
+        flagged_now: list[str] = []
+        for region in rs.regions:
+            if region.group not in all_groups:
+                continue
+            vals = list(_region_scalars.get(region.group, {}).values())
+            if len(vals) < rs.after_trials:
+                regions_status[region.group] = {
+                    "samples": len(vals),
+                    "spread": None,
+                    "threshold": None,
+                    "threshold_kind": "abs" if region.min_delta is not None else "frac",
+                    "status": "warming_up",
+                    "streak": _region_streak.get(region.group, 0),
+                }
+                continue
+            spread = max(vals) - min(vals)
+            ref = max(abs(v) for v in vals) if vals else 0.0
+            threshold = region.min_delta if region.min_delta is not None \
+                else (region.min_delta_frac or 0.0) * ref
+            inactive = spread < threshold
+            if inactive:
+                _region_streak[region.group] = _region_streak.get(region.group, 0) + 1
+                flagged_now.append(region.group)
+            else:
+                _region_streak[region.group] = 0
+            regions_status[region.group] = {
+                "samples": len(vals),
+                "spread": spread,
+                "threshold": threshold,
+                "threshold_kind": "abs" if region.min_delta is not None else "frac",
+                "status": "inactive" if inactive else "active",
+                "streak": _region_streak[region.group],
+            }
+            log.info(f"Region screening: group='{region.group}' spread={spread:.4g} "
+                     f"threshold={threshold:.4g} streak={_region_streak[region.group]} "
+                     f"({len(vals)} samples)")
+
+        _region_state["enabled"] = True
+        _region_state["mode"] = rs.mode
+        _region_state["regions"] = regions_status
+
+        # 3) Advise mode: never mutate.
+        if rs.mode == "advise":
+            for g in flagged_now:
+                if _region_streak[g] == rs.confirm_passes:
+                    detail = f"region '{g}' inactive for {rs.confirm_passes} pass(es)"
+                    _region_state["actions"].append({
+                        "ts": _time.time(), "group": g, "action": "advise",
+                        "params": exp_cfg.get_group_params(g), "detail": detail,
+                    })
+                    log.info(f"Region screening (advise): {detail}")
+            _publish_region_state(_region_state)
+            return
+
+        # 4) Shrink mode: act when streak meets confirm_passes for a group not yet shrunk.
+        ready_to_shrink = [g for g in flagged_now
+                           if _region_streak[g] >= rs.confirm_passes
+                           and g not in _region_state["shrunk_groups"]]
+        if not ready_to_shrink:
+            _publish_region_state(_region_state)
+            return
+
+        from ax.core.parameter import RangeParameter
+        param_names = list(exp.search_space.parameters.keys())
+        n_total = len(param_names)
+        max_shrinkable = max(min(int(n_total * rs.max_shrink_fraction), n_total - 1), 0)
+
+        # Count already-shrunk params (those whose bounds we've narrowed).
+        n_already = sum(1 for n in _region_state["original_bounds"].keys()
+                        if n in exp.search_space.parameters)
+
+        # Best-so-far parameterization for shrink center.
+        try:
+            best_params, _, _, _ = client.get_best_parameterization(use_model_predictions=False)
+        except Exception:
+            best_params = {}
+
+        budget = max(max_shrinkable - n_already, 0)
+        if budget <= 0:
+            log.info("Region screening: shrink budget exhausted "
+                     f"({n_already}/{max_shrinkable}). Skipping.")
+            return
+
+        for g in ready_to_shrink:
+            if budget <= 0:
+                break
+            shrunk_in_group: list[str] = []
+            for pname in exp_cfg.get_group_params(g):
+                if budget <= 0:
+                    break
+                if pname not in exp.search_space.parameters:
+                    continue
+                param = exp.search_space.parameters[pname]
+                if not isinstance(param, RangeParameter):
+                    continue
+                lo, hi = param.lower, param.upper
+                _region_state["original_bounds"].setdefault(pname, (lo, hi))
+                full_range = hi - lo
+                center = best_params.get(pname)
+                if center is None:
+                    center = (lo + hi) / 2
+                half_window = (rs.shrink_factor * full_range) / 2
+                new_lo = max(lo, center - half_window)
+                new_hi = min(hi, center + half_window)
+                if new_hi <= new_lo:
+                    continue
+                try:
+                    new_param = RangeParameter(
+                        name=pname,
+                        parameter_type=param.parameter_type,
+                        lower=new_lo,
+                        upper=new_hi,
+                        log_scale=getattr(param, 'log_scale', False),
+                        digits=getattr(param, 'digits', None),
+                        is_fidelity=getattr(param, 'is_fidelity', False),
+                        target_value=getattr(param, 'target_value', None),
+                    )
+                    exp.search_space.update_parameter(new_param)
+                    shrunk_in_group.append(pname)
+                    budget -= 1
+                    log.info(f"Region screening (shrink): '{pname}' bounds "
+                             f"[{lo:.4g}, {hi:.4g}] → [{new_lo:.4g}, {new_hi:.4g}] "
+                             f"(center={center:.4g}, factor={rs.shrink_factor})")
+                except Exception as e:
+                    log.warning(f"Region screening: failed to shrink '{pname}': {e}")
+            if shrunk_in_group:
+                _region_state["shrunk_groups"].append(g)
+                _region_state["actions"].append({
+                    "ts": _time.time(), "group": g, "action": "shrink",
+                    "params": shrunk_in_group,
+                    "detail": f"shrink_factor={rs.shrink_factor}, "
+                              f"after {_region_streak[g]} inactive pass(es)",
+                })
+                log.info(f"Region screening: shrunk group '{g}' "
+                         f"({len(shrunk_in_group)} param(s))")
+        _publish_region_state(_region_state)
+
     _reported_failures: set[int] = set()
 
     # API server update function — no-op until server starts
@@ -766,6 +1001,11 @@ def optimize(cfg, debug=False):
         runner._api_host = orch_cfg.api_host
         runner._api_port = _api_state._actual_port
         runner._run_progress_commands_each_poll = orch_cfg.run_progress_commands_each_poll
+
+        def _publish_region_state(state: dict):
+            with _api_state.lock:
+                _api_state.region_screening = dict(state)
+            _api_state.bump("experiment", "region_screening")
 
     def _log_trial_failure(trial_index: int, case_path: str | None, log: Logger):
         """Log the tail of a failed trial's runner log."""
@@ -817,6 +1057,7 @@ def optimize(cfg, debug=False):
 
     def callback(sched: Orchestrator):
         store_cfg.save(client)
+        _maybe_screen_regions()
         _maybe_reduce_dimensions()
         streaming_metric(client, raw_cfg["optimization"])
         # Update MF cost model from observed is_cost metric data

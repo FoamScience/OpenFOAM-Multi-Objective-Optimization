@@ -100,6 +100,7 @@ class ExperimentResponse(BaseModel):
     poll_interval: float
     early_stopping: Optional[dict] = None
     dimensionality_reduction: Optional[dict] = None
+    region_screening: Optional[dict] = None
     dependency_rules: List[dict]
 
 class TrialDetail(BaseModel):
@@ -194,6 +195,7 @@ MUTABLE_PREFIXES = {
     "orchestration_settings.trial_timeout",
     "orchestration_settings.tolerated_trial_failure_rate",
     "orchestration_settings.dimensionality_reduction.",
+    "orchestration_settings.region_screening.",
     "orchestration_settings.early_stopping_strategy.",
 }
 
@@ -224,6 +226,9 @@ class _ApiState:
 
         self.standalone = False  # True when launched via --config-builder
 
+        # Region screening runtime state (set by optimize._maybe_screen_regions)
+        self.region_screening: dict | None = None
+
         # Unique session ID so ETags never match across server restarts
         self._session_id = hex(int(time.time() * 1000))[-8:]
         # Per-endpoint version counters for ETag caching
@@ -235,6 +240,7 @@ class _ApiState:
             "generation": 0,
             "pareto": 0,
             "config": 0,
+            "region_screening": 0,
         }
 
     def bump(self, *endpoints: str):
@@ -552,6 +558,27 @@ def _get_experiment_info() -> dict:
                 "max_fix_fraction": dr.max_fix_fraction,
             }
 
+        rs_dict = None
+        if orch and hasattr(orch, 'region_screening'):
+            rs = orch.region_screening
+            rs_dict = {
+                "enabled": rs.enabled,
+                "mode": rs.mode,
+                "after_trials": rs.after_trials,
+                "confirm_passes": rs.confirm_passes,
+                "shrink_factor": rs.shrink_factor,
+                "max_shrink_fraction": rs.max_shrink_fraction,
+                "regions": [
+                    {
+                        "group": r.group,
+                        "command": r.command,
+                        "min_delta": r.min_delta,
+                        "min_delta_frac": r.min_delta_frac,
+                    }
+                    for r in rs.regions
+                ],
+            }
+
         dep_rules = []
         runner = exp.runner
         if hasattr(runner, 'trial_dependencies') and runner.trial_dependencies:
@@ -581,6 +608,7 @@ def _get_experiment_info() -> dict:
             "early_stopping": es_dict,
             "es_thresholds": es_thresholds,
             "dimensionality_reduction": dr_dict,
+            "region_screening": rs_dict,
             "dependency_rules": dep_rules,
             "parameter_groups": param_groups,
         }
@@ -1459,6 +1487,26 @@ def get_experiment(if_none_match: Optional[str] = Header(None)):
     except Exception as e:
         log.error(f"GET /experiment failed: {e}", exc_info=True)
         return SafeJSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.get("/api/v1/region-screening", summary="Region screening runtime state",
+         description=(
+            "Live snapshot of user-declared region screening: per-region spread, "
+            "threshold, status (warming_up | active | inactive), inactive streak, "
+            "list of actions taken (advise or shrink), and original bounds for "
+            "any range parameters that were tightened."
+         ))
+def get_region_screening(if_none_match: Optional[str] = Header(None)):
+    cached = _check_etag("region_screening", if_none_match)
+    if cached:
+        return cached
+    with _state.lock:
+        rs_state = _state.region_screening
+    data = rs_state if rs_state is not None else {
+        "enabled": False, "mode": None, "regions": {}, "actions": [],
+        "shrunk_groups": [], "original_bounds": {},
+    }
+    return SafeJSONResponse(content=data, headers=_headers("region_screening"))
 
 
 @app.get("/api/v1/trials")

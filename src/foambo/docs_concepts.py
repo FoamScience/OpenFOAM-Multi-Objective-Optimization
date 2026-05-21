@@ -127,6 +127,78 @@ through interactions with others should not be fixed — fixing it would break t
 The reduction persists across save/load. Fixed parameters appear as ``FixedParameter`` in Ax.""",
     },
 
+    "concept.region_screening": {
+        "category": "Concept",
+        "content": """\
+Region screening is a complementary, **user-declared** dimensionality reduction
+strategy. Where ``dimensionality_reduction`` derives importance from the GP
+posterior (Sobol on the surrogate), region screening uses **physical structure**
+the user already encoded as parameter groups.
+
+**Why it exists:** for problems with a natural (spatial?) decomposition (eg.
+multi-stage machines), users typically already group parameters by region.
+If a sectional scalar (e.g. region pressure drop) hardly
+moves across trials, the parameters in that region are not driving the
+objective — they can be fixed without waiting for the BO model to confirm it.
+
+**Modes (no hard fixing):**
+
+- ``advise``: report-only. The dashboard surfaces region spreads, thresholds,
+  inactive flags, and consecutive-pass counts. Search space is never mutated.
+- ``shrink`` (default): when a region has been flagged inactive in
+  ``confirm_passes`` consecutive passes, the group's range parameters are
+  tightened to a window of width ``shrink_factor × original_range`` centered
+  on the current best-so-far value. Parameters remain tunable — a much safer
+  alternative to hard-fixing.
+
+Hard fixing is intentionally not offered here; for that, prefer Sobol-driven
+``dimensionality_reduction`` (gated on cross-validation quality).
+
+**How it works:**
+1. Users declare ``regions:`` — each binds an existing parameter ``group`` to
+   a ``command`` that prints one scalar (eg. ΔP for that section) and a
+   threshold (``min_delta`` absolute, or ``min_delta_frac`` relative to the
+   largest |scalar| seen).
+2. After ``after_trials`` completed trials, foamBO runs each region's command
+   against every completed trial's case directory (cached per trial).
+3. For each region, the spread (max − min) of the scalar across trials is
+   compared against the threshold. A consecutive-inactive streak is tracked
+   per region and reset whenever the region becomes active again.
+4. Once a streak reaches ``confirm_passes``, the region is acted on:
+   ``advise`` mode logs an event; ``shrink`` mode tightens the group's range
+   parameters around the best-so-far value.
+5. ``max_shrink_fraction`` caps how many parameters can be shrunk overall;
+   at least one parameter always remains at its original full range.
+
+**Dashboard / API:** live state is published at
+``GET /api/v1/region-screening`` (per-region spread, threshold, status,
+streak, action log, original bounds for any tightened parameters). Static
+configuration is included in ``GET /api/v1/experiment.region_screening``.
+All ``orchestration_settings.region_screening.*`` fields are mutable mid-run
+through the config-patch endpoint.
+
+**Command environment:** ``$FOAMBO_CASE_PATH``, ``$FOAMBO_CASE_NAME``,
+``$FOAMBO_PARAM_REGION`` (the group name), ``$FOAMBO_TRIAL_INDEX``. Substitution
+works in the command string and the same names are exported as env vars.
+
+**When to prefer region screening over Sobol-based reduction:**
+- The problem has a clean physical decomposition.
+- Total-pressure-head-style scalar objectives don't expose *where* energy is
+  lost — region scalars do.
+- You want to drop parameters early (works after just a few trials, no GP fit
+  required).
+
+**When the two work together:** region screening fires first (cheap,
+structural). Sobol-based reduction then operates on the surviving parameters
+once the model is well-fitted, catching subtler unimportant parameters that
+the user-declared decomposition missed.
+
+**Pump-design example regions:** ``inlet``, ``impeller``, ``diffuser``,
+``volute``, ``clearance``. For axial machines: ``inlet_guide_vanes``,
+``rotor``, ``stator``, ``outlet_diffuser``. For multi-stage: one region per
+stage plus crossovers.""",
+    },
+
     "concept.dashboard": {
         "category": "Concept",
         "content": """\
