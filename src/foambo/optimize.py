@@ -154,92 +154,35 @@ def _update_cost_state(client, mf_cost, log=None):
       cost_intercept = mean_cost_at_s0
       fidelity_weight = mean_cost_at_s1 - mean_cost_at_s0
     """
-    from ax.core.base_trial import TrialStatus as _TS
-    from collections import defaultdict
-
-    def _get_fidelity_feature_index(cl, fid_param_name):
-        """Return the feature index of the fidelity parameter in the search space."""
-        param_names = list(cl._experiment.search_space.parameters.keys())
-        return param_names.index(fid_param_name)
-    cost_metric_name = mf_cost["metric"]
-    fidelity_param_name = mf_cost["fidelity_param"]
-    # Collect observed costs per fidelity level (keyed by raw fidelity value)
-    sums = defaultdict(float)
-    counts = defaultdict(int)
-    df = client._experiment.lookup_data().df
-    for trial in client._experiment.trials.values():
-        if trial.status not in (_TS.COMPLETED, _TS.EARLY_STOPPED):
-            continue
-        fid_val = trial.arm.parameters.get(fidelity_param_name)
-        if fid_val is None:
-            continue
-        sub = df[(df.trial_index == trial.index) & (df.metric_name == cost_metric_name)]
-        if sub.empty:
-            continue
-        sums[fid_val] += float(sub["mean"].iloc[-1])
-        counts[fid_val] += 1
-    per_f = {fv: sums[fv] / counts[fv] for fv in sums if counts[fv] > 0}
-    if not per_f or per_f == mf_cost["state"]["per_fidelity"]:
-        return  # no change
-    mf_cost["state"]["per_fidelity"] = per_f
-
-    # Build numeric mapping for AffineFidelityCostModel.
-    # For numeric fidelity: use values directly.
-    # For categorical (str) fidelity: map to ordinal indices sorted by cost.
-    raw_keys = sorted(per_f.keys(), key=lambda k: per_f[k])
-    is_numeric = all(isinstance(k, (int, float)) for k in raw_keys)
-    if is_numeric:
-        fid_vals = sorted(float(k) for k in raw_keys)
-        costs = [per_f[k] for k in sorted(per_f.keys())]
-    else:
-        # Map categorical levels to 0..N-1 ordered by ascending cost
-        fid_vals = list(range(len(raw_keys)))
-        costs = [per_f[k] for k in raw_keys]
-
-    cost_intercept = min(costs)  # cheapest fidelity floor
-    # Weights: slope per fidelity unit. For discrete {0,1}: w = cost_high - cost_low.
-    # For continuous: linear fit.
-    fid_range = fid_vals[-1] - fid_vals[0] if len(fid_vals) > 1 else 0
-    if fid_range > 0:
-        fid_weight = (max(costs) - min(costs)) / fid_range
-    else:
-        fid_weight = 1.0
-    # Write into acqf_opts — Ax passes these to the input constructor.
-    # fidelity_weights is keyed by feature index (same as target_fidelities),
-    # NOT by fidelity values.  Ax extracts the fidelity feature index from
-    # search_space_digest.fidelity_features.
-    #
-    # Positivity floor: BoTorch's InverseCostWeightedUtility requires
-    # cost(X) > 0 over the entire acqf domain. Symptom: ValueError
-    # "Costs must be strictly positive" in cost_aware.py. Root cause:
-    # Ax extends INT-fidelity model-space bounds by ±0.5 (the rounding
-    # half-step), so AffineFidelityCostModel sees fid ∈ [-0.5, 1.5] not
-    # [0, 1]. cost(X) = intercept + weight × X must stay > 0 across
-    # that full range → intercept ≥ 0.5 × weight + ε.
-    # We also normalize to keep costs O(1) (qMFHVKG tolerates large
-    # absolute values poorly).
-    max_cost = max(costs) if max(costs) > 0 else 1.0
-    cost_intercept_norm = cost_intercept / max_cost
-    fid_weight_norm     = fid_weight     / max_cost
-    cost_intercept_safe = max(cost_intercept_norm, 0.5 * fid_weight_norm + 1e-3)
-    opts = mf_cost["acqf_opts_ref"]
-    opts["cost_intercept"] = max(cost_intercept_safe, 1e-6)
-    if log:
-        log.debug("MF cost normalized: raw intercept=%.3f weight=%.3f max_cost=%.3f → "
-                  "intercept=%.3f weight=%.3f",
-                  cost_intercept, fid_weight, max_cost,
-                  cost_intercept_safe, fid_weight_norm)
-    # Determine the fidelity parameter's feature index
-    fid_feature_idx = _get_fidelity_feature_index(client, mf_cost["fidelity_param"])
-    opts["fidelity_weights"] = {fid_feature_idx: fid_weight_norm}
-    if log:
-        log.info("Multi-fidelity cost updated: intercept=%.2f, weight=%.2f "
-                 "(from %d fidelity levels: %s)", cost_intercept, fid_weight,
-                 len(per_f), list(per_f.keys()))
+    from ax_robust_multifid.multifidelity import update_cost_state
+    return update_cost_state(client, mf_cost, log=log)
 
 
-def optimize(cfg, debug=False):
-    """Main optimization loop.
+def _refresh_trial_objectives(client, runner):
+    """Stash a per-trial objective scalar map on the runner for the ``best`` trial-dependency
+    selector (ax_robust_multifid.trialdeps.resolve_source_trial needs it explicitly)."""
+    from ax_robust_multifid.trialdeps import trial_objectives
+    try:
+        names = list(client._experiment.optimization_config.objective.metric_names)
+        runner._trial_objectives = trial_objectives(client, names)
+    except Exception:
+        runner._trial_objectives = None
+
+
+def _build_client(cfg, debug=False, missing_ok=False):
+    """Build the shared optimization state (client, runner, config bundle).
+
+    ``missing_ok`` is forwarded to :meth:`StoreOptions.load` so the detached
+    ``--step``/``--run`` entry points can bootstrap a fresh experiment on their
+    first invocation (``read_from=json`` with no state file yet). Defaults to
+    ``False`` so the closed-loop :func:`optimize` keeps its current behavior.
+
+    Lifted verbatim from the head of :func:`optimize` so that both the
+    closed-loop :func:`optimize` and the detached ``--step``/``--run`` entry
+    points share identical setup: colored logging, the Ax JSON-encoder numpy
+    patch, config validation, experiment + generation-strategy + (MF/robust)
+    surrogate wiring, runner config, expression-metric ``_fn_registry``
+    re-registration, and ``runner.trial_registry`` reseed.
 
     Colored logging is set up automatically on the first call.
 
@@ -371,15 +314,8 @@ def optimize(cfg, debug=False):
     _fidelity_cfg = getattr(exp_cfg, '_fidelity_params', None) or \
                     getattr(type(exp_cfg), '_fidelity_params', None)
     if _fidelity_cfg:
-        from ax.core.parameter import FixedParameter
-        for pname, target_val in _fidelity_cfg.items():
-            p = client._experiment.search_space.parameters.get(pname)
-            if p is not None and not isinstance(p, FixedParameter):
-                p._is_fidelity = True
-                p._target_value = target_val
-                log.info("Fidelity parameter: %s (target_value=%s)", pname, target_val)
-            elif isinstance(p, FixedParameter):
-                log.info("Fidelity parameter %s is fixed (specialized) — skipping MF wiring", pname)
+        from ax_robust_multifid.multifidelity import apply_fidelity_parameters
+        apply_fidelity_parameters(client, _fidelity_cfg, log)
 
     ## 2.0 Trial generation
     # Suppress Ax's verbose GenerationStrategy repr log
@@ -597,9 +533,10 @@ def optimize(cfg, debug=False):
 
     # Wire robust optimization (context variables + risk measures)
     # When both robust + MF fidelity params are present, compose them:
-    # augment_generator_specs(multifidelity=True) sets up the combined
-    # surrogate (SubstituteContextFeatures + SingleTaskMultiFidelityGP)
-    # and passes RobustMCObjective config to qMFHVKG.
+    # augment_generator_specs(multifidelity=True) uses SingleTaskMultiFidelityGP +
+    # qMFHVKG with a Normalize-only surrogate (NO SubstituteContextFeatures — qMFHVKG
+    # can't do one-to-many); robustness is implicit via context-spanning training data
+    # + rotating fixed_features (cycle_context), not an injected risk measure.
     _robust_state = None
     if robust_cfg is not None:
         from foambo.robustness import augment_generator_specs
@@ -607,7 +544,7 @@ def optimize(cfg, debug=False):
         _robust_state = augment_generator_specs(
             client, exp_cfg, robust_cfg, multifidelity=_is_mf_robust)
         if _is_mf_robust:
-            log.info("MF+robust composition active: qMFHVKG + SubstituteContextFeatures + risk measure")
+            log.info("MF+robust composition active: qMFHVKG + context-cycling (Normalize-only surrogate)")
             # Wire cost model for the composed MF+robust path
             cost_metrics = [m for m in opt_cfg.metrics if getattr(m, "is_cost", False)]
             if cost_metrics:
@@ -665,123 +602,66 @@ def optimize(cfg, debug=False):
             if isinstance(_node, SeedDataNode):
                 _node.load_into(client)
 
-    _dim_reduction_done = False
-    _dim_reduction_attempts = 0
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        client=client, runner=runner, foambo_cfg=foambo_cfg, raw_cfg=raw_cfg,
+        exp_cfg=exp_cfg, gs_cfg=gs_cfg, opt_cfg=opt_cfg, orch_cfg=orch_cfg,
+        store_cfg=store_cfg, baseline_cfg=baseline_cfg, trial_deps=trial_deps,
+        robust_cfg=robust_cfg, has_experiment=has_experiment, gs=gs, log=log,
+        mf_cost=_mf_cost, robust_state=_robust_state,
+    )
+
+
+def optimize(cfg, debug=False):
+    """Main optimization loop (closed loop).
+
+    Builds the shared state via :func:`_build_client`, then drives the Ax
+    ``Orchestrator`` (ask → run → poll → tell) until the trial budget or a
+    stopping criterion is reached.
+
+    Returns:
+        The Ax ``Client`` with the completed experiment, or ``None`` on interrupt.
+    """
+    from omegaconf import OmegaConf, DictConfig
+    from .common import VERSION, set_experiment_name, get_experiment_name
+    from .metrics import streaming_metric
+    import numpy as np
+    from .analysis import compute_analysis_cards, plot_pareto_frontier
+    from .orchestrate import (
+        ExperimentOptions, OptimizationOptions,
+        ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
+        FoamBOConfig, TrialDependency, SeedDataNode, TimedOrchestrator,
+    )
+    from ax.api.client import Orchestrator, db_settings_from_storage_config
+    import pandas as pd
+    from logging import Logger
+    from ax.utils.common.logger import get_logger
+
+    ctx = _build_client(cfg, debug=debug)
+    client = ctx.client
+    runner = ctx.runner
+    foambo_cfg = ctx.foambo_cfg
+    raw_cfg = ctx.raw_cfg
+    exp_cfg = ctx.exp_cfg
+    gs_cfg = ctx.gs_cfg
+    opt_cfg = ctx.opt_cfg
+    orch_cfg = ctx.orch_cfg
+    store_cfg = ctx.store_cfg
+    baseline_cfg = ctx.baseline_cfg
+    trial_deps = ctx.trial_deps
+    robust_cfg = ctx.robust_cfg
+    has_experiment = ctx.has_experiment
+    gs = ctx.gs
+    log = ctx.log
+    _mf_cost = ctx.mf_cost
+    _robust_state = ctx.robust_state
+
+    _dim_reduction_state = {"done": False, "attempts": 0}
 
     def _maybe_reduce_dimensions():
-        nonlocal _dim_reduction_done, _dim_reduction_attempts
-        if _dim_reduction_done:
-            return
-        dr = orch_cfg.dimensionality_reduction
-        if not dr.enabled:
-            return
-        exp = client._experiment
-        from ax.core.base_trial import TrialStatus as AxTrialStatus
-        n_completed = sum(1 for t in exp.trials.values() if t.status == AxTrialStatus.COMPLETED)
-        if n_completed < dr.after_trials:
-            return
-        gs = client._generation_strategy
-        if gs is None or gs.adapter is None:
-            return
-
-        try:
-            import torch
-            import numpy as _np
-            from ax.utils.sensitivity.sobol_measures import SobolSensitivityGPMean
-            from ax.adapter.cross_validation import cross_validate as ax_cv
-
-            # Check model fit quality via cross-validation before trusting Sobol
-            try:
-                cv_results = ax_cv(adapter=gs.adapter)
-                cv_errors = []
-                for r in cv_results:
-                    for mname, obs_mean in r.observed.data.means_dict.items():
-                        pred_mean = r.predicted.means_dict.get(mname, obs_mean)
-                        cv_errors.append(abs(obs_mean - pred_mean))
-                if cv_errors:
-                    obs_range = max(abs(e) for e in cv_errors)
-                    mean_cv_error = _np.mean(cv_errors)
-                    # If mean CV error > 50% of error range, model fit is poor
-                    if obs_range > 0 and mean_cv_error / obs_range > 0.5:
-                        log.info(f"Dimensionality reduction deferred — model fit too poor "
-                                  f"(CV error ratio: {mean_cv_error / obs_range:.2f})")
-                        return
-            except Exception:
-                pass  # CV failed — proceed with Sobol anyway
-
-            surr = gs.adapter.generator.surrogate
-            model = surr.model
-            # Build bounds tensor from search space (normalized [0,1] by Ax)
-            param_names = [p for p in exp.search_space.parameters
-                           if hasattr(exp.search_space.parameters[p], 'lower')]
-            n_params = len(param_names)
-            bounds = torch.zeros(2, n_params, dtype=torch.float64)
-            bounds[1] = 1.0  # model operates in normalized space
-            sobol = SobolSensitivityGPMean(model=model, bounds=bounds, num_mc_samples=1000)
-            total_order = sobol.total_order_indices()  # includes interactions with other params
-            # Map to param names
-            sensitivities = {"_aggregated": {
-                pname: float(total_order[i].abs()) for i, pname in enumerate(param_names)
-            }}
-        except Exception as e:
-            _dim_reduction_attempts += 1
-            if _dim_reduction_attempts >= 3:
-                log.warning(f"Dimensionality reduction disabled after 3 failed attempts: {e}")
-                _dim_reduction_done = True
-            else:
-                log.info(f"Dimensionality reduction attempt {_dim_reduction_attempts} failed: {e}")
-            return
-
-        # Aggregate importance across metrics (max importance across all objectives)
-        param_names = list(exp.search_space.parameters.keys())
-        importance = {}
-        for pname in param_names:
-            max_imp = 0.0
-            for metric_sens in sensitivities.values():
-                max_imp = max(max_imp, abs(metric_sens.get(pname, 0.0)))
-            importance[pname] = max_imp
-
-        # Sort by importance, find parameters to fix
-        sorted_params = sorted(importance.items(), key=lambda x: x[1])
-        max_fixable = min(int(len(param_names) * dr.max_fix_fraction), len(param_names) - 1)
-        to_fix = [(name, imp) for name, imp in sorted_params if imp < dr.min_importance]
-        to_fix = to_fix[:max_fixable]
-
-        if not to_fix:
-            log.info("Dimensionality reduction: all parameters are above the importance threshold")
-            _dim_reduction_done = True
-            return
-
-        # Determine fix values
-        if dr.fix_at == "best":
-            try:
-                best_params, _, _, _ = client.get_best_parameterization(use_model_predictions=False)
-            except Exception:
-                best_params = {p: exp.search_space.parameters[p].lower +
-                               (exp.search_space.parameters[p].upper - exp.search_space.parameters[p].lower) / 2
-                               for p in param_names if hasattr(exp.search_space.parameters[p], 'lower')}
-
-        from ax.core.parameter import FixedParameter
-        for pname, imp in to_fix:
-            param = exp.search_space.parameters[pname]
-            if dr.fix_at == "best":
-                fix_val = best_params.get(pname)
-            else:  # center
-                if hasattr(param, 'lower') and hasattr(param, 'upper'):
-                    fix_val = (param.lower + param.upper) / 2
-                elif hasattr(param, 'values'):
-                    fix_val = param.values[0]
-                else:
-                    continue
-            if fix_val is None:
-                continue
-            fixed = FixedParameter(name=pname, parameter_type=param.parameter_type, value=fix_val)
-            exp.search_space.update_parameter(fixed)
-            log.info(f"Dimensionality reduction: fixed '{pname}' = {fix_val} (importance={imp:.4f})")
-
-        log.info(f"Dimensionality reduction: {len(to_fix)} parameter(s) fixed, "
-                 f"{len(param_names) - len(to_fix)} remaining active")
-        _dim_reduction_done = True
+        from ax_robust_multifid.dimreduction import maybe_reduce_dimensions
+        maybe_reduce_dimensions(
+            client, orch_cfg.dimensionality_reduction, _dim_reduction_state)
 
     # Region screening runtime state — published to the API for dashboard use.
     _region_state: dict = {
@@ -810,6 +690,9 @@ def optimize(cfg, debug=False):
         import os
         import time as _time
         import subprocess as _sb
+        from ax_robust_multifid.regionscreening import (
+            region_inactive, next_streak, shrunk_bounds,
+        )
         groups_map = exp_cfg.get_parameter_groups()  # name -> [groups]
 
         all_groups = {g for groups in groups_map.values() for g in groups}
@@ -868,16 +751,12 @@ def optimize(cfg, debug=False):
                     "streak": _region_streak.get(region.group, 0),
                 }
                 continue
-            spread = max(vals) - min(vals)
-            ref = max(abs(v) for v in vals) if vals else 0.0
-            threshold = region.min_delta if region.min_delta is not None \
-                else (region.min_delta_frac or 0.0) * ref
-            inactive = spread < threshold
+            ri = region_inactive(vals, region.min_delta, region.min_delta_frac)
+            spread, threshold, inactive = ri["spread"], ri["threshold"], ri["inactive"]
+            _region_streak[region.group] = next_streak(
+                _region_streak.get(region.group, 0), inactive)
             if inactive:
-                _region_streak[region.group] = _region_streak.get(region.group, 0) + 1
                 flagged_now.append(region.group)
-            else:
-                _region_streak[region.group] = 0
             regions_status[region.group] = {
                 "samples": len(vals),
                 "spread": spread,
@@ -950,13 +829,10 @@ def optimize(cfg, debug=False):
                     continue
                 lo, hi = param.lower, param.upper
                 _region_state["original_bounds"].setdefault(pname, (lo, hi))
-                full_range = hi - lo
                 center = best_params.get(pname)
                 if center is None:
                     center = (lo + hi) / 2
-                half_window = (rs.shrink_factor * full_range) / 2
-                new_lo = max(lo, center - half_window)
-                new_hi = min(hi, center + half_window)
+                new_lo, new_hi = shrunk_bounds(lo, hi, center, rs.shrink_factor)
                 if new_hi <= new_lo:
                     continue
                 try:
