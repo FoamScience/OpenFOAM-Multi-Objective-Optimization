@@ -263,7 +263,7 @@ def optimize(cfg, debug=False):
         ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
         FoamBOConfig, TrialDependency, SeedDataNode, TimedOrchestrator,
     )
-    from ax.api.client import MultiObjective, Orchestrator, db_settings_from_storage_config
+    from ax.api.client import Orchestrator, db_settings_from_storage_config
     import pandas as pd
     from logging import Logger
     from ax.utils.common.logger import get_logger
@@ -487,7 +487,11 @@ def optimize(cfg, debug=False):
             _by_name = {m.name: m.to_metric() for m in opt_cfg.metrics}
             _fixed = 0
             for oc in _opt_config._outcome_constraints:
-                target = _by_name.get(oc.metric.name)
+                # ax >=1.3: expression-based constraints resolve metrics by name against
+                # the experiment registry — no per-constraint metric stub to replace.
+                if not hasattr(oc, "_metric"):
+                    continue
+                target = _by_name.get(oc.metric_names[0])
                 if target is not None and type(oc._metric) is not type(target):
                     oc._metric = target
                     _fixed += 1
@@ -501,25 +505,24 @@ def optimize(cfg, debug=False):
             _apply_objective_thresholds(client, opt_cfg.objective_thresholds, log=log)
     log.info("=================================================")
     _obj = client._experiment.optimization_config._objective
-    if hasattr(_obj, 'objectives'):
-        # Multi-objective
-        obj_lines = []
-        for o in _obj.objectives:
-            direction = "minimize" if o.minimize else "maximize"
-            obj_lines.append(f"  {o.metric.name} ({direction})")
+    if _obj.is_multi_objective:
+        obj_lines = [
+            f"  {name} ({'minimize' if w < 0 else 'maximize'})"
+            for name, w in _obj.metric_weights
+        ]
         log.info("Objectives (multi): %s", ", ".join(obj_lines))
     else:
         direction = "minimize" if _obj.minimize else "maximize"
-        log.info("Objective: %s (%s)", _obj.metric.name, direction)
-    if client._experiment._tracking_metrics:
-        names = sorted(m.name for m in client._experiment._tracking_metrics.values())
+        log.info("Objective: %s (%s)", _obj.metric_names[0], direction)
+    if client._experiment.tracking_metrics:
+        names = sorted(m.name for m in client._experiment.tracking_metrics)
         log.info("Tracking metrics: %s", ", ".join(names))
     # Also surface constraint metrics so users see expression metrics
     # (e.g. Q_over_RPM) used in outcome_constraints — these are *not*
     # tracking metrics in Ax's bucket.
     _oc = getattr(client._experiment.optimization_config, "outcome_constraints", None)
     if _oc:
-        cnames = sorted({c.metric.name for c in _oc})
+        cnames = sorted({c.metric_names[0] for c in _oc})
         log.info("Constraint metrics: %s", ", ".join(cnames))
         log.info("=================================================")
     # Re-register expression-metric callables into _fn_registry every run
@@ -1247,7 +1250,7 @@ def optimize(cfg, debug=False):
 
     log.info("=========== Best set of parameters ==============")
     best_parameters, prediction = None, None
-    if isinstance(client._experiment.optimization_config._objective, MultiObjective):
+    if client._experiment.optimization_config._objective.is_multi_objective:
         try:
             front = client.get_pareto_frontier(use_model_predictions=True)
         except Exception as e:
