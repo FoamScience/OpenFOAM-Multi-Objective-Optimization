@@ -1250,12 +1250,31 @@ class StoreOptions(FoamBOBaseModel):
             return JSONBackendOptions.model_validate({k: val for k, val in v.items() if k != "url"})
         return v
 
-    def load(self) -> Client:
+    def load(self, missing_ok: bool = False) -> Client:
+        """Restore the Ax ``Client`` from the configured backend.
+
+        Args:
+            missing_ok: When ``True`` and ``read_from == "json"`` but the state
+                file does not exist yet, return a fresh ``Client()`` instead of
+                raising (design D4). Used by the detached ``--step`` bootstrap:
+                the first step has no prior state to resume. Defaults to
+                ``False`` so explicit loads (``FoamBO.load``, archival) still
+                error on a missing experiment.
+        """
         if self.read_from == "nowhere":
             return Client()
         client = None
         if self.read_from == "json":
-            client = Client.load_from_json_file(filepath=f"artifacts/{get_experiment_name()}_client_state.json")
+            filepath = f"artifacts/{get_experiment_name()}_client_state.json"
+            try:
+                client = Client.load_from_json_file(filepath=filepath)
+            except FileNotFoundError:
+                if not missing_ok:
+                    raise
+                get_logger(__name__).warning(
+                    "No state file at %s — starting a fresh experiment (first --step).",
+                    filepath)
+                return Client()
         if self.read_from == "sql":
             client = Client.load_from_database(experiment_name=get_experiment_name(),
                                   storage_config = StorageConfig(url=self.backend_options.url))

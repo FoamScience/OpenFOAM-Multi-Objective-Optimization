@@ -202,14 +202,17 @@ class CasePreprocessor:
     and must return a dict with at least:
         {"case": <case_object_with_.path>, "casename": "<trial_path>"}
     """
-    def setup(self, parameters: dict, cfg) -> dict:
+    def setup(self, parameters: dict, cfg, trial_index: int | None = None) -> dict:
         raise NotImplementedError("Subclass must implement setup()")
 
 
 class FoamCasePreprocessor(CasePreprocessor):
     """Default OpenFOAM case preprocessor using foamlib."""
-    def setup(self, parameters: dict, cfg) -> dict:
-        return preprocess_case(parameters, cfg)
+    def setup(self, parameters: dict, cfg, trial_index: int | None = None) -> dict:
+        data = preprocess_case(parameters, cfg)
+        if trial_index is not None:
+            _stamp_trial_index(data['case'].path, trial_index, parameters)
+        return data
 
 
 class _FakeCasePath:
@@ -221,6 +224,18 @@ class _FakeCasePath:
         return self.path
 
 
+def _stamp_trial_index(case_path, trial_index: int, parameters: dict) -> None:
+    """Write ``.foambo_trial.json`` into a cloned case dir so a detached or
+    fully-external scheduler can map the finished case back to its Ax trial
+    index (detached-mode design §5). Best-effort; never fatal."""
+    try:
+        with open(os.path.join(str(case_path), ".foambo_trial.json"), "w") as f:
+            json.dump({"trial_index": int(trial_index),
+                       "parameters": dict(parameters)}, f, indent=2)
+    except OSError:
+        pass
+
+
 class NoCasePreprocessor(CasePreprocessor):
     """Caseless preprocessor: writes a single JSON file per trial.
 
@@ -228,7 +243,7 @@ class NoCasePreprocessor(CasePreprocessor):
     containing the full parameter dict. No case directory is created.
     Any `variable_substitution` entries with empty/`.` file target this JSON.
     """
-    def setup(self, parameters: dict, cfg) -> dict:
+    def setup(self, parameters: dict, cfg, trial_index: int | None = None) -> dict:
         hash = hashlib.md5()
         encoded = repr(OmegaConf.to_yaml(parameters)).encode()
         hash.update(encoded + f"{time.time()}".encode())
@@ -242,6 +257,8 @@ class NoCasePreprocessor(CasePreprocessor):
         trial_path = os.path.join(trial_dest, f"{trial_name}.json")
 
         payload = dict(parameters)
+        if trial_index is not None:
+            payload["__foambo_trial_index__"] = trial_index
         with open(trial_path, "w") as f:
             json.dump(payload, f, indent=2)
 

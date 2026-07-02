@@ -191,7 +191,8 @@ def _build_client(cfg, debug=False, missing_ok=False):
              or an OmegaConf ``DictConfig`` (backward-compatible with YAML loading).
 
     Returns:
-        The Ax ``Client`` with the completed experiment, or ``None`` on interrupt.
+        A ``SimpleNamespace`` bundle of the built client, runner, parsed config
+        sections, and advanced-mode state (``mf_cost``, ``robust_state``).
     """
     from omegaconf import OmegaConf, DictConfig
     from .common import VERSION, set_experiment_name, get_experiment_name
@@ -295,7 +296,7 @@ def _build_client(cfg, debug=False, missing_ok=False):
         if _boot.get("specialize"):
             apply_specialization(client, _boot["specialize"])
     else:
-        client = store_cfg.load()
+        client = store_cfg.load(missing_ok=missing_ok)
 
     # 1.0 Experiment setup
     has_experiment = False
@@ -1167,6 +1168,281 @@ def optimize(cfg, debug=False):
     log.info("==================== End ========================")
     return client
 
+def _warn_detached_advanced(ctx, log):
+    """Loudly warn when MF/robust is configured in a detached step (design §8 v2).
+
+    MF cost-model updates (``_update_cost_state``) and robust context cycling
+    (``cycle_context``) run only from the closed-loop Orchestrator ``callback``,
+    not from ``get_next_trials``. Detached ``--step``/``--run`` do not yet wire
+    those hooks, so for MF/robust campaigns the acquisition would silently use a
+    stale cost model / context point. Until the v2 ``_between_tell_and_ask``
+    helper exists, warn rather than no-op silently.
+    """
+    fidelity = [p for p in ctx.client._experiment.search_space.parameters.values()
+                if getattr(p, "is_fidelity", False)]
+    if not fidelity and ctx.robust_cfg is None:
+        return
+    bits = (["multi-fidelity"] if fidelity else []) + (["robust"] if ctx.robust_cfg is not None else [])
+    label = " + ".join(bits)
+    log.warning(
+        "Detached mode does NOT yet wire the advanced-mode callback hooks for "
+        "%s campaigns: MF cost updates (_update_cost_state) and robust context "
+        "cycling (cycle_context) run only in the closed loop. Acquisition will "
+        "use a stale cost model / context point between steps (design v2). Use "
+        "the closed loop (`foamBO --config ...`) for %s until v2 lands.",
+        label, label)
+
+
+def _tell_finished(client, opt_cfg, log):
+    """Complete every RUNNING trial whose metric results are already on disk.
+
+    Shared by ``--step`` (tell phase) and ``--run`` (post-dispatch ingest). A
+    trial is "ready" when all declared metrics fetch a finite value; a metric
+    that raises or returns NaN means the case is still cooking (skip). Returns
+    ``(told, failed)`` index lists. Idempotent — COMPLETED trials are skipped
+    since they are no longer RUNNING.
+    """
+    import math
+    from ax.core.base_trial import TrialStatus
+    # FoamJobMetric instances for every declared metric (objective + tracking +
+    # constraint). _build_client repopulated _fn_registry for expression/callable
+    # metrics, so .fetch resolves them here too.
+    metrics = {m.name: m.to_metric() for m in opt_cfg.metrics}
+
+    def _meta_for(trial):
+        meta = dict(trial.run_metadata or {})
+        cp = meta.get("case_path") or (meta.get("job") or {}).get("case_path")
+        # FoamJobMetric.fetch's command path reads meta['job']['case_path'], but
+        # a sidecar materialized by --step only carries a top-level case_path.
+        if cp and not meta.get("job"):
+            meta["job"] = {"case_path": cp}
+        if "parameters" not in meta and trial.arm is not None:
+            meta["parameters"] = dict(trial.arm.parameters)
+        return meta
+
+    def _ready(val):
+        scalar = val[0] if isinstance(val, tuple) else val
+        return scalar is not None and not (isinstance(scalar, float) and math.isnan(scalar))
+
+    told, failed = [], []
+    for idx, trial in list(client._experiment.trials.items()):
+        if trial.status != TrialStatus.RUNNING:
+            continue
+        meta = _meta_for(trial)
+        raw_data, ok = {}, True
+        for name, metric in metrics.items():
+            try:
+                _s, val = metric.fetch(idx, meta)
+            except Exception as e:
+                ok = False
+                log.debug("Trial %d: metric %s not ready (%s)", idx, name, e)
+                break
+            if not _ready(val):
+                ok = False
+                break
+            raw_data[name] = val
+        if not ok:
+            continue
+        try:
+            client.complete_trial(idx, raw_data=raw_data)
+            told.append(idx)
+        except Exception as e:
+            log.warning("Trial %d: completion failed (%s) — marking FAILED", idx, e)
+            client.mark_trial_failed(idx, failed_reason=str(e))
+            failed.append(idx)
+    return told, failed
+
+
+def _do_step(args):
+    """Detached **brain** step (detached-mode design §4): ingest any finished
+    results (tell), then ask the next batch and materialize trial sidecars
+    WITHOUT dispatching them.
+
+    Idempotent and self-healing — re-running ingests stragglers first, then
+    emits. With ``case_runner.runner: ""`` it only materializes (a fully
+    external scheduler runs the cases between calls); with a real runner,
+    ``foamBO --run`` or the classic closed loop executes the emitted batch.
+    Prints a machine-readable ``{told, failed, emitted}`` JSON line on stdout.
+    """
+    from .config import load_config, override_config
+    from .common import set_experiment_name
+    log = logging.getLogger(__name__)
+
+    cfg = load_config(args.config)
+    if args.overrides:
+        overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
+        if overrides:
+            cfg = override_config(cfg, overrides)
+    set_experiment_name(cfg["experiment"]["name"])
+
+    ctx = _build_client(cfg, debug=args.debug, missing_ok=True)
+    client, runner = ctx.client, ctx.runner
+    opt_cfg, orch_cfg, store_cfg = ctx.opt_cfg, ctx.orch_cfg, ctx.store_cfg
+    _warn_detached_advanced(ctx, log)
+
+    # ---- TELL: complete RUNNING trials whose results are already on disk ----
+    told, failed = _tell_finished(client, opt_cfg, log)
+
+    # ---- ASK: next batch, bounded by parallelism ----
+    emitted = []
+    try:
+        new_trials = client.get_next_trials(max_trials=orch_cfg.parallelism)
+    except Exception as e:
+        log.error("get_next_trials failed: %s", e)
+        new_trials = {}
+
+    # ---- MATERIALIZE: write sidecars + record case_path; do NOT dispatch ----
+    # Landmine #1: get_next_trials does NOT set foambo run_metadata, so the
+    # idx→case_path map is lost unless we update_run_metadata by hand.
+    for tidx, params in new_trials.items():
+        case_data = runner.preprocessor.setup(dict(params), runner.cfg, trial_index=tidx)
+        case_path = str(case_data['case'].path)
+        client._experiment.trials[tidx].update_run_metadata(
+            {"case_path": case_path, "parameters": dict(params)})
+        emitted.append({"idx": tidx, "case_path": case_path})
+
+    # Refresh runner.trial_registry (mirror the Orchestrator callback) so trial
+    # dependency resolution can see the freshly materialized cases.
+    for tidx2, trial in client._experiment.trials.items():
+        cp = trial.run_metadata.get("case_path") if trial.run_metadata else None
+        runner.trial_registry[tidx2] = {
+            "case_path": cp, "status": trial.status.name,
+            "parameters": trial.arm.parameters if trial.arm else {},
+        }
+    _refresh_trial_objectives(client, runner)
+
+    store_cfg.save(client)
+    result = {"told": told, "failed": failed, "emitted": emitted}
+    print(json.dumps(result))
+    log.info("--step: told=%d failed=%d emitted=%d", len(told), len(failed), len(emitted))
+    return result
+
+
+def _do_run(args):
+    """Detached **executor** step (detached-mode design §4): dispatch every
+    pending (RUNNING, has ``case_path``) trial via the existing runner, wait to
+    completion, then ingest results.
+
+    Idempotent — already-finished results are ingested up front and skipped;
+    COMPLETED trials are never re-dispatched. The in-process ``jobs`` handle
+    (metrics.py) is memory-only, so a ``local`` Popen must be dispatched and
+    polled by the same process; ``--run`` therefore drives the whole batch to
+    completion in one invocation. For dispatch-in-one / poll-in-another, use
+    ``mode: remote`` with ``remote_status_query``.
+    """
+    import time
+    from .config import load_config, override_config
+    from .common import set_experiment_name
+    from .metrics import trial_progression_step
+    from ax.core.base_trial import TrialStatus
+    log = logging.getLogger(__name__)
+
+    cfg = load_config(args.config)
+    if args.overrides:
+        overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
+        if overrides:
+            cfg = override_config(cfg, overrides)
+    set_experiment_name(cfg["experiment"]["name"])
+
+    ctx = _build_client(cfg, debug=args.debug, missing_ok=True)
+    client, runner = ctx.client, ctx.runner
+    opt_cfg, orch_cfg, store_cfg = ctx.opt_cfg, ctx.orch_cfg, ctx.store_cfg
+    _warn_detached_advanced(ctx, log)
+
+    runner_cmd = runner.cfg.get('template_case', {}).get('runner') if runner.cfg else None
+    if runner_cmd in (None, "", "null", "None"):
+        log.warning("--run: no case_runner.runner configured (BYO-scheduler mode). "
+                    "Nothing to execute — run the cases yourself, then `foamBO --step`.")
+        return {"dispatched": [], "told": [], "failed": []}
+
+    # Self-healing: ingest anything already finished before dispatching.
+    told0, failed0 = _tell_finished(client, opt_cfg, log)
+
+    # Dispatch every pending RUNNING trial that has a materialized case_path.
+    DONE = (TrialStatus.COMPLETED, TrialStatus.FAILED,
+            TrialStatus.EARLY_STOPPED, TrialStatus.ABANDONED)
+    dispatched = {}
+    for idx, trial in list(client._experiment.trials.items()):
+        if trial.status != TrialStatus.RUNNING:
+            continue
+        md = dict(trial.run_metadata or {})
+        cp = md.get("case_path") or (md.get("job") or {}).get("case_path")
+        if not cp:
+            log.debug("Trial %d RUNNING but not materialized (no case_path) — skipping", idx)
+            continue
+        params = md.get("parameters") or (trial.arm.parameters if trial.arm else {})
+        trial_progression_step.setdefault(idx, {})
+        try:
+            job_id, job = runner.dispatcher[runner.mode](
+                dict(params), cp, runner.cfg['template_case'], hook_env={})
+        except Exception as e:
+            log.error("Trial %d dispatch failed: %s", idx, e)
+            client.mark_trial_failed(idx, failed_reason=f"dispatch failed: {e}")
+            failed0.append(idx)
+            continue
+        meta = {"job_id": job_id, "job": job.model_dump(), "case_path": cp,
+                "parameters": dict(params), "dispatch_time": time.time()}
+        trial.update_run_metadata(meta)
+        dispatched[idx] = meta
+        log.info("Dispatched trial %d: %s", idx, cp)
+
+    # Wait for the whole batch (same process must poll local Popen handles).
+    poll = max(orch_cfg.initial_seconds_between_polls or 1, 1)
+    pending = dict(dispatched)
+    while pending:
+        for idx, meta in list(pending.items()):
+            try:
+                status = runner.poll_trial(idx, meta)
+            except Exception as e:
+                log.error("Trial %d poll failed: %s — abandoning", idx, e)
+                del pending[idx]
+                continue
+            if status in DONE:
+                log.info("Trial %d finished: %s", idx, status.name)
+                del pending[idx]
+        if pending:
+            time.sleep(poll)
+
+    # Ingest the just-finished trials.
+    told1, failed1 = _tell_finished(client, opt_cfg, log)
+    store_cfg.save(client)
+    result = {"dispatched": sorted(dispatched),
+              "told": sorted(set(told0 + told1)),
+              "failed": sorted(set(failed0 + failed1))}
+    print(json.dumps(result))
+    log.info("--run: dispatched=%d told=%d failed=%d",
+             len(dispatched), len(result["told"]), len(result["failed"]))
+    return result
+
+
+def _do_tell(args):
+    """Detached **ingest-only** step (detached-mode design §4, optional).
+
+    Complete any RUNNING trial whose results are already on disk, persist, and
+    exit — no ask. For explicit SLURM-array pipelines that separate harvest from
+    generate; the common path (``--step``) already does tell-then-ask.
+    """
+    from .config import load_config, override_config
+    from .common import set_experiment_name
+    log = logging.getLogger(__name__)
+
+    cfg = load_config(args.config)
+    if args.overrides:
+        overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
+        if overrides:
+            cfg = override_config(cfg, overrides)
+    set_experiment_name(cfg["experiment"]["name"])
+
+    ctx = _build_client(cfg, debug=args.debug, missing_ok=True)
+    _warn_detached_advanced(ctx, log)
+    told, failed = _tell_finished(ctx.client, ctx.opt_cfg, log)
+    ctx.store_cfg.save(ctx.client)
+    result = {"told": told, "failed": failed}
+    print(json.dumps(result))
+    log.info("--tell: told=%d failed=%d", len(told), len(failed))
+    return result
+
+
 def setup_colored_logging(debug=False):
     import logging
     import colorlog
@@ -1279,6 +1555,9 @@ def main():
     group.add_argument('--unpack', type=str, metavar='ARCHIVE', help='Unpack a .foambo archive')
     group.add_argument('--preflight-checks', action='store_true', help='Validate configuration before running')
     group.add_argument('--config-builder', action='store_true', help='Launch the web-based config builder UI')
+    group.add_argument('--step', action='store_true', help='Detached brain step: ingest finished results, then ask + materialize the next batch and exit (no dispatch)')
+    group.add_argument('--run', action='store_true', help='Detached executor: dispatch all pending materialized trials via the runner, wait to completion, ingest results, and exit')
+    group.add_argument('--tell', action='store_true', help='Detached ingest-only: complete trials whose results are on disk, save, and exit (no ask)')
     group.add_argument('-V', '--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('--config', type=str, default=DEFAULT_CONFIG, help=f'Path to config YAML file (optional, default={DEFAULT_CONFIG})')
     parser.add_argument('--json', action='store_true', help='Export Plotly figures as JSON (only valid with --analysis)')
@@ -1526,6 +1805,18 @@ def main():
         except KeyboardInterrupt:
             stop_api_server()
             log.info("Stopped.")
+        return
+
+    if args.step:
+        _do_step(args)
+        return
+
+    if args.run:
+        _do_run(args)
+        return
+
+    if args.tell:
+        _do_tell(args)
         return
 
     from .config import load_config, override_config

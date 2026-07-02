@@ -703,7 +703,7 @@ class FoamJobRunner(IRunner):
 
     def run_trial(self, trial_index: int, parameterization: TParameterization) -> dict[str, Any]:
         trial_progression_step[trial_index] = {}
-        case_data = self.preprocessor.setup(parameterization, self.cfg)
+        case_data = self.preprocessor.setup(parameterization, self.cfg, trial_index=trial_index)
         case_path = str(case_data['case'].path)
         # Detect caseless mode early (before dependency resolution which writes to disk)
         all_metrics_are_fns = all(m in _fn_registry for m in self._metric_names) if self._metric_names else False
