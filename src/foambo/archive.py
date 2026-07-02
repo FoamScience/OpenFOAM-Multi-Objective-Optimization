@@ -153,7 +153,7 @@ def _resolve_trial_indices(include_trials: str | None, cfg, client) -> list[int]
 
     if include_trials == "best":
         opt_config = exp.optimization_config
-        if hasattr(opt_config.objective, "objectives"):
+        if opt_config.objective.is_multi_objective:
             # MOO — return Pareto-optimal
             return _resolve_trial_indices("pareto", cfg, client)
         # SOO — return best
@@ -237,13 +237,8 @@ def pack(config_path: str, include_trials: str | None = None,
     # Build manifest
     objectives = []
     opt_config = exp.optimization_config
-    if hasattr(opt_config.objective, "objectives"):
-        for obj in opt_config.objective.objectives:
-            for mn in obj.metric_names:
-                objectives.append(mn)
-    else:
-        for mn in opt_config.objective.metric_names:
-            objectives.append(mn)
+    for mn in opt_config.objective.metric_names:
+        objectives.append(mn)
 
     manifest = {
         "foambo_version": VERSION,

@@ -523,13 +523,8 @@ def _get_experiment_info() -> dict:
 
         param_groups = getattr(exp.runner, '_parameter_groups', {})
         objectives = []
-        if hasattr(opt_config.objective, 'objectives'):
-            for obj in opt_config.objective.objectives:
-                for mn in obj.metric_names:
-                    objectives.append({"name": mn, "minimize": obj.minimize})
-        else:
-            for mn in opt_config.objective.metric_names:
-                objectives.append({"name": mn, "minimize": opt_config.objective.minimize})
+        for mn, w in opt_config.objective.metric_weights:
+            objectives.append({"name": mn, "minimize": w < 0})
 
         constraints = []
         if opt_config.outcome_constraints:
@@ -540,7 +535,7 @@ def _get_experiment_info() -> dict:
         if hasattr(opt_config, '_objective_thresholds') and opt_config._objective_thresholds:
             for ot in opt_config._objective_thresholds:
                 op_str = ">=" if str(ot.op) == "ComparisonOp.GEQ" else "<="
-                thresholds.append(f"{ot.metric.name} {op_str} {ot.bound}")
+                thresholds.append(f"{ot.metric_names[0]} {op_str} {ot.bound}")
 
         orch = _state.orch_cfg
         es_dict = None
@@ -895,14 +890,7 @@ def _get_objectives() -> dict:
                 df = non_streaming
 
         objectives_out = {}
-        obj_list = []
-        if hasattr(opt_config.objective, 'objectives'):
-            for obj in opt_config.objective.objectives:
-                for mn in obj.metric_names:
-                    obj_list.append((mn, obj.minimize))
-        else:
-            for mn in opt_config.objective.metric_names:
-                obj_list.append((mn, opt_config.objective.minimize))
+        obj_list = [(mn, w < 0) for mn, w in opt_config.objective.metric_weights]
 
         for metric_name, minimize in obj_list:
             mdf = df[df["metric_name"] == metric_name].sort_values("trial_index")
@@ -1109,9 +1097,8 @@ def _get_pareto(use_model: bool) -> dict:
             return {"frontier": [], "hypervolume": None, "hypervolume_trace": [],
                     "reference_point": None, "model_predictions_used": False}
 
-        from ax.api.client import MultiObjective
         opt_config = client._experiment.optimization_config
-        if not isinstance(opt_config.objective, MultiObjective):
+        if not opt_config.objective.is_multi_objective:
             raise HTTPException(400, "Pareto frontier requires multi-objective optimization")
 
         model_used = False
@@ -1141,7 +1128,7 @@ def _get_pareto(use_model: bool) -> dict:
         ref_point = {}
         if hasattr(opt_config, '_objective_thresholds') and opt_config._objective_thresholds:
             for ot in opt_config._objective_thresholds:
-                ref_point[ot.metric.name] = ot.bound
+                ref_point[ot.metric_names[0]] = ot.bound
 
         # Compute hypervolume trace over completed trials
         hv_trace = []
@@ -1157,8 +1144,7 @@ def _get_pareto(use_model: bool) -> dict:
             if completed and ref_point:
                 obj_names = list(opt_config.objective.metric_names)
                 minimize_flags = {
-                    obj.metric.name: obj.minimize
-                    for obj in opt_config.objective.objectives
+                    name: (w < 0) for name, w in opt_config.objective.metric_weights
                 }
                 data = exp.lookup_data().df
                 # BoTorch Hypervolume assumes maximization: negate minimized objectives
@@ -1559,15 +1545,14 @@ def pick_pareto_point(objective: str = Query(...)):
         client = _state.client
         if client is None:
             raise HTTPException(503, "Optimizer not initialized")
-        from ax.api.client import MultiObjective
         opt_config = client._experiment.optimization_config
-        if not isinstance(opt_config.objective, MultiObjective):
+        if not opt_config.objective.is_multi_objective:
             raise HTTPException(400, "Requires multi-objective optimization")
         # Find minimize flag for this objective
         minimize = True
-        for obj in opt_config.objective.objectives:
-            if obj.metric.name == objective:
-                minimize = obj.minimize
+        for name, w in opt_config.objective.metric_weights:
+            if name == objective:
+                minimize = w < 0
                 break
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*objective thresholds.*")
@@ -2030,9 +2015,7 @@ def get_pareto_robustness():
             raise HTTPException(503, "Model not fitted yet")
 
         # Get Pareto frontier
-        from ax.core.objective import MultiObjective
-        is_moo = isinstance(
-            client._experiment.optimization_config.objective, MultiObjective)
+        is_moo = client._experiment.optimization_config.objective.is_multi_objective
         if not is_moo:
             return SafeJSONResponse(content={"points": []})
 
@@ -2235,9 +2218,8 @@ def get_context_sensitivity():
 
         # Get base design (best point or first Pareto point)
         exp = client._experiment
-        from ax.core.objective import MultiObjective
         try:
-            if isinstance(exp.optimization_config.objective, MultiObjective):
+            if exp.optimization_config.objective.is_multi_objective:
                 front = client.get_pareto_frontier(use_model_predictions=False)
                 base_params = front[0][0] if front else None
             else:
@@ -2252,13 +2234,8 @@ def get_context_sensitivity():
         from ax.core.parameter import ChoiceParameter
 
         # Only include objective metrics (not tracking metrics)
-        obj_names = set()
-        from ax.core.objective import MultiObjective
         opt_config = exp.optimization_config
-        if isinstance(opt_config.objective, MultiObjective):
-            obj_names = {o.metric.name for o in opt_config.objective.objectives}
-        else:
-            obj_names = {opt_config.objective.metric.name}
+        obj_names = set(opt_config.objective.metric_names)
 
         n_sweep = 20
         _disabled = _disable_context_transforms(gs)
@@ -2324,12 +2301,9 @@ def get_convergence():
             # Build improvement trace from best-so-far data (retrospective)
             # This shows how the normalized improvement rate decayed over trials
             import numpy as np
-            from ax.core.objective import MultiObjective as _MO
             exp = client._experiment
             oc = exp.optimization_config
-            obj_info = ({o.metric.name: o.minimize for o in oc.objective.objectives}
-                        if isinstance(oc.objective, _MO)
-                        else {oc.objective.metric.name: oc.objective.minimize})
+            obj_info = {name: (w < 0) for name, w in oc.objective.metric_weights}
             data = exp.lookup_data().df
             completed = sorted(
                 [t for t in exp.trials.values() if t.status.name == "COMPLETED"],
@@ -2886,14 +2860,7 @@ def post_group_conditional_best(request_body: dict):
                 return SafeJSONResponse(content={"match_count": 0, "error": "No matching trials"})
 
             opt_config = exp.optimization_config
-            obj_list = []
-            if hasattr(opt_config.objective, 'objectives'):
-                for obj in opt_config.objective.objectives:
-                    for mn in obj.metric_names:
-                        obj_list.append((mn, obj.minimize))
-            else:
-                for mn in opt_config.objective.metric_names:
-                    obj_list.append((mn, opt_config.objective.minimize))
+            obj_list = [(mn, w < 0) for mn, w in opt_config.objective.metric_weights]
 
             data = exp.lookup_data()
             df = data.df if hasattr(data, 'df') else data
