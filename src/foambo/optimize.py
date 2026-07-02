@@ -485,6 +485,7 @@ def _build_client(cfg, debug=False, missing_ok=False):
         _seeded += 1
     if _seeded:
         log.info("Seeded runner trial_registry with %d inherited trial(s)", _seeded)
+    _refresh_trial_objectives(client, runner)
     runner._trial_timeout = orch_cfg.trial_timeout
     runner._baseline_execution_time = None  # set after baseline completes
     # Enable streaming data attachment during poll_trial (for early stopping)
@@ -947,6 +948,7 @@ def optimize(cfg, debug=False):
             if trial.status == _TS.FAILED and tidx not in _reported_failures:
                 _reported_failures.add(tidx)
                 _log_trial_failure(tidx, case_path, log)
+        _refresh_trial_objectives(client, runner)
         # Refresh API server state + live timing
         if orch_cfg.api_port != 0:
             _update_api(client)

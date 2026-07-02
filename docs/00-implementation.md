@@ -43,7 +43,7 @@ Session-ID validation rejects pushes from stale jobs of prior crashed runs (HTTP
 
 ## Key subsystems
 
-- **Trial dependencies** — `TrialDependency` / `TrialSelector` / `TrialAction`. Phases: `immediate`, `pre_init`, `pre_mesh`, `pre_solve`, `post_solve`. Hook scripts exposed via `$FOAMBO_PRE_MESH` etc.
+- **Trial dependencies** — `TrialDependency` / `TrialSelector`. Pure resolution: writes `.foambo_deps.json` manifest to case dir, exposed via `$FOAMBO_DEPS`. Runner script reads the manifest to decide actions.
 - **Dimensionality reduction** — `DimensionalityReductionOptions` inside `ConfigOrchestratorOptions`. Sobol-based param freezing after N trials.
 - **Parameter groups** — `groups: [...]` tag on each param. Feeds group sensitivity, `matching_group` dep strategy, group-frozen sweeps, what-if in Predict tab.
 - **Config builder UI** — `templates/config_builder.{html,js,css}`. Pico CSS + Alpine. Endpoints: `/config-builder`, `/api/v1/config/{schema,docs,validate,preflight}`.
