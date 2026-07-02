@@ -344,61 +344,39 @@ def _build_client(cfg, debug=False, missing_ok=False):
         import foambo.robustness  # noqa: F401
 
     if _fidelity_params and robust_cfg is None:
+        from ax_robust_multifid.multifidelity import augment_specs_for_multifidelity
+        cost_metrics = [m for m in opt_cfg.metrics if getattr(m, "is_cost", False)]
+        _mf_cost = augment_specs_for_multifidelity(
+            client, cost_metrics[0].name if cost_metrics else None, log)
+
+    # Auto-engage SAASBO surrogate for high-dimensional problems. Skipped when MF or
+    # robust already pin their own model class; only touches BOTORCH_MODULAR nodes
+    # without an explicit surrogate_spec.
+    if not _fidelity_params and robust_cfg is None and orch_cfg.saasbo.enabled:
+        from ax_robust_multifid.saasbo import saasbo_model_class
         from ax.adapter.registry import Generators
-        for node in gs._nodes:
-            for spec in node.generator_specs:
-                if spec.generator_enum != Generators.BOTORCH_MODULAR:
-                    continue
-                gk = spec.generator_kwargs
-                # Auto-inject MF acqf class if not already set
-                if "botorch_acqf_class" not in gk:
-                    try:
-                        from botorch.acquisition.multi_objective.hypervolume_knowledge_gradient import (
-                            qMultiFidelityHypervolumeKnowledgeGradient,
-                        )
-                        gk["botorch_acqf_class"] = qMultiFidelityHypervolumeKnowledgeGradient
-                        log.info("Multi-fidelity: auto-selected qMultiFidelityHypervolumeKnowledgeGradient")
-                    except ImportError:
-                        log.warning("Multi-fidelity: qMFHVKG not available; using default acqf")
-                if gk.get("surrogate_spec") is not None:
-                    continue
-                try:
-                    from botorch.models.gp_regression_fidelity import SingleTaskMultiFidelityGP
-                    from ax.generators.torch.botorch_modular.surrogate import SurrogateSpec
-                    from ax.generators.torch.botorch_modular.utils import ModelConfig
-                    from foambo.robustness import MFHVKGAcquisition
+        from ax.core.parameter import FixedParameter
+        _n_tunable = sum(
+            1 for p in client._experiment.search_space.parameters.values()
+            if not isinstance(p, FixedParameter)
+        )
+        _saas_cls = saasbo_model_class(_n_tunable, orch_cfg.saasbo)
+        if _saas_cls is not None:
+            from ax.generators.torch.botorch_modular.surrogate import SurrogateSpec
+            from ax.generators.torch.botorch_modular.utils import ModelConfig
+            for node in gs._nodes:
+                for spec in node.generator_specs:
+                    if spec.generator_enum != Generators.BOTORCH_MODULAR:
+                        continue
+                    gk = spec.generator_kwargs
+                    if gk.get("surrogate_spec") is not None:
+                        continue
                     gk["surrogate_spec"] = SurrogateSpec(
-                        model_configs=[ModelConfig(
-                            botorch_model_class=SingleTaskMultiFidelityGP,
-                        )],
-                        allow_batched_models=False,
+                        model_configs=[ModelConfig(botorch_model_class=_saas_cls)]
                     )
-                    # qMFHVKG input constructor doesn't accept X_pending
-                    spec.generator_kwargs["acquisition_class"] = MFHVKGAcquisition
-                    log.info("Multi-fidelity: auto-selected SingleTaskMultiFidelityGP surrogate "
-                             "(fidelity param: %s)", _fidelity_params[0].name)
-                    # Wire cost model for MF acquisition.
-                    # qMFHVKG input constructor takes fidelity_weights + cost_intercept
-                    # (builds AffineFidelityCostModel internally).
-                    # MOMF takes cost_call directly.
-                    # When is_cost metric exists, we learn these from observed data
-                    # and update each callback.
-                    if gk.get("botorch_acqf_class") is not None:
-                        cost_metrics = [m for m in opt_cfg.metrics if getattr(m, "is_cost", False)]
-                        if cost_metrics:
-                            _mf_cost = {
-                                "state": {"per_fidelity": {}},
-                                "metric": cost_metrics[0].name,
-                                "fidelity_param": _fidelity_params[0].name,
-                                "acqf_opts_ref": gk.setdefault("botorch_acqf_options", {}),
-                            }
-                            # Set initial defaults (updated from data in callback)
-                            acqf_opts = _mf_cost["acqf_opts_ref"]
-                            acqf_opts.setdefault("cost_intercept", 1.0)
-                            log.info("Multi-fidelity: cost from metric '%s' "
-                                     "(updated each callback)", _mf_cost["metric"])
-                except ImportError:
-                    log.warning("Multi-fidelity: could not import SingleTaskMultiFidelityGP")
+                    log.info("SAASBO: SaasFullyBayesianSingleTaskGP surrogate engaged "
+                             "(%d tunable params >= min_dims=%d)",
+                             _n_tunable, orch_cfg.saasbo.min_dims)
 
     phases = []
     for node in gs._nodes:

@@ -181,6 +181,27 @@ class RegionScreeningOptions(FoamBOBaseModel):
     ))
 
 
+class SaasboOptions(FoamBOBaseModel):
+    """Auto-engage SAASBO (sparse axis-aligned subspace BO) for high-dimensional
+    search spaces.
+
+    SAASBO uses sparsity-inducing priors + fully-Bayesian (NUTS) inference to stay
+    sample-efficient in high dimensions. It is slow, so it is gated behind ``min_dims``.
+    When engaged, the BoTorch generation node's surrogate is swapped to
+    ``SaasFullyBayesianSingleTaskGP`` (acquisition logic is unchanged).
+
+    Complementary to ``dimensionality_reduction`` (which *prunes* dead dims at fixed
+    points): SAASBO *models* the full high-dim space directly. Skipped when a
+    multi-fidelity or robust surrogate is already configured (those pin their own model
+    class), and only applied to BOTORCH_MODULAR nodes without an explicit surrogate.
+    """
+    enabled: bool = Field(default=False, description="Enable automatic SAASBO surrogate selection")
+    min_dims: int = Field(default=15, ge=1, description=(
+        "Engage SAASBO only when the search space has at least this many tunable "
+        "parameters. Keep high enough that the sparsity payoff covers the slow NUTS fit."
+    ))
+
+
 class ConfigOrchestratorOptions(FoamBOBaseModel):
     """Controls for timeouts, poll times, early-stopping and convergence criteria."""
     max_trials: int = Field(description="Maximum number of trials to run, baseline included", examples=[20])
@@ -287,6 +308,10 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
             "sectional scalar (e.g. region ΔP) shows little variation across trials."
         ),
     )
+    saasbo: SaasboOptions = Field(
+        default_factory=lambda: SaasboOptions(enabled=False),
+        description="Auto-select the SAASBO surrogate on the BoTorch node for high-dimensional problems",
+    )
 
     @field_validator("dimensionality_reduction", mode="before")
     @classmethod
@@ -300,6 +325,13 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
     def parse_region_screening(cls, v):
         if isinstance(v, dict | DictConfig):
             return RegionScreeningOptions.model_validate(dict(v))
+        return v
+
+    @field_validator("saasbo", mode="before")
+    @classmethod
+    def parse_saasbo(cls, v):
+        if isinstance(v, dict | DictConfig):
+            return SaasboOptions.model_validate(dict(v))
         return v
 
     @field_validator("global_stopping_strategy", mode="before")
