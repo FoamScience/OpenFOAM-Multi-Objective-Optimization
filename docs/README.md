@@ -18,6 +18,10 @@ uvx foamBO --docs
 To get familiarized with the `foamBO` framework; it's recommended to go through these tutorials:
 1. [Optimization 101: single-objective, single-parameter setup](./01-single-objective.md)
 2. [Multi-objective optimization: advanced setups](./02-multi-objective.md)
+3. [Closed loop vs. detached loop: running campaigns step-by-step](./03-detached-mode.md)
+
+Topic guides:
+- [Risk measures for robust optimization (CVaR, VaR, MARS)](./risk-measures-guide.md)
 
 ## Implementation and contributing
 

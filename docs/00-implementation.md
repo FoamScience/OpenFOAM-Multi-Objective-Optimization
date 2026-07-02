@@ -41,6 +41,19 @@ Env vars injected into every trial subprocess:
 
 Session-ID validation rejects pushes from stale jobs of prior crashed runs (HTTP 409).
 
+### Detached mode
+
+`--step` / `--run` / `--tell` (optimize.py `_do_step`/`_do_run`/`_do_tell`)
+decompose the closed loop into stateless invocations coupled through the
+filesystem + state store. Shared setup lives in `_build_client(cfg,
+missing_ok=)` — same code path as the closed loop; `missing_ok=True` treats a
+missing store file as a fresh `Client`. `_tell_finished` completes RUNNING
+trials whose metrics all fetch finite values; `.foambo_trial.json` /
+`__foambo_trial_index__` stamps give external schedulers the trial identity.
+MF/robust callback hooks are NOT wired in detached steps yet —
+`_warn_detached_advanced` warns. User guide: `docs/03-detached-mode.md`;
+design: `docs/detached_mode_design.md`.
+
 ## Key subsystems
 
 - **Trial dependencies** — `TrialDependency` / `TrialSelector`. Pure resolution: writes `.foambo_deps.json` manifest to case dir, exposed via `$FOAMBO_DEPS`. Runner script reads the manifest to decide actions.

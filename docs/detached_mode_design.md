@@ -1,6 +1,6 @@
 # foamBO detached mode (ask / run / tell) — design
 
-**Status:** design only — implementation in a later session.
+**Status:** v1 implemented (`--step`/`--run`/`--tell`, `_build_client`, sidecar stamping; MF/robust hooks deferred to v2). User-facing guide: [03-detached-mode.md](./03-detached-mode.md).
 **Author trace:** end-to-end read of `src/foambo/{optimize,orchestrate,metrics,common,api,api_server,archive,analysis}.py` (ax-platform modern `Client`). All file:line refs are against the current tree.
 
 ---
