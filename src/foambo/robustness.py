@@ -1,7 +1,7 @@
-"""Robust + multi-fidelity glue — thin adapter over ``ax_robust_multifid``.
+"""Robust + multi-fidelity glue — thin adapter over ``axbo_extensions``.
 
 foamBO's own robust/MF implementation was extracted into the shared package
-``ax_robust_multifid`` (pinned to ax-platform 1.3.1 / botorch 0.18.1) so foamBO and UPO
+``axbo_extensions`` (pinned to ax-platform 1.3.1 / botorch 0.18.1) so foamBO and UPO
 consume one copy instead of divergent forks. This module now:
 
 - keeps foamBO's ``RobustOptimizationConfig`` (its ``risk_measure`` field is vestigial and
@@ -25,7 +25,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from ax_robust_multifid.robustness import (
+from axbo_extensions.robustness import (
     SubstituteContextFeatures,
     RobustAcquisition,
     cycle_context,
@@ -35,7 +35,7 @@ from ax_robust_multifid.robustness import (
     augment_generator_specs as _lib_augment_generator_specs,
     build_context_tensor as _lib_build_context_tensor,
 )
-from ax_robust_multifid.multifidelity import MultiFidHVKGAcquisition as MFHVKGAcquisition
+from axbo_extensions.multifidelity import MultiFidHVKGAcquisition as MFHVKGAcquisition
 
 log = logging.getLogger("ax.foambo.robustness")
 

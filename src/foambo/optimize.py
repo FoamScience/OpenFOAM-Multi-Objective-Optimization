@@ -154,14 +154,14 @@ def _update_cost_state(client, mf_cost, log=None):
       cost_intercept = mean_cost_at_s0
       fidelity_weight = mean_cost_at_s1 - mean_cost_at_s0
     """
-    from ax_robust_multifid.multifidelity import update_cost_state
+    from axbo_extensions.multifidelity import update_cost_state
     return update_cost_state(client, mf_cost, log=log)
 
 
 def _refresh_trial_objectives(client, runner):
     """Stash a per-trial objective scalar map on the runner for the ``best`` trial-dependency
-    selector (ax_robust_multifid.trialdeps.resolve_source_trial needs it explicitly)."""
-    from ax_robust_multifid.trialdeps import trial_objectives
+    selector (axbo_extensions.trialdeps.resolve_source_trial needs it explicitly)."""
+    from axbo_extensions.trialdeps import trial_objectives
     try:
         names = list(client._experiment.optimization_config.objective.metric_names)
         runner._trial_objectives = trial_objectives(client, names)
@@ -315,7 +315,7 @@ def _build_client(cfg, debug=False, missing_ok=False):
     _fidelity_cfg = getattr(exp_cfg, '_fidelity_params', None) or \
                     getattr(type(exp_cfg), '_fidelity_params', None)
     if _fidelity_cfg:
-        from ax_robust_multifid.multifidelity import apply_fidelity_parameters
+        from axbo_extensions.multifidelity import apply_fidelity_parameters
         apply_fidelity_parameters(client, _fidelity_cfg, log)
 
     ## 2.0 Trial generation
@@ -345,7 +345,7 @@ def _build_client(cfg, debug=False, missing_ok=False):
         import foambo.robustness  # noqa: F401
 
     if _fidelity_params and robust_cfg is None:
-        from ax_robust_multifid.multifidelity import augment_specs_for_multifidelity
+        from axbo_extensions.multifidelity import augment_specs_for_multifidelity
         cost_metrics = [m for m in opt_cfg.metrics if getattr(m, "is_cost", False)]
         _mf_cost = augment_specs_for_multifidelity(
             client, cost_metrics[0].name if cost_metrics else None, log)
@@ -354,7 +354,7 @@ def _build_client(cfg, debug=False, missing_ok=False):
     # robust already pin their own model class; only touches BOTORCH_MODULAR nodes
     # without an explicit surrogate_spec.
     if not _fidelity_params and robust_cfg is None and orch_cfg.saasbo.enabled:
-        from ax_robust_multifid.saasbo import saasbo_model_class
+        from axbo_extensions.saasbo import saasbo_model_class
         from ax.adapter.registry import Generators
         from ax.core.parameter import FixedParameter
         _n_tunable = sum(
@@ -639,7 +639,7 @@ def optimize(cfg, debug=False):
     _dim_reduction_state = {"done": False, "attempts": 0}
 
     def _maybe_reduce_dimensions():
-        from ax_robust_multifid.dimreduction import maybe_reduce_dimensions
+        from axbo_extensions.dimreduction import maybe_reduce_dimensions
         maybe_reduce_dimensions(
             client, orch_cfg.dimensionality_reduction, _dim_reduction_state)
 
@@ -670,7 +670,7 @@ def optimize(cfg, debug=False):
         import os
         import time as _time
         import subprocess as _sb
-        from ax_robust_multifid.regionscreening import (
+        from axbo_extensions.regionscreening import (
             region_inactive, next_streak, shrunk_bounds,
         )
         groups_map = exp_cfg.get_parameter_groups()  # name -> [groups]

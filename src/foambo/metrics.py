@@ -622,13 +622,13 @@ class FoamJobRunner(IRunner):
         """Resolve a source trial index and case path from the registry.
 
         Returns ``(trial_index, case_path)`` or ``None``. Strategy logic is delegated to
-        ``ax_robust_multifid.trialdeps.resolve_source_trial``; foamBO's registry stores the
+        ``axbo_extensions.trialdeps.resolve_source_trial``; foamBO's registry stores the
         artifact location under ``case_path`` (mapped to the lib's ``artifact_ref``). The
         ``best`` selector uses the objectives map stashed on the runner
         (``_trial_objectives``) — foamBO's old inline version read a never-populated
         ``objective_value`` and silently degraded to the lowest index.
         """
-        from ax_robust_multifid.trialdeps import resolve_source_trial
+        from axbo_extensions.trialdeps import resolve_source_trial
         registry = {
             idx: {
                 "status": e.get("status"),

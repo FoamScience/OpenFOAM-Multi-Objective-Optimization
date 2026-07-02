@@ -134,9 +134,9 @@ wheels = [
 ]
 
 [[package]]
-name = "ax-robust-multifid"
+name = "axbo-extensions"
 version = "0.0.1"
-source = { editable = "../ax_robust_multifid" }
+source = { editable = "../axbo_extensions" }
 dependencies = [
     { name = "ax-platform" },
     { name = "botorch" },
@@ -649,7 +649,7 @@ version = "1.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "ax-platform" },
-    { name = "ax-robust-multifid" },
+    { name = "axbo-extensions" },
     { name = "botorch" },
     { name = "colorlog" },
     { name = "dash" },
@@ -680,7 +680,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "ax-platform", specifier = "==1.3.1" },
-    { name = "ax-robust-multifid", editable = "../ax_robust_multifid" },
+    { name = "axbo-extensions", editable = "../axbo_extensions" },
     { name = "botorch", specifier = "==0.18.1" },
     { name = "colorlog", specifier = ">=6.9.0" },
     { name = "dash", specifier = ">=2.11.1" },
