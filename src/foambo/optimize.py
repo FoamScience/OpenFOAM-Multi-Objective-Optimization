@@ -20,14 +20,14 @@ def _apply_objective_thresholds(client, expressions: list[str], log=None,
     when *baseline_data* is ``None`` (they will be resolved after the
     baseline trial completes).
     """
-    from ax.core.outcome_constraint import ObjectiveThreshold
+    from ax.core.outcome_constraint import OutcomeConstraint
     from ax.core.types import ComparisonOp
 
     opt_config = client._experiment.optimization_config
     if not hasattr(opt_config, 'objective_thresholds'):
         return
 
-    existing = {ot.metric.name: ot for ot in (opt_config._objective_thresholds or [])}
+    existing = {ot.metric_names[0]: ot for ot in (opt_config._objective_thresholds or [])}
 
     for expr in expressions:
         expr = expr.strip()
@@ -36,10 +36,10 @@ def _apply_objective_thresholds(client, expressions: list[str], log=None,
 
         if ">=" in expr:
             name, rhs = expr.split(">=", 1)
-            op = ComparisonOp.GEQ
+            op_str = ">="
         elif "<=" in expr:
             name, rhs = expr.split("<=", 1)
-            op = ComparisonOp.LEQ
+            op_str = "<="
         else:
             continue
 
@@ -56,12 +56,16 @@ def _apply_objective_thresholds(client, expressions: list[str], log=None,
         else:
             bound = float(rhs)
 
-        metric = opt_config.metrics[name]
-        existing[name] = ObjectiveThreshold(metric=metric, bound=bound, op=op, relative=False)
+        metric = client._experiment.metrics[name]
+        existing[name] = OutcomeConstraint(
+            expression=f"{name} {op_str} {bound}",
+            metric_name_to_signature={name: metric.signature},
+            relative=False,
+        )
 
     opt_config._objective_thresholds = list(existing.values())
     if log:
-        summary = [f"{ot.metric.name} {'>=' if ot.op == ComparisonOp.GEQ else '<='} {ot.bound}"
+        summary = [f"{ot.metric_names[0]} {'>=' if ot.op == ComparisonOp.GEQ else '<='} {ot.bound}"
                    for ot in existing.values()]
         log.info(f"Objective thresholds set: {summary}")
 
@@ -93,10 +97,10 @@ def _apply_outcome_constraints(client, expressions: list[str], log=None,
             continue  # absolute constraint already handled by Ax
         if ">=" in expr:
             name, rhs = expr.split(">=", 1)
-            op = ComparisonOp.GEQ
+            op_str = ">="
         elif "<=" in expr:
             name, rhs = expr.split("<=", 1)
-            op = ComparisonOp.LEQ
+            op_str = "<="
         else:
             continue
         name = name.strip()
@@ -109,18 +113,22 @@ def _apply_outcome_constraints(client, expressions: list[str], log=None,
                 log.warning(f"Outcome constraint: no baseline value for '{name}', skipping")
             continue
         bound = float(eval(rhs.replace("baseline", str(bl_val))))
-        if name not in opt_config.metrics:
+        if name not in client._experiment.metrics:
             if log:
                 log.warning(f"Outcome constraint metric '{name}' not registered")
             continue
-        metric = opt_config.metrics[name]
-        keep.append(OutcomeConstraint(metric=metric, bound=bound, op=op, relative=False))
-        resolved_keys.add((name, ">=" if op == ComparisonOp.GEQ else "<="))
+        metric = client._experiment.metrics[name]
+        keep.append(OutcomeConstraint(
+            expression=f"{name} {op_str} {bound}",
+            metric_name_to_signature={name: metric.signature},
+            relative=False,
+        ))
+        resolved_keys.add((name, op_str))
 
     # Drop any pre-existing relative constraints we just resolved; keep the rest as-is
     for oc in existing:
         op_s = ">=" if oc.op == ComparisonOp.GEQ else "<="
-        if (oc.metric.name, op_s) in resolved_keys:
+        if (oc.metric_names[0], op_s) in resolved_keys:
             continue
         keep.append(oc)
     opt_config._outcome_constraints = keep
