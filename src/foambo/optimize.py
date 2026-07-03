@@ -1647,9 +1647,9 @@ def main():
             except OSError:
                 s.bind((host, 0))
                 new_port = s.getsockname()[1]
-                print(f"Port {port} in use, using {new_port} instead")
+                logging.getLogger(__name__).warning(f"Port {port} in use, using {new_port} instead")
                 port = new_port
-        print(f"Config Builder running at http://{host}:{port}/config-builder")
+        logging.getLogger(__name__).info(f"Config Builder running at http://{host}:{port}/config-builder")
         uvicorn.run(_app, host=host, port=port, log_level="warning")
         return
 
@@ -1662,11 +1662,11 @@ def main():
         if cache_file.exists():
             try:
                 docs = json.loads(cache_file.read_text())
-                print(f"Loading cached docs (v{VERSION})")
+                logging.getLogger(__name__).info(f"Loading cached docs (v{VERSION})")
             except Exception:
                 pass
         if docs is None:
-            print(f"Generating docs (v{VERSION})...")
+            logging.getLogger(__name__).info(f"Generating docs (v{VERSION})...")
             from .default_config import get_config_docs
             docs = get_config_docs()
             try:
