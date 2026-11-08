@@ -153,7 +153,7 @@ def _resolve_trial_indices(include_trials: str | None, cfg, client) -> list[int]
 
     if include_trials == "best":
         opt_config = exp.optimization_config
-        if hasattr(opt_config.objective, "objectives"):
+        if opt_config.objective.is_multi_objective:
             # MOO — return Pareto-optimal
             return _resolve_trial_indices("pareto", cfg, client)
         # SOO — return best
@@ -237,13 +237,8 @@ def pack(config_path: str, include_trials: str | None = None,
     # Build manifest
     objectives = []
     opt_config = exp.optimization_config
-    if hasattr(opt_config.objective, "objectives"):
-        for obj in opt_config.objective.objectives:
-            for mn in obj.metric_names:
-                objectives.append(mn)
-    else:
-        for mn in opt_config.objective.metric_names:
-            objectives.append(mn)
+    for mn in opt_config.objective.metric_names:
+        objectives.append(mn)
 
     manifest = {
         "foambo_version": VERSION,
@@ -262,11 +257,11 @@ def pack(config_path: str, include_trials: str | None = None,
         },
     }
 
-    print(f"Packing experiment '{exp_name}' → {archive_path}")
-    print(f"  Trials: {len(exp.trials)} total, {n_completed} completed")
+    log.info(f"Packing experiment '{exp_name}' → {archive_path}")
+    log.info(f"  Trials: {len(exp.trials)} total, {n_completed} completed")
     if trial_indices:
-        print(f"  Including trial folders: {trial_indices}")
-    print(f"  Skip patterns: {all_skip}")
+        log.info(f"  Including trial folders: {trial_indices}")
+    log.info(f"  Skip patterns: {all_skip}")
 
     with h5py.File(archive_path, "w") as f:
         # Attributes
@@ -280,18 +275,18 @@ def pack(config_path: str, include_trials: str | None = None,
         # Config YAML
         with open(config_path, "rb") as cf:
             f.create_dataset("config", data=cf.read(), **_compression())
-        print(f"  + config ({os.path.getsize(config_path)} bytes)")
+        log.info(f"  + config ({os.path.getsize(config_path)} bytes)")
 
         # Client state JSON
         with open(client_state_path, "rb") as cs:
             f.create_dataset("client_state", data=cs.read(), **_compression())
-        print(f"  + client_state ({os.path.getsize(client_state_path)} bytes)")
+        log.info(f"  + client_state ({os.path.getsize(client_state_path)} bytes)")
 
         # Base case
         if os.path.isdir(base_case_path):
             grp = f.create_group("base_case")
             n, sz = _store_directory(grp, base_case_path, all_skip)
-            print(f"  + base_case/ ({n} files, {sz / 1024 / 1024:.1f} MB)")
+            log.info(f"  + base_case/ ({n} files, {sz / 1024 / 1024:.1f} MB)")
         else:
             log.warning(f"Base case not found: {base_case_path}")
 
@@ -306,13 +301,13 @@ def pack(config_path: str, include_trials: str | None = None,
                 ds.attrs["mode"] = os.stat(sp).st_mode & 0o777
                 ds.attrs["is_symlink"] = False
                 ds.attrs["original_path"] = sp
-            print(f"  + scripts/ ({len(script_paths)} files)")
+            log.info(f"  + scripts/ ({len(script_paths)} files)")
 
         # Artifacts
         if os.path.isdir(artifacts_folder):
             grp = f.create_group("artifacts")
             n, sz = _store_directory(grp, artifacts_folder, all_skip)
-            print(f"  + artifacts/ ({n} files, {sz / 1024 / 1024:.1f} MB)")
+            log.info(f"  + artifacts/ ({n} files, {sz / 1024 / 1024:.1f} MB)")
 
         # Trials
         if trial_indices:
@@ -350,7 +345,7 @@ def pack(config_path: str, include_trials: str | None = None,
                     tgrp.attrs["status"] = trial.status.name
                     tgrp.attrs["parameters"] = json.dumps(trial.arm.parameters if trial.arm else {})
                     n, sz = _store_directory(tgrp, trial_dir, all_skip)
-                    print(f"  + trials/{tidx}/ ({n} files, {sz / 1024 / 1024:.1f} MB)")
+                    log.info(f"  + trials/{tidx}/ ({n} files, {sz / 1024 / 1024:.1f} MB)")
                 elif trial_file and os.path.isfile(trial_file):
                     tgrp = trials_grp.create_group(str(tidx))
                     tgrp.attrs["status"] = trial.status.name
@@ -361,12 +356,12 @@ def pack(config_path: str, include_trials: str | None = None,
                         data = tf.read()
                     ds = tgrp.create_dataset("__file__", data=data, **_compression())
                     ds.attrs["mode"] = os.stat(trial_file).st_mode & 0o777
-                    print(f"  + trials/{tidx} (caseless file, {len(data)} bytes)")
+                    log.info(f"  + trials/{tidx} (caseless file, {len(data)} bytes)")
                 else:
                     log.warning(f"Trial {tidx} folder/file not found")
 
     archive_size = os.path.getsize(archive_path)
-    print(f"\nArchive created: {archive_path} ({archive_size / 1024 / 1024:.1f} MB)")
+    log.info(f"Archive created: {archive_path} ({archive_size / 1024 / 1024:.1f} MB)")
     return archive_path
 
 
@@ -397,11 +392,11 @@ def unpack(archive_path: str, output_dir: str | None = None) -> str:
         target = output_dir or f"./{exp_name}"
         os.makedirs(target, exist_ok=True)
 
-        print(f"Unpacking '{exp_name}' → {target}/")
-        print(f"  Packed: {manifest.get('packed_at', '?')}")
-        print(f"  Trials: {manifest.get('n_trials', '?')} total, {manifest.get('n_completed', '?')} completed")
+        log.info(f"Unpacking '{exp_name}' → {target}/")
+        log.info(f"  Packed: {manifest.get('packed_at', '?')}")
+        log.info(f"  Trials: {manifest.get('n_trials', '?')} total, {manifest.get('n_completed', '?')} completed")
         if manifest.get("included_trials"):
-            print(f"  Included trial folders: {manifest['included_trials']}")
+            log.info(f"  Included trial folders: {manifest['included_trials']}")
 
         # Config
         config_bytes = bytes(f["config"][()])
@@ -414,25 +409,25 @@ def unpack(archive_path: str, output_dir: str | None = None) -> str:
             cs_path = os.path.join(cs_dir, f"{exp_name}_client_state.json")
             with open(cs_path, "wb") as out:
                 out.write(bytes(f["client_state"][()]))
-            print(f"  + artifacts/ (client state)")
+            log.info(f"  + artifacts/ (client state)")
 
         # Base case
         if "base_case" in f:
             bc_dir = os.path.join(target, "base_case")
             n = _extract_directory(f["base_case"], bc_dir)
-            print(f"  + base_case/ ({n} files)")
+            log.info(f"  + base_case/ ({n} files)")
 
         # Scripts
         if "scripts" in f:
             scripts_dir = os.path.join(target, "scripts")
             n = _extract_directory(f["scripts"], scripts_dir)
-            print(f"  + scripts/ ({n} files)")
+            log.info(f"  + scripts/ ({n} files)")
 
         # Artifacts (non-client-state files)
         if "artifacts" in f:
             art_dir = os.path.join(target, "artifacts")
             n = _extract_directory(f["artifacts"], art_dir)
-            print(f"  + artifacts/ ({n} files)")
+            log.info(f"  + artifacts/ ({n} files)")
 
         # Trials
         if "trials" in f:
@@ -449,11 +444,11 @@ def unpack(archive_path: str, output_dir: str | None = None) -> str:
                         out.write(bytes(tgrp["__file__"][()]))
                     mode = tgrp["__file__"].attrs.get("mode", 0o644)
                     os.chmod(out_path, mode)
-                    print(f"  + trials/{fname} (caseless file)")
+                    log.info(f"  + trials/{fname} (caseless file)")
                 else:
                     tdir = os.path.join(trials_dir, f"{exp_name}_trial_{tidx_str}")
                     n = _extract_directory(tgrp, tdir)
-                    print(f"  + trials/{tidx_str}/ ({n} files)")
+                    log.info(f"  + trials/{tidx_str}/ ({n} files)")
 
         # Rewrite config paths
         cfg = OmegaConf.load_from_string(config_bytes.decode())
@@ -479,8 +474,8 @@ def unpack(archive_path: str, output_dir: str | None = None) -> str:
 
         with open(config_path, "w") as out:
             out.write(OmegaConf.to_yaml(cfg))
-        print(f"  + config.yaml (paths rewritten)")
+        log.info(f"  + config.yaml (paths rewritten)")
 
-    print(f"\nUnpacked to: {os.path.abspath(target)}/")
-    print(f"  To view: foamBO --no-opt --config {config_path} ++store.read_from=json")
+    log.info(f"Unpacked to: {os.path.abspath(target)}/")
+    log.info(f"  To view: foamBO --no-opt --config {config_path} ++store.read_from=json")
     return target

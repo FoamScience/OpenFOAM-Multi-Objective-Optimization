@@ -20,14 +20,14 @@ def _apply_objective_thresholds(client, expressions: list[str], log=None,
     when *baseline_data* is ``None`` (they will be resolved after the
     baseline trial completes).
     """
-    from ax.core.outcome_constraint import ObjectiveThreshold
+    from ax.core.outcome_constraint import OutcomeConstraint
     from ax.core.types import ComparisonOp
 
     opt_config = client._experiment.optimization_config
     if not hasattr(opt_config, 'objective_thresholds'):
         return
 
-    existing = {ot.metric.name: ot for ot in (opt_config._objective_thresholds or [])}
+    existing = {ot.metric_names[0]: ot for ot in (opt_config._objective_thresholds or [])}
 
     for expr in expressions:
         expr = expr.strip()
@@ -36,10 +36,10 @@ def _apply_objective_thresholds(client, expressions: list[str], log=None,
 
         if ">=" in expr:
             name, rhs = expr.split(">=", 1)
-            op = ComparisonOp.GEQ
+            op_str = ">="
         elif "<=" in expr:
             name, rhs = expr.split("<=", 1)
-            op = ComparisonOp.LEQ
+            op_str = "<="
         else:
             continue
 
@@ -56,12 +56,16 @@ def _apply_objective_thresholds(client, expressions: list[str], log=None,
         else:
             bound = float(rhs)
 
-        metric = opt_config.metrics[name]
-        existing[name] = ObjectiveThreshold(metric=metric, bound=bound, op=op, relative=False)
+        metric = client._experiment.metrics[name]
+        existing[name] = OutcomeConstraint(
+            expression=f"{name} {op_str} {bound}",
+            metric_name_to_signature={name: metric.signature},
+            relative=False,
+        )
 
     opt_config._objective_thresholds = list(existing.values())
     if log:
-        summary = [f"{ot.metric.name} {'>=' if ot.op == ComparisonOp.GEQ else '<='} {ot.bound}"
+        summary = [f"{ot.metric_names[0]} {'>=' if ot.op == ComparisonOp.GEQ else '<='} {ot.bound}"
                    for ot in existing.values()]
         log.info(f"Objective thresholds set: {summary}")
 
@@ -93,10 +97,10 @@ def _apply_outcome_constraints(client, expressions: list[str], log=None,
             continue  # absolute constraint already handled by Ax
         if ">=" in expr:
             name, rhs = expr.split(">=", 1)
-            op = ComparisonOp.GEQ
+            op_str = ">="
         elif "<=" in expr:
             name, rhs = expr.split("<=", 1)
-            op = ComparisonOp.LEQ
+            op_str = "<="
         else:
             continue
         name = name.strip()
@@ -109,18 +113,22 @@ def _apply_outcome_constraints(client, expressions: list[str], log=None,
                 log.warning(f"Outcome constraint: no baseline value for '{name}', skipping")
             continue
         bound = float(eval(rhs.replace("baseline", str(bl_val))))
-        if name not in opt_config.metrics:
+        if name not in client._experiment.metrics:
             if log:
                 log.warning(f"Outcome constraint metric '{name}' not registered")
             continue
-        metric = opt_config.metrics[name]
-        keep.append(OutcomeConstraint(metric=metric, bound=bound, op=op, relative=False))
-        resolved_keys.add((name, ">=" if op == ComparisonOp.GEQ else "<="))
+        metric = client._experiment.metrics[name]
+        keep.append(OutcomeConstraint(
+            expression=f"{name} {op_str} {bound}",
+            metric_name_to_signature={name: metric.signature},
+            relative=False,
+        ))
+        resolved_keys.add((name, op_str))
 
     # Drop any pre-existing relative constraints we just resolved; keep the rest as-is
     for oc in existing:
         op_s = ">=" if oc.op == ComparisonOp.GEQ else "<="
-        if (oc.metric.name, op_s) in resolved_keys:
+        if (oc.metric_names[0], op_s) in resolved_keys:
             continue
         keep.append(oc)
     opt_config._outcome_constraints = keep
@@ -146,92 +154,35 @@ def _update_cost_state(client, mf_cost, log=None):
       cost_intercept = mean_cost_at_s0
       fidelity_weight = mean_cost_at_s1 - mean_cost_at_s0
     """
-    from ax.core.base_trial import TrialStatus as _TS
-    from collections import defaultdict
-
-    def _get_fidelity_feature_index(cl, fid_param_name):
-        """Return the feature index of the fidelity parameter in the search space."""
-        param_names = list(cl._experiment.search_space.parameters.keys())
-        return param_names.index(fid_param_name)
-    cost_metric_name = mf_cost["metric"]
-    fidelity_param_name = mf_cost["fidelity_param"]
-    # Collect observed costs per fidelity level (keyed by raw fidelity value)
-    sums = defaultdict(float)
-    counts = defaultdict(int)
-    df = client._experiment.lookup_data().df
-    for trial in client._experiment.trials.values():
-        if trial.status not in (_TS.COMPLETED, _TS.EARLY_STOPPED):
-            continue
-        fid_val = trial.arm.parameters.get(fidelity_param_name)
-        if fid_val is None:
-            continue
-        sub = df[(df.trial_index == trial.index) & (df.metric_name == cost_metric_name)]
-        if sub.empty:
-            continue
-        sums[fid_val] += float(sub["mean"].iloc[-1])
-        counts[fid_val] += 1
-    per_f = {fv: sums[fv] / counts[fv] for fv in sums if counts[fv] > 0}
-    if not per_f or per_f == mf_cost["state"]["per_fidelity"]:
-        return  # no change
-    mf_cost["state"]["per_fidelity"] = per_f
-
-    # Build numeric mapping for AffineFidelityCostModel.
-    # For numeric fidelity: use values directly.
-    # For categorical (str) fidelity: map to ordinal indices sorted by cost.
-    raw_keys = sorted(per_f.keys(), key=lambda k: per_f[k])
-    is_numeric = all(isinstance(k, (int, float)) for k in raw_keys)
-    if is_numeric:
-        fid_vals = sorted(float(k) for k in raw_keys)
-        costs = [per_f[k] for k in sorted(per_f.keys())]
-    else:
-        # Map categorical levels to 0..N-1 ordered by ascending cost
-        fid_vals = list(range(len(raw_keys)))
-        costs = [per_f[k] for k in raw_keys]
-
-    cost_intercept = min(costs)  # cheapest fidelity floor
-    # Weights: slope per fidelity unit. For discrete {0,1}: w = cost_high - cost_low.
-    # For continuous: linear fit.
-    fid_range = fid_vals[-1] - fid_vals[0] if len(fid_vals) > 1 else 0
-    if fid_range > 0:
-        fid_weight = (max(costs) - min(costs)) / fid_range
-    else:
-        fid_weight = 1.0
-    # Write into acqf_opts — Ax passes these to the input constructor.
-    # fidelity_weights is keyed by feature index (same as target_fidelities),
-    # NOT by fidelity values.  Ax extracts the fidelity feature index from
-    # search_space_digest.fidelity_features.
-    #
-    # Positivity floor: BoTorch's InverseCostWeightedUtility requires
-    # cost(X) > 0 over the entire acqf domain. Symptom: ValueError
-    # "Costs must be strictly positive" in cost_aware.py. Root cause:
-    # Ax extends INT-fidelity model-space bounds by ±0.5 (the rounding
-    # half-step), so AffineFidelityCostModel sees fid ∈ [-0.5, 1.5] not
-    # [0, 1]. cost(X) = intercept + weight × X must stay > 0 across
-    # that full range → intercept ≥ 0.5 × weight + ε.
-    # We also normalize to keep costs O(1) (qMFHVKG tolerates large
-    # absolute values poorly).
-    max_cost = max(costs) if max(costs) > 0 else 1.0
-    cost_intercept_norm = cost_intercept / max_cost
-    fid_weight_norm     = fid_weight     / max_cost
-    cost_intercept_safe = max(cost_intercept_norm, 0.5 * fid_weight_norm + 1e-3)
-    opts = mf_cost["acqf_opts_ref"]
-    opts["cost_intercept"] = max(cost_intercept_safe, 1e-6)
-    if log:
-        log.debug("MF cost normalized: raw intercept=%.3f weight=%.3f max_cost=%.3f → "
-                  "intercept=%.3f weight=%.3f",
-                  cost_intercept, fid_weight, max_cost,
-                  cost_intercept_safe, fid_weight_norm)
-    # Determine the fidelity parameter's feature index
-    fid_feature_idx = _get_fidelity_feature_index(client, mf_cost["fidelity_param"])
-    opts["fidelity_weights"] = {fid_feature_idx: fid_weight_norm}
-    if log:
-        log.info("Multi-fidelity cost updated: intercept=%.2f, weight=%.2f "
-                 "(from %d fidelity levels: %s)", cost_intercept, fid_weight,
-                 len(per_f), list(per_f.keys()))
+    from axbo_extensions.multifidelity import update_cost_state
+    return update_cost_state(client, mf_cost, log=log)
 
 
-def optimize(cfg, debug=False):
-    """Main optimization loop.
+def _refresh_trial_objectives(client, runner):
+    """Stash a per-trial objective scalar map on the runner for the ``best`` trial-dependency
+    selector (axbo_extensions.trialdeps.resolve_source_trial needs it explicitly)."""
+    from axbo_extensions.trialdeps import trial_objectives
+    try:
+        names = list(client._experiment.optimization_config.objective.metric_names)
+        runner._trial_objectives = trial_objectives(client, names)
+    except Exception:
+        runner._trial_objectives = None
+
+
+def _build_client(cfg, debug=False, missing_ok=False):
+    """Build the shared optimization state (client, runner, config bundle).
+
+    ``missing_ok`` is forwarded to :meth:`StoreOptions.load` so the detached
+    ``--step``/``--run`` entry points can bootstrap a fresh experiment on their
+    first invocation (``read_from=json`` with no state file yet). Defaults to
+    ``False`` so the closed-loop :func:`optimize` keeps its current behavior.
+
+    Lifted verbatim from the head of :func:`optimize` so that both the
+    closed-loop :func:`optimize` and the detached ``--step``/``--run`` entry
+    points share identical setup: colored logging, the Ax JSON-encoder numpy
+    patch, config validation, experiment + generation-strategy + (MF/robust)
+    surrogate wiring, runner config, expression-metric ``_fn_registry``
+    re-registration, and ``runner.trial_registry`` reseed.
 
     Colored logging is set up automatically on the first call.
 
@@ -240,7 +191,8 @@ def optimize(cfg, debug=False):
              or an OmegaConf ``DictConfig`` (backward-compatible with YAML loading).
 
     Returns:
-        The Ax ``Client`` with the completed experiment, or ``None`` on interrupt.
+        A ``SimpleNamespace`` bundle of the built client, runner, parsed config
+        sections, and advanced-mode state (``mf_cost``, ``robust_state``).
     """
     from omegaconf import OmegaConf, DictConfig
     from .common import VERSION, set_experiment_name, get_experiment_name
@@ -263,7 +215,7 @@ def optimize(cfg, debug=False):
         ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
         FoamBOConfig, TrialDependency, SeedDataNode, TimedOrchestrator,
     )
-    from ax.api.client import MultiObjective, Orchestrator, db_settings_from_storage_config
+    from ax.api.client import Orchestrator, db_settings_from_storage_config
     import pandas as pd
     from logging import Logger
     from ax.utils.common.logger import get_logger
@@ -344,7 +296,7 @@ def optimize(cfg, debug=False):
         if _boot.get("specialize"):
             apply_specialization(client, _boot["specialize"])
     else:
-        client = store_cfg.load()
+        client = store_cfg.load(missing_ok=missing_ok)
 
     # 1.0 Experiment setup
     has_experiment = False
@@ -363,15 +315,8 @@ def optimize(cfg, debug=False):
     _fidelity_cfg = getattr(exp_cfg, '_fidelity_params', None) or \
                     getattr(type(exp_cfg), '_fidelity_params', None)
     if _fidelity_cfg:
-        from ax.core.parameter import FixedParameter
-        for pname, target_val in _fidelity_cfg.items():
-            p = client._experiment.search_space.parameters.get(pname)
-            if p is not None and not isinstance(p, FixedParameter):
-                p._is_fidelity = True
-                p._target_value = target_val
-                log.info("Fidelity parameter: %s (target_value=%s)", pname, target_val)
-            elif isinstance(p, FixedParameter):
-                log.info("Fidelity parameter %s is fixed (specialized) — skipping MF wiring", pname)
+        from axbo_extensions.multifidelity import apply_fidelity_parameters
+        apply_fidelity_parameters(client, _fidelity_cfg, log)
 
     ## 2.0 Trial generation
     # Suppress Ax's verbose GenerationStrategy repr log
@@ -400,61 +345,39 @@ def optimize(cfg, debug=False):
         import foambo.robustness  # noqa: F401
 
     if _fidelity_params and robust_cfg is None:
+        from axbo_extensions.multifidelity import augment_specs_for_multifidelity
+        cost_metrics = [m for m in opt_cfg.metrics if getattr(m, "is_cost", False)]
+        _mf_cost = augment_specs_for_multifidelity(
+            client, cost_metrics[0].name if cost_metrics else None, log)
+
+    # Auto-engage SAASBO surrogate for high-dimensional problems. Skipped when MF or
+    # robust already pin their own model class; only touches BOTORCH_MODULAR nodes
+    # without an explicit surrogate_spec.
+    if not _fidelity_params and robust_cfg is None and orch_cfg.saasbo.enabled:
+        from axbo_extensions.saasbo import saasbo_model_class
         from ax.adapter.registry import Generators
-        for node in gs._nodes:
-            for spec in node.generator_specs:
-                if spec.generator_enum != Generators.BOTORCH_MODULAR:
-                    continue
-                gk = spec.generator_kwargs
-                # Auto-inject MF acqf class if not already set
-                if "botorch_acqf_class" not in gk:
-                    try:
-                        from botorch.acquisition.multi_objective.hypervolume_knowledge_gradient import (
-                            qMultiFidelityHypervolumeKnowledgeGradient,
-                        )
-                        gk["botorch_acqf_class"] = qMultiFidelityHypervolumeKnowledgeGradient
-                        log.info("Multi-fidelity: auto-selected qMultiFidelityHypervolumeKnowledgeGradient")
-                    except ImportError:
-                        log.warning("Multi-fidelity: qMFHVKG not available; using default acqf")
-                if gk.get("surrogate_spec") is not None:
-                    continue
-                try:
-                    from botorch.models.gp_regression_fidelity import SingleTaskMultiFidelityGP
-                    from ax.generators.torch.botorch_modular.surrogate import SurrogateSpec
-                    from ax.generators.torch.botorch_modular.utils import ModelConfig
-                    from foambo.robustness import MFHVKGAcquisition
+        from ax.core.parameter import FixedParameter
+        _n_tunable = sum(
+            1 for p in client._experiment.search_space.parameters.values()
+            if not isinstance(p, FixedParameter)
+        )
+        _saas_cls = saasbo_model_class(_n_tunable, orch_cfg.saasbo)
+        if _saas_cls is not None:
+            from ax.generators.torch.botorch_modular.surrogate import SurrogateSpec
+            from ax.generators.torch.botorch_modular.utils import ModelConfig
+            for node in gs._nodes:
+                for spec in node.generator_specs:
+                    if spec.generator_enum != Generators.BOTORCH_MODULAR:
+                        continue
+                    gk = spec.generator_kwargs
+                    if gk.get("surrogate_spec") is not None:
+                        continue
                     gk["surrogate_spec"] = SurrogateSpec(
-                        model_configs=[ModelConfig(
-                            botorch_model_class=SingleTaskMultiFidelityGP,
-                        )],
-                        allow_batched_models=False,
+                        model_configs=[ModelConfig(botorch_model_class=_saas_cls)]
                     )
-                    # qMFHVKG input constructor doesn't accept X_pending
-                    spec.generator_kwargs["acquisition_class"] = MFHVKGAcquisition
-                    log.info("Multi-fidelity: auto-selected SingleTaskMultiFidelityGP surrogate "
-                             "(fidelity param: %s)", _fidelity_params[0].name)
-                    # Wire cost model for MF acquisition.
-                    # qMFHVKG input constructor takes fidelity_weights + cost_intercept
-                    # (builds AffineFidelityCostModel internally).
-                    # MOMF takes cost_call directly.
-                    # When is_cost metric exists, we learn these from observed data
-                    # and update each callback.
-                    if gk.get("botorch_acqf_class") is not None:
-                        cost_metrics = [m for m in opt_cfg.metrics if getattr(m, "is_cost", False)]
-                        if cost_metrics:
-                            _mf_cost = {
-                                "state": {"per_fidelity": {}},
-                                "metric": cost_metrics[0].name,
-                                "fidelity_param": _fidelity_params[0].name,
-                                "acqf_opts_ref": gk.setdefault("botorch_acqf_options", {}),
-                            }
-                            # Set initial defaults (updated from data in callback)
-                            acqf_opts = _mf_cost["acqf_opts_ref"]
-                            acqf_opts.setdefault("cost_intercept", 1.0)
-                            log.info("Multi-fidelity: cost from metric '%s' "
-                                     "(updated each callback)", _mf_cost["metric"])
-                except ImportError:
-                    log.warning("Multi-fidelity: could not import SingleTaskMultiFidelityGP")
+                    log.info("SAASBO: SaasFullyBayesianSingleTaskGP surrogate engaged "
+                             "(%d tunable params >= min_dims=%d)",
+                             _n_tunable, orch_cfg.saasbo.min_dims)
 
     phases = []
     for node in gs._nodes:
@@ -487,7 +410,11 @@ def optimize(cfg, debug=False):
             _by_name = {m.name: m.to_metric() for m in opt_cfg.metrics}
             _fixed = 0
             for oc in _opt_config._outcome_constraints:
-                target = _by_name.get(oc.metric.name)
+                # ax >=1.3: expression-based constraints resolve metrics by name against
+                # the experiment registry — no per-constraint metric stub to replace.
+                if not hasattr(oc, "_metric"):
+                    continue
+                target = _by_name.get(oc.metric_names[0])
                 if target is not None and type(oc._metric) is not type(target):
                     oc._metric = target
                     _fixed += 1
@@ -501,25 +428,24 @@ def optimize(cfg, debug=False):
             _apply_objective_thresholds(client, opt_cfg.objective_thresholds, log=log)
     log.info("=================================================")
     _obj = client._experiment.optimization_config._objective
-    if hasattr(_obj, 'objectives'):
-        # Multi-objective
-        obj_lines = []
-        for o in _obj.objectives:
-            direction = "minimize" if o.minimize else "maximize"
-            obj_lines.append(f"  {o.metric.name} ({direction})")
+    if _obj.is_multi_objective:
+        obj_lines = [
+            f"  {name} ({'minimize' if w < 0 else 'maximize'})"
+            for name, w in _obj.metric_weights
+        ]
         log.info("Objectives (multi): %s", ", ".join(obj_lines))
     else:
         direction = "minimize" if _obj.minimize else "maximize"
-        log.info("Objective: %s (%s)", _obj.metric.name, direction)
-    if client._experiment._tracking_metrics:
-        names = sorted(m.name for m in client._experiment._tracking_metrics.values())
+        log.info("Objective: %s (%s)", _obj.metric_names[0], direction)
+    if client._experiment.tracking_metrics:
+        names = sorted(m.name for m in client._experiment.tracking_metrics)
         log.info("Tracking metrics: %s", ", ".join(names))
     # Also surface constraint metrics so users see expression metrics
     # (e.g. Q_over_RPM) used in outcome_constraints — these are *not*
     # tracking metrics in Ax's bucket.
     _oc = getattr(client._experiment.optimization_config, "outcome_constraints", None)
     if _oc:
-        cnames = sorted({c.metric.name for c in _oc})
+        cnames = sorted({c.metric_names[0] for c in _oc})
         log.info("Constraint metrics: %s", ", ".join(cnames))
         log.info("=================================================")
     # Re-register expression-metric callables into _fn_registry every run
@@ -560,6 +486,7 @@ def optimize(cfg, debug=False):
         _seeded += 1
     if _seeded:
         log.info("Seeded runner trial_registry with %d inherited trial(s)", _seeded)
+    _refresh_trial_objectives(client, runner)
     runner._trial_timeout = orch_cfg.trial_timeout
     runner._baseline_execution_time = None  # set after baseline completes
     # Enable streaming data attachment during poll_trial (for early stopping)
@@ -586,9 +513,10 @@ def optimize(cfg, debug=False):
 
     # Wire robust optimization (context variables + risk measures)
     # When both robust + MF fidelity params are present, compose them:
-    # augment_generator_specs(multifidelity=True) sets up the combined
-    # surrogate (SubstituteContextFeatures + SingleTaskMultiFidelityGP)
-    # and passes RobustMCObjective config to qMFHVKG.
+    # augment_generator_specs(multifidelity=True) uses SingleTaskMultiFidelityGP +
+    # qMFHVKG with a Normalize-only surrogate (NO SubstituteContextFeatures — qMFHVKG
+    # can't do one-to-many); robustness is implicit via context-spanning training data
+    # + rotating fixed_features (cycle_context), not an injected risk measure.
     _robust_state = None
     if robust_cfg is not None:
         from foambo.robustness import augment_generator_specs
@@ -596,7 +524,7 @@ def optimize(cfg, debug=False):
         _robust_state = augment_generator_specs(
             client, exp_cfg, robust_cfg, multifidelity=_is_mf_robust)
         if _is_mf_robust:
-            log.info("MF+robust composition active: qMFHVKG + SubstituteContextFeatures + risk measure")
+            log.info("MF+robust composition active: qMFHVKG + context-cycling (Normalize-only surrogate)")
             # Wire cost model for the composed MF+robust path
             cost_metrics = [m for m in opt_cfg.metrics if getattr(m, "is_cost", False)]
             if cost_metrics:
@@ -654,123 +582,66 @@ def optimize(cfg, debug=False):
             if isinstance(_node, SeedDataNode):
                 _node.load_into(client)
 
-    _dim_reduction_done = False
-    _dim_reduction_attempts = 0
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        client=client, runner=runner, foambo_cfg=foambo_cfg, raw_cfg=raw_cfg,
+        exp_cfg=exp_cfg, gs_cfg=gs_cfg, opt_cfg=opt_cfg, orch_cfg=orch_cfg,
+        store_cfg=store_cfg, baseline_cfg=baseline_cfg, trial_deps=trial_deps,
+        robust_cfg=robust_cfg, has_experiment=has_experiment, gs=gs, log=log,
+        mf_cost=_mf_cost, robust_state=_robust_state,
+    )
+
+
+def optimize(cfg, debug=False):
+    """Main optimization loop (closed loop).
+
+    Builds the shared state via :func:`_build_client`, then drives the Ax
+    ``Orchestrator`` (ask → run → poll → tell) until the trial budget or a
+    stopping criterion is reached.
+
+    Returns:
+        The Ax ``Client`` with the completed experiment, or ``None`` on interrupt.
+    """
+    from omegaconf import OmegaConf, DictConfig
+    from .common import VERSION, set_experiment_name, get_experiment_name
+    from .metrics import streaming_metric
+    import numpy as np
+    from .analysis import compute_analysis_cards, plot_pareto_frontier
+    from .orchestrate import (
+        ExperimentOptions, OptimizationOptions,
+        ConfigOrchestratorOptions, StoreOptions, TrialGenerationOptions, BaselineOptions,
+        FoamBOConfig, TrialDependency, SeedDataNode, TimedOrchestrator,
+    )
+    from ax.api.client import Orchestrator, db_settings_from_storage_config
+    import pandas as pd
+    from logging import Logger
+    from ax.utils.common.logger import get_logger
+
+    ctx = _build_client(cfg, debug=debug)
+    client = ctx.client
+    runner = ctx.runner
+    foambo_cfg = ctx.foambo_cfg
+    raw_cfg = ctx.raw_cfg
+    exp_cfg = ctx.exp_cfg
+    gs_cfg = ctx.gs_cfg
+    opt_cfg = ctx.opt_cfg
+    orch_cfg = ctx.orch_cfg
+    store_cfg = ctx.store_cfg
+    baseline_cfg = ctx.baseline_cfg
+    trial_deps = ctx.trial_deps
+    robust_cfg = ctx.robust_cfg
+    has_experiment = ctx.has_experiment
+    gs = ctx.gs
+    log = ctx.log
+    _mf_cost = ctx.mf_cost
+    _robust_state = ctx.robust_state
+
+    _dim_reduction_state = {"done": False, "attempts": 0}
 
     def _maybe_reduce_dimensions():
-        nonlocal _dim_reduction_done, _dim_reduction_attempts
-        if _dim_reduction_done:
-            return
-        dr = orch_cfg.dimensionality_reduction
-        if not dr.enabled:
-            return
-        exp = client._experiment
-        from ax.core.base_trial import TrialStatus as AxTrialStatus
-        n_completed = sum(1 for t in exp.trials.values() if t.status == AxTrialStatus.COMPLETED)
-        if n_completed < dr.after_trials:
-            return
-        gs = client._generation_strategy
-        if gs is None or gs.adapter is None:
-            return
-
-        try:
-            import torch
-            import numpy as _np
-            from ax.utils.sensitivity.sobol_measures import SobolSensitivityGPMean
-            from ax.adapter.cross_validation import cross_validate as ax_cv
-
-            # Check model fit quality via cross-validation before trusting Sobol
-            try:
-                cv_results = ax_cv(adapter=gs.adapter)
-                cv_errors = []
-                for r in cv_results:
-                    for mname, obs_mean in r.observed.data.means_dict.items():
-                        pred_mean = r.predicted.means_dict.get(mname, obs_mean)
-                        cv_errors.append(abs(obs_mean - pred_mean))
-                if cv_errors:
-                    obs_range = max(abs(e) for e in cv_errors)
-                    mean_cv_error = _np.mean(cv_errors)
-                    # If mean CV error > 50% of error range, model fit is poor
-                    if obs_range > 0 and mean_cv_error / obs_range > 0.5:
-                        log.info(f"Dimensionality reduction deferred — model fit too poor "
-                                  f"(CV error ratio: {mean_cv_error / obs_range:.2f})")
-                        return
-            except Exception:
-                pass  # CV failed — proceed with Sobol anyway
-
-            surr = gs.adapter.generator.surrogate
-            model = surr.model
-            # Build bounds tensor from search space (normalized [0,1] by Ax)
-            param_names = [p for p in exp.search_space.parameters
-                           if hasattr(exp.search_space.parameters[p], 'lower')]
-            n_params = len(param_names)
-            bounds = torch.zeros(2, n_params, dtype=torch.float64)
-            bounds[1] = 1.0  # model operates in normalized space
-            sobol = SobolSensitivityGPMean(model=model, bounds=bounds, num_mc_samples=1000)
-            total_order = sobol.total_order_indices()  # includes interactions with other params
-            # Map to param names
-            sensitivities = {"_aggregated": {
-                pname: float(total_order[i].abs()) for i, pname in enumerate(param_names)
-            }}
-        except Exception as e:
-            _dim_reduction_attempts += 1
-            if _dim_reduction_attempts >= 3:
-                log.warning(f"Dimensionality reduction disabled after 3 failed attempts: {e}")
-                _dim_reduction_done = True
-            else:
-                log.info(f"Dimensionality reduction attempt {_dim_reduction_attempts} failed: {e}")
-            return
-
-        # Aggregate importance across metrics (max importance across all objectives)
-        param_names = list(exp.search_space.parameters.keys())
-        importance = {}
-        for pname in param_names:
-            max_imp = 0.0
-            for metric_sens in sensitivities.values():
-                max_imp = max(max_imp, abs(metric_sens.get(pname, 0.0)))
-            importance[pname] = max_imp
-
-        # Sort by importance, find parameters to fix
-        sorted_params = sorted(importance.items(), key=lambda x: x[1])
-        max_fixable = min(int(len(param_names) * dr.max_fix_fraction), len(param_names) - 1)
-        to_fix = [(name, imp) for name, imp in sorted_params if imp < dr.min_importance]
-        to_fix = to_fix[:max_fixable]
-
-        if not to_fix:
-            log.info("Dimensionality reduction: all parameters are above the importance threshold")
-            _dim_reduction_done = True
-            return
-
-        # Determine fix values
-        if dr.fix_at == "best":
-            try:
-                best_params, _, _, _ = client.get_best_parameterization(use_model_predictions=False)
-            except Exception:
-                best_params = {p: exp.search_space.parameters[p].lower +
-                               (exp.search_space.parameters[p].upper - exp.search_space.parameters[p].lower) / 2
-                               for p in param_names if hasattr(exp.search_space.parameters[p], 'lower')}
-
-        from ax.core.parameter import FixedParameter
-        for pname, imp in to_fix:
-            param = exp.search_space.parameters[pname]
-            if dr.fix_at == "best":
-                fix_val = best_params.get(pname)
-            else:  # center
-                if hasattr(param, 'lower') and hasattr(param, 'upper'):
-                    fix_val = (param.lower + param.upper) / 2
-                elif hasattr(param, 'values'):
-                    fix_val = param.values[0]
-                else:
-                    continue
-            if fix_val is None:
-                continue
-            fixed = FixedParameter(name=pname, parameter_type=param.parameter_type, value=fix_val)
-            exp.search_space.update_parameter(fixed)
-            log.info(f"Dimensionality reduction: fixed '{pname}' = {fix_val} (importance={imp:.4f})")
-
-        log.info(f"Dimensionality reduction: {len(to_fix)} parameter(s) fixed, "
-                 f"{len(param_names) - len(to_fix)} remaining active")
-        _dim_reduction_done = True
+        from axbo_extensions.dimreduction import maybe_reduce_dimensions
+        maybe_reduce_dimensions(
+            client, orch_cfg.dimensionality_reduction, _dim_reduction_state)
 
     # Region screening runtime state — published to the API for dashboard use.
     _region_state: dict = {
@@ -799,6 +670,9 @@ def optimize(cfg, debug=False):
         import os
         import time as _time
         import subprocess as _sb
+        from axbo_extensions.regionscreening import (
+            region_inactive, next_streak, shrunk_bounds,
+        )
         groups_map = exp_cfg.get_parameter_groups()  # name -> [groups]
 
         all_groups = {g for groups in groups_map.values() for g in groups}
@@ -857,16 +731,12 @@ def optimize(cfg, debug=False):
                     "streak": _region_streak.get(region.group, 0),
                 }
                 continue
-            spread = max(vals) - min(vals)
-            ref = max(abs(v) for v in vals) if vals else 0.0
-            threshold = region.min_delta if region.min_delta is not None \
-                else (region.min_delta_frac or 0.0) * ref
-            inactive = spread < threshold
+            ri = region_inactive(vals, region.min_delta, region.min_delta_frac)
+            spread, threshold, inactive = ri["spread"], ri["threshold"], ri["inactive"]
+            _region_streak[region.group] = next_streak(
+                _region_streak.get(region.group, 0), inactive)
             if inactive:
-                _region_streak[region.group] = _region_streak.get(region.group, 0) + 1
                 flagged_now.append(region.group)
-            else:
-                _region_streak[region.group] = 0
             regions_status[region.group] = {
                 "samples": len(vals),
                 "spread": spread,
@@ -939,13 +809,10 @@ def optimize(cfg, debug=False):
                     continue
                 lo, hi = param.lower, param.upper
                 _region_state["original_bounds"].setdefault(pname, (lo, hi))
-                full_range = hi - lo
                 center = best_params.get(pname)
                 if center is None:
                     center = (lo + hi) / 2
-                half_window = (rs.shrink_factor * full_range) / 2
-                new_lo = max(lo, center - half_window)
-                new_hi = min(hi, center + half_window)
+                new_lo, new_hi = shrunk_bounds(lo, hi, center, rs.shrink_factor)
                 if new_hi <= new_lo:
                     continue
                 try:
@@ -1082,6 +949,7 @@ def optimize(cfg, debug=False):
             if trial.status == _TS.FAILED and tidx not in _reported_failures:
                 _reported_failures.add(tidx)
                 _log_trial_failure(tidx, case_path, log)
+        _refresh_trial_objectives(client, runner)
         # Refresh API server state + live timing
         if orch_cfg.api_port != 0:
             _update_api(client)
@@ -1247,7 +1115,7 @@ def optimize(cfg, debug=False):
 
     log.info("=========== Best set of parameters ==============")
     best_parameters, prediction = None, None
-    if isinstance(client._experiment.optimization_config._objective, MultiObjective):
+    if client._experiment.optimization_config._objective.is_multi_objective:
         try:
             front = client.get_pareto_frontier(use_model_predictions=True)
         except Exception as e:
@@ -1299,6 +1167,281 @@ def optimize(cfg, debug=False):
         stop_api_server()
     log.info("==================== End ========================")
     return client
+
+def _warn_detached_advanced(ctx, log):
+    """Loudly warn when MF/robust is configured in a detached step (design §8 v2).
+
+    MF cost-model updates (``_update_cost_state``) and robust context cycling
+    (``cycle_context``) run only from the closed-loop Orchestrator ``callback``,
+    not from ``get_next_trials``. Detached ``--step``/``--run`` do not yet wire
+    those hooks, so for MF/robust campaigns the acquisition would silently use a
+    stale cost model / context point. Until the v2 ``_between_tell_and_ask``
+    helper exists, warn rather than no-op silently.
+    """
+    fidelity = [p for p in ctx.client._experiment.search_space.parameters.values()
+                if getattr(p, "is_fidelity", False)]
+    if not fidelity and ctx.robust_cfg is None:
+        return
+    bits = (["multi-fidelity"] if fidelity else []) + (["robust"] if ctx.robust_cfg is not None else [])
+    label = " + ".join(bits)
+    log.warning(
+        "Detached mode does NOT yet wire the advanced-mode callback hooks for "
+        "%s campaigns: MF cost updates (_update_cost_state) and robust context "
+        "cycling (cycle_context) run only in the closed loop. Acquisition will "
+        "use a stale cost model / context point between steps (design v2). Use "
+        "the closed loop (`foamBO --config ...`) for %s until v2 lands.",
+        label, label)
+
+
+def _tell_finished(client, opt_cfg, log):
+    """Complete every RUNNING trial whose metric results are already on disk.
+
+    Shared by ``--step`` (tell phase) and ``--run`` (post-dispatch ingest). A
+    trial is "ready" when all declared metrics fetch a finite value; a metric
+    that raises or returns NaN means the case is still cooking (skip). Returns
+    ``(told, failed)`` index lists. Idempotent — COMPLETED trials are skipped
+    since they are no longer RUNNING.
+    """
+    import math
+    from ax.core.base_trial import TrialStatus
+    # FoamJobMetric instances for every declared metric (objective + tracking +
+    # constraint). _build_client repopulated _fn_registry for expression/callable
+    # metrics, so .fetch resolves them here too.
+    metrics = {m.name: m.to_metric() for m in opt_cfg.metrics}
+
+    def _meta_for(trial):
+        meta = dict(trial.run_metadata or {})
+        cp = meta.get("case_path") or (meta.get("job") or {}).get("case_path")
+        # FoamJobMetric.fetch's command path reads meta['job']['case_path'], but
+        # a sidecar materialized by --step only carries a top-level case_path.
+        if cp and not meta.get("job"):
+            meta["job"] = {"case_path": cp}
+        if "parameters" not in meta and trial.arm is not None:
+            meta["parameters"] = dict(trial.arm.parameters)
+        return meta
+
+    def _ready(val):
+        scalar = val[0] if isinstance(val, tuple) else val
+        return scalar is not None and not (isinstance(scalar, float) and math.isnan(scalar))
+
+    told, failed = [], []
+    for idx, trial in list(client._experiment.trials.items()):
+        if trial.status != TrialStatus.RUNNING:
+            continue
+        meta = _meta_for(trial)
+        raw_data, ok = {}, True
+        for name, metric in metrics.items():
+            try:
+                _s, val = metric.fetch(idx, meta)
+            except Exception as e:
+                ok = False
+                log.debug("Trial %d: metric %s not ready (%s)", idx, name, e)
+                break
+            if not _ready(val):
+                ok = False
+                break
+            raw_data[name] = val
+        if not ok:
+            continue
+        try:
+            client.complete_trial(idx, raw_data=raw_data)
+            told.append(idx)
+        except Exception as e:
+            log.warning("Trial %d: completion failed (%s) — marking FAILED", idx, e)
+            client.mark_trial_failed(idx, failed_reason=str(e))
+            failed.append(idx)
+    return told, failed
+
+
+def _do_step(args):
+    """Detached **brain** step (detached-mode design §4): ingest any finished
+    results (tell), then ask the next batch and materialize trial sidecars
+    WITHOUT dispatching them.
+
+    Idempotent and self-healing — re-running ingests stragglers first, then
+    emits. With ``case_runner.runner: ""`` it only materializes (a fully
+    external scheduler runs the cases between calls); with a real runner,
+    ``foamBO --run`` or the classic closed loop executes the emitted batch.
+    Prints a machine-readable ``{told, failed, emitted}`` JSON line on stdout.
+    """
+    from .config import load_config, override_config
+    from .common import set_experiment_name
+    log = logging.getLogger(__name__)
+
+    cfg = load_config(args.config)
+    if args.overrides:
+        overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
+        if overrides:
+            cfg = override_config(cfg, overrides)
+    set_experiment_name(cfg["experiment"]["name"])
+
+    ctx = _build_client(cfg, debug=args.debug, missing_ok=True)
+    client, runner = ctx.client, ctx.runner
+    opt_cfg, orch_cfg, store_cfg = ctx.opt_cfg, ctx.orch_cfg, ctx.store_cfg
+    _warn_detached_advanced(ctx, log)
+
+    # ---- TELL: complete RUNNING trials whose results are already on disk ----
+    told, failed = _tell_finished(client, opt_cfg, log)
+
+    # ---- ASK: next batch, bounded by parallelism ----
+    emitted = []
+    try:
+        new_trials = client.get_next_trials(max_trials=orch_cfg.parallelism)
+    except Exception as e:
+        log.error("get_next_trials failed: %s", e)
+        new_trials = {}
+
+    # ---- MATERIALIZE: write sidecars + record case_path; do NOT dispatch ----
+    # Landmine #1: get_next_trials does NOT set foambo run_metadata, so the
+    # idx→case_path map is lost unless we update_run_metadata by hand.
+    for tidx, params in new_trials.items():
+        case_data = runner.preprocessor.setup(dict(params), runner.cfg, trial_index=tidx)
+        case_path = str(case_data['case'].path)
+        client._experiment.trials[tidx].update_run_metadata(
+            {"case_path": case_path, "parameters": dict(params)})
+        emitted.append({"idx": tidx, "case_path": case_path})
+
+    # Refresh runner.trial_registry (mirror the Orchestrator callback) so trial
+    # dependency resolution can see the freshly materialized cases.
+    for tidx2, trial in client._experiment.trials.items():
+        cp = trial.run_metadata.get("case_path") if trial.run_metadata else None
+        runner.trial_registry[tidx2] = {
+            "case_path": cp, "status": trial.status.name,
+            "parameters": trial.arm.parameters if trial.arm else {},
+        }
+    _refresh_trial_objectives(client, runner)
+
+    store_cfg.save(client)
+    result = {"told": told, "failed": failed, "emitted": emitted}
+    print(json.dumps(result))
+    log.info("--step: told=%d failed=%d emitted=%d", len(told), len(failed), len(emitted))
+    return result
+
+
+def _do_run(args):
+    """Detached **executor** step (detached-mode design §4): dispatch every
+    pending (RUNNING, has ``case_path``) trial via the existing runner, wait to
+    completion, then ingest results.
+
+    Idempotent — already-finished results are ingested up front and skipped;
+    COMPLETED trials are never re-dispatched. The in-process ``jobs`` handle
+    (metrics.py) is memory-only, so a ``local`` Popen must be dispatched and
+    polled by the same process; ``--run`` therefore drives the whole batch to
+    completion in one invocation. For dispatch-in-one / poll-in-another, use
+    ``mode: remote`` with ``remote_status_query``.
+    """
+    import time
+    from .config import load_config, override_config
+    from .common import set_experiment_name
+    from .metrics import trial_progression_step
+    from ax.core.base_trial import TrialStatus
+    log = logging.getLogger(__name__)
+
+    cfg = load_config(args.config)
+    if args.overrides:
+        overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
+        if overrides:
+            cfg = override_config(cfg, overrides)
+    set_experiment_name(cfg["experiment"]["name"])
+
+    ctx = _build_client(cfg, debug=args.debug, missing_ok=True)
+    client, runner = ctx.client, ctx.runner
+    opt_cfg, orch_cfg, store_cfg = ctx.opt_cfg, ctx.orch_cfg, ctx.store_cfg
+    _warn_detached_advanced(ctx, log)
+
+    runner_cmd = runner.cfg.get('template_case', {}).get('runner') if runner.cfg else None
+    if runner_cmd in (None, "", "null", "None"):
+        log.warning("--run: no case_runner.runner configured (BYO-scheduler mode). "
+                    "Nothing to execute — run the cases yourself, then `foamBO --step`.")
+        return {"dispatched": [], "told": [], "failed": []}
+
+    # Self-healing: ingest anything already finished before dispatching.
+    told0, failed0 = _tell_finished(client, opt_cfg, log)
+
+    # Dispatch every pending RUNNING trial that has a materialized case_path.
+    DONE = (TrialStatus.COMPLETED, TrialStatus.FAILED,
+            TrialStatus.EARLY_STOPPED, TrialStatus.ABANDONED)
+    dispatched = {}
+    for idx, trial in list(client._experiment.trials.items()):
+        if trial.status != TrialStatus.RUNNING:
+            continue
+        md = dict(trial.run_metadata or {})
+        cp = md.get("case_path") or (md.get("job") or {}).get("case_path")
+        if not cp:
+            log.debug("Trial %d RUNNING but not materialized (no case_path) — skipping", idx)
+            continue
+        params = md.get("parameters") or (trial.arm.parameters if trial.arm else {})
+        trial_progression_step.setdefault(idx, {})
+        try:
+            job_id, job = runner.dispatcher[runner.mode](
+                dict(params), cp, runner.cfg['template_case'], hook_env={})
+        except Exception as e:
+            log.error("Trial %d dispatch failed: %s", idx, e)
+            client.mark_trial_failed(idx, failed_reason=f"dispatch failed: {e}")
+            failed0.append(idx)
+            continue
+        meta = {"job_id": job_id, "job": job.model_dump(), "case_path": cp,
+                "parameters": dict(params), "dispatch_time": time.time()}
+        trial.update_run_metadata(meta)
+        dispatched[idx] = meta
+        log.info("Dispatched trial %d: %s", idx, cp)
+
+    # Wait for the whole batch (same process must poll local Popen handles).
+    poll = max(orch_cfg.initial_seconds_between_polls or 1, 1)
+    pending = dict(dispatched)
+    while pending:
+        for idx, meta in list(pending.items()):
+            try:
+                status = runner.poll_trial(idx, meta)
+            except Exception as e:
+                log.error("Trial %d poll failed: %s — abandoning", idx, e)
+                del pending[idx]
+                continue
+            if status in DONE:
+                log.info("Trial %d finished: %s", idx, status.name)
+                del pending[idx]
+        if pending:
+            time.sleep(poll)
+
+    # Ingest the just-finished trials.
+    told1, failed1 = _tell_finished(client, opt_cfg, log)
+    store_cfg.save(client)
+    result = {"dispatched": sorted(dispatched),
+              "told": sorted(set(told0 + told1)),
+              "failed": sorted(set(failed0 + failed1))}
+    print(json.dumps(result))
+    log.info("--run: dispatched=%d told=%d failed=%d",
+             len(dispatched), len(result["told"]), len(result["failed"]))
+    return result
+
+
+def _do_tell(args):
+    """Detached **ingest-only** step (detached-mode design §4, optional).
+
+    Complete any RUNNING trial whose results are already on disk, persist, and
+    exit — no ask. For explicit SLURM-array pipelines that separate harvest from
+    generate; the common path (``--step``) already does tell-then-ask.
+    """
+    from .config import load_config, override_config
+    from .common import set_experiment_name
+    log = logging.getLogger(__name__)
+
+    cfg = load_config(args.config)
+    if args.overrides:
+        overrides = [o for o in args.overrides if o.startswith('++') or '=' in o]
+        if overrides:
+            cfg = override_config(cfg, overrides)
+    set_experiment_name(cfg["experiment"]["name"])
+
+    ctx = _build_client(cfg, debug=args.debug, missing_ok=True)
+    _warn_detached_advanced(ctx, log)
+    told, failed = _tell_finished(ctx.client, ctx.opt_cfg, log)
+    ctx.store_cfg.save(ctx.client)
+    result = {"told": told, "failed": failed}
+    print(json.dumps(result))
+    log.info("--tell: told=%d failed=%d", len(told), len(failed))
+    return result
+
 
 def setup_colored_logging(debug=False):
     import logging
@@ -1412,6 +1555,9 @@ def main():
     group.add_argument('--unpack', type=str, metavar='ARCHIVE', help='Unpack a .foambo archive')
     group.add_argument('--preflight-checks', action='store_true', help='Validate configuration before running')
     group.add_argument('--config-builder', action='store_true', help='Launch the web-based config builder UI')
+    group.add_argument('--step', action='store_true', help='Detached brain step: ingest finished results, then ask + materialize the next batch and exit (no dispatch)')
+    group.add_argument('--run', action='store_true', help='Detached executor: dispatch all pending materialized trials via the runner, wait to completion, ingest results, and exit')
+    group.add_argument('--tell', action='store_true', help='Detached ingest-only: complete trials whose results are on disk, save, and exit (no ask)')
     group.add_argument('-V', '--version', action='version', version='%(prog)s ' + VERSION)
     parser.add_argument('--config', type=str, default=DEFAULT_CONFIG, help=f'Path to config YAML file (optional, default={DEFAULT_CONFIG})')
     parser.add_argument('--json', action='store_true', help='Export Plotly figures as JSON (only valid with --analysis)')
@@ -1501,9 +1647,9 @@ def main():
             except OSError:
                 s.bind((host, 0))
                 new_port = s.getsockname()[1]
-                print(f"Port {port} in use, using {new_port} instead")
+                logging.getLogger(__name__).warning(f"Port {port} in use, using {new_port} instead")
                 port = new_port
-        print(f"Config Builder running at http://{host}:{port}/config-builder")
+        logging.getLogger(__name__).info(f"Config Builder running at http://{host}:{port}/config-builder")
         uvicorn.run(_app, host=host, port=port, log_level="warning")
         return
 
@@ -1516,11 +1662,11 @@ def main():
         if cache_file.exists():
             try:
                 docs = json.loads(cache_file.read_text())
-                print(f"Loading cached docs (v{VERSION})")
+                logging.getLogger(__name__).info(f"Loading cached docs (v{VERSION})")
             except Exception:
                 pass
         if docs is None:
-            print(f"Generating docs (v{VERSION})...")
+            logging.getLogger(__name__).info(f"Generating docs (v{VERSION})...")
             from .default_config import get_config_docs
             docs = get_config_docs()
             try:
@@ -1659,6 +1805,18 @@ def main():
         except KeyboardInterrupt:
             stop_api_server()
             log.info("Stopped.")
+        return
+
+    if args.step:
+        _do_step(args)
+        return
+
+    if args.run:
+        _do_run(args)
+        return
+
+    if args.tell:
+        _do_tell(args)
         return
 
     from .config import load_config, override_config

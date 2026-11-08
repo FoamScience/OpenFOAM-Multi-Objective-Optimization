@@ -621,113 +621,28 @@ class FoamJobRunner(IRunner):
     def _resolve_source_trial(self, selector, target_params: dict) -> tuple[int, str] | None:
         """Resolve a source trial index and case path from the registry.
 
-        Returns ``(trial_index, case_path)`` or ``None``.
+        Returns ``(trial_index, case_path)`` or ``None``. Strategy logic is delegated to
+        ``axbo_extensions.trialdeps.resolve_source_trial``; foamBO's registry stores the
+        artifact location under ``case_path`` (mapped to the lib's ``artifact_ref``). The
+        ``best`` selector uses the objectives map stashed on the runner
+        (``_trial_objectives``) — foamBO's old inline version read a never-populated
+        ``objective_value`` and silently degraded to the lowest index.
         """
-        completed = {k: v for k, v in self.trial_registry.items()
-                     if v.get("status") == "COMPLETED" and v.get("case_path")}
-        if not completed:
-            return None
-
-        # Apply fidelity filter
-        fid_param = getattr(self, '_fidelity_param_name', None)
-        if fid_param:
-            fid_filter = getattr(selector, 'fidelity_filter', None) or "same"
-            if fid_filter != "any":
-                if fid_filter == "same":
-                    match_val = target_params.get(fid_param)
-                else:
-                    # Explicit value — coerce to match the param type
-                    match_val = fid_filter
-                    try:
-                        match_val = float(match_val)
-                    except (ValueError, TypeError):
-                        pass
-                def _fid_match(entry_params):
-                    v = entry_params.get(fid_param)
-                    if isinstance(v, float) and isinstance(match_val, (int, float)):
-                        return abs(v - match_val) < 1e-6
-                    return v == match_val
-                completed = {k: v for k, v in completed.items()
-                             if _fid_match(v.get("parameters", {}))}
-                if not completed:
-                    return None
-
-        strategy = selector.strategy
-        if strategy == "baseline":
-            entry = completed.get(0)
-            return (0, entry["case_path"]) if entry else None
-        if strategy == "by_index":
-            entry = completed.get(selector.index)
-            return (selector.index, entry["case_path"]) if entry else None
-        if strategy == "latest":
-            idx = max(completed.keys())
-            return (idx, completed[idx]["case_path"])
-        if strategy == "best":
-            idx = min(completed, key=lambda k: completed[k].get("objective_value", float("inf")))
-            return (idx, completed[idx]["case_path"])
-        if strategy == "nearest":
-            import math
-            # Compute parameter ranges from completed trials for normalization
-            ranges: dict[str, float] = {}
-            for entry in completed.values():
-                for k, v in entry.get("parameters", {}).items():
-                    if isinstance(v, (int, float)):
-                        if k not in ranges:
-                            ranges[k] = [v, v]
-                        else:
-                            ranges[k][0] = min(ranges[k][0], v)
-                            ranges[k][1] = max(ranges[k][1], v)
-            bounds = {k: (hi - lo) if (hi - lo) > 0 else 1.0
-                      for k, (lo, hi) in ranges.items()}
-            def _dist(params_a, params_b):
-                total = 0.0
-                for key in params_a:
-                    va, vb = params_a.get(key), params_b.get(key)
-                    if isinstance(va, (int, float)) and isinstance(vb, (int, float)):
-                        rng = bounds.get(key, 1.0)
-                        total += ((va - vb) / rng) ** 2
-                return math.sqrt(total)
-            idx = min(completed, key=lambda k: _dist(
-                target_params, completed[k].get("parameters", {})))
-            best_dist = _dist(target_params, completed[idx].get("parameters", {}))
-            threshold = getattr(selector, "similarity_threshold", None)
-            if threshold is not None and best_dist > threshold:
-                log.info(f"Nearest trial T{idx} distance {best_dist:.4f} exceeds threshold {threshold} — skipping")
-                return None
-            return (idx, completed[idx]["case_path"])
-        if strategy == "matching_group":
-            group = getattr(selector, "group", None)
-            if not group:
-                log.warning("matching_group strategy requires 'group' field")
-                return None
-            # Find param names belonging to this group
-            param_groups = getattr(self, "_parameter_groups", {})
-            group_params = [name for name, groups in param_groups.items()
-                            if group in groups]
-            if not group_params:
-                log.warning(f"No parameters found with group '{group}'")
-                return None
-            # Search completed trials (latest first) for exact match on group params
-            for idx in sorted(completed.keys(), reverse=True):
-                entry_params = completed[idx].get("parameters", {})
-                if all(target_params.get(p) == entry_params.get(p) for p in group_params):
-                    log.info(f"matching_group '{group}': T{idx} matches on {group_params}")
-                    return (idx, completed[idx]["case_path"])
-            log.debug(f"matching_group '{group}': no completed trial matches {group_params}")
-            return None
-        if strategy == "custom":
-            cmd = selector.command
-            if isinstance(cmd, str):
-                cmd = cmd.split()
-            try:
-                out = sb.check_output(cmd, timeout=PROGRESSION_CMD_TIMEOUT)
-                idx = int(out.decode("utf-8").strip())
-                entry = completed.get(idx)
-                return (idx, entry["case_path"]) if entry else None
-            except Exception as e:
-                log.warning(f"Custom trial selector failed: {e}")
-                return None
-        return None
+        from axbo_extensions.trialdeps import resolve_source_trial
+        registry = {
+            idx: {
+                "status": e.get("status"),
+                "parameters": e.get("parameters", {}),
+                "artifact_ref": e.get("case_path"),
+            }
+            for idx, e in self.trial_registry.items()
+        }
+        return resolve_source_trial(
+            selector, target_params, registry,
+            fidelity_param=getattr(self, "_fidelity_param_name", None),
+            parameter_groups=getattr(self, "_parameter_groups", {}),
+            objectives=getattr(self, "_trial_objectives", None),
+        )
 
     def _resolve_dependencies(self, trial_index: int, target_path: str,
                               parameterization: dict) -> Dict[str, Any]:
@@ -788,7 +703,7 @@ class FoamJobRunner(IRunner):
 
     def run_trial(self, trial_index: int, parameterization: TParameterization) -> dict[str, Any]:
         trial_progression_step[trial_index] = {}
-        case_data = self.preprocessor.setup(parameterization, self.cfg)
+        case_data = self.preprocessor.setup(parameterization, self.cfg, trial_index=trial_index)
         case_path = str(case_data['case'].path)
         # Detect caseless mode early (before dependency resolution which writes to disk)
         all_metrics_are_fns = all(m in _fn_registry for m in self._metric_names) if self._metric_names else False

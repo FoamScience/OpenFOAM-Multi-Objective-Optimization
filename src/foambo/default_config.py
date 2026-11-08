@@ -261,6 +261,19 @@ _TUTORIAL_SUMMARIES: Dict[str, str] = {
         "cavity. Covers SLURM integration, early stopping, Pareto analysis, "
         "sensitivity plots, and parameter dependency."
     ),
+    "03-detached-mode": (
+        "Closed loop vs. detached loop: run campaigns step-by-step with "
+        "--step/--run/--tell, bring your own scheduler, and match results "
+        "back through the filesystem."
+    ),
+    "detached_mode_design": (
+        "Design rationale for detached mode: reuse map, identity handshake, "
+        "landmines, and v2 scope (MF/robust hooks)."
+    ),
+    "risk-measures-guide": (
+        "Risk measures for robust optimization: CVaR, VaR, and MARS — what "
+        "they mean and how the robust path uses them."
+    ),
 }
 
 

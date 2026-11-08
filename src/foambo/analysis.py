@@ -15,7 +15,7 @@ import webbrowser
 from .common import *
 from .orchestrate import StoreOptions
 from ax.core.parameter import ChoiceParameter
-from ax.api.client import Client, MultiObjective
+from ax.api.client import Client
 from ax.analysis.overview import OverviewAnalysis
 from ax.analysis.insights import InsightsAnalysis
 from ax.analysis.plotly.parallel_coordinates import ParallelCoordinatesPlot
@@ -70,10 +70,7 @@ def compute_pareto_data(client: Client, front=None):
         for tr in exp.trials
     ]
 
-    minimize = {}
-    for obj in opt_config.objective.objectives:
-        for mn in obj.metric_names:
-            minimize[mn] = obj.minimize
+    minimize = {name: (w < 0) for name, w in opt_config.objective.metric_weights}
 
     Y_all = {}
     for m in objective_metrics:
@@ -89,7 +86,7 @@ def compute_pareto_data(client: Client, front=None):
             for i, metric in enumerate(pair):
                 threshold = next(
                     t for t in opt_config.all_constraints
-                    if metric == t.metric.name
+                    if metric == t.metric_names[0]
                 )
                 bound = threshold.bound
                 if threshold.relative:
@@ -368,7 +365,7 @@ def compute_analysis_cards(cfg: DictConfig, client: Client | None, open_html=Fal
         figures_folder = f"{artifacts_folder}/figures"
         os.makedirs(figures_folder, exist_ok=True)
 
-    is_multi_objective = isinstance(exp.optimization_config.objective, MultiObjective)
+    is_multi_objective = exp.optimization_config.objective.is_multi_objective
     has_status_quo = exp.status_quo is not None
     n_params = len(exp.parameters)
     has_model = False
@@ -396,7 +393,7 @@ def compute_analysis_cards(cfg: DictConfig, client: Client | None, open_html=Fal
         if n_params > 1 and has_model and not is_multi_objective:
             analyses_to_run.append(TopSurfacesAnalysis(metric_name=metric))
         if experiment_has_choice_params and is_multi_objective and has_model and \
-                metric in [m.metric_names[0] for m in exp.optimization_config.objective.objectives]:
+                metric in exp.optimization_config.objective.metric_names:
             analyses_to_run.append(MarginalEffectsPlot(metric_name=metric))
     if n_params > 1 and has_model and not is_multi_objective:
         for metric in exp.metrics:
@@ -833,7 +830,6 @@ def compute_convergence_pi(client, gs, improvement_bar=0.05):
     (previous default 0.1 was permissive).
     """
     import torch
-    from ax.core.objective import MultiObjective
 
     models, outcomes = _get_objective_models(gs)
     if models is None:
@@ -847,10 +843,7 @@ def compute_convergence_pi(client, gs, improvement_bar=0.05):
     bounds = _get_model_bounds(models[0])
 
     # Get objective info
-    if isinstance(opt_config.objective, MultiObjective):
-        obj_info = {o.metric.name: o.minimize for o in opt_config.objective.objectives}
-    else:
-        obj_info = {opt_config.objective.metric.name: opt_config.objective.minimize}
+    obj_info = {name: (w < 0) for name, w in opt_config.objective.metric_weights}
 
     # Fidelity handling: pin target fidelity in optimize_acqf so PI / EHVI
     # argmax can't drift into cheap regions where GP is over-confident.
@@ -907,7 +900,7 @@ def compute_convergence_pi(client, gs, improvement_bar=0.05):
         # stopped expanding). EHVI over the joint model captures front-level
         # remaining gain. Daulton et al. (2020) "Differentiable EHVI".
         # Kept inside the transform-disable guard so SCF is bypassed.
-        if isinstance(opt_config.objective, MultiObjective) and len(models) >= 2:
+        if opt_config.objective.is_multi_objective and len(models) >= 2:
             try:
                 moo_diag = _compute_moo_ehvi_diag(
                     client, gs, models, outcomes, obj_info, bounds,
@@ -996,7 +989,7 @@ def _compute_moo_ehvi_diag(client, gs, models, outcomes, obj_info, bounds,
     opt_config = exp.optimization_config
     ref = None
     if getattr(opt_config, "objective_thresholds", None):
-        ot_map = {ot.metric.name: ot for ot in opt_config.objective_thresholds}
+        ot_map = {ot.metric_names[0]: ot for ot in opt_config.objective_thresholds}
         try:
             # Sign to match Y_t convention: bigger=better → threshold flipped for minimize.
             ref_vals = []
@@ -1063,7 +1056,6 @@ def compute_specialization_cost(client, gs, context_point, improvement_bar=0.05)
     """
     import torch
     import numpy as np
-    from ax.core.objective import MultiObjective
     from botorch.models import SingleTaskGP
     from botorch.models.transforms.input import Normalize
     from botorch.fit import fit_gpytorch_mll
@@ -1076,10 +1068,7 @@ def compute_specialization_cost(client, gs, context_point, improvement_bar=0.05)
     exp = client._experiment
     opt_config = exp.optimization_config
 
-    if isinstance(opt_config.objective, MultiObjective):
-        obj_info = {o.metric.name: o.minimize for o in opt_config.objective.objectives}
-    else:
-        obj_info = {opt_config.objective.metric.name: opt_config.objective.minimize}
+    obj_info = {name: (w < 0) for name, w in opt_config.objective.metric_weights}
 
     # Get feature ordering from the adapter
     param_names = getattr(gs.adapter, 'parameters', [])

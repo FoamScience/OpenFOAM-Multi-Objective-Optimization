@@ -181,6 +181,27 @@ class RegionScreeningOptions(FoamBOBaseModel):
     ))
 
 
+class SaasboOptions(FoamBOBaseModel):
+    """Auto-engage SAASBO (sparse axis-aligned subspace BO) for high-dimensional
+    search spaces.
+
+    SAASBO uses sparsity-inducing priors + fully-Bayesian (NUTS) inference to stay
+    sample-efficient in high dimensions. It is slow, so it is gated behind ``min_dims``.
+    When engaged, the BoTorch generation node's surrogate is swapped to
+    ``SaasFullyBayesianSingleTaskGP`` (acquisition logic is unchanged).
+
+    Complementary to ``dimensionality_reduction`` (which *prunes* dead dims at fixed
+    points): SAASBO *models* the full high-dim space directly. Skipped when a
+    multi-fidelity or robust surrogate is already configured (those pin their own model
+    class), and only applied to BOTORCH_MODULAR nodes without an explicit surrogate.
+    """
+    enabled: bool = Field(default=False, description="Enable automatic SAASBO surrogate selection")
+    min_dims: int = Field(default=15, ge=1, description=(
+        "Engage SAASBO only when the search space has at least this many tunable "
+        "parameters. Keep high enough that the sparsity payoff covers the slow NUTS fit."
+    ))
+
+
 class ConfigOrchestratorOptions(FoamBOBaseModel):
     """Controls for timeouts, poll times, early-stopping and convergence criteria."""
     max_trials: int = Field(description="Maximum number of trials to run, baseline included", examples=[20])
@@ -287,6 +308,10 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
             "sectional scalar (e.g. region ΔP) shows little variation across trials."
         ),
     )
+    saasbo: SaasboOptions = Field(
+        default_factory=lambda: SaasboOptions(enabled=False),
+        description="Auto-select the SAASBO surrogate on the BoTorch node for high-dimensional problems",
+    )
 
     @field_validator("dimensionality_reduction", mode="before")
     @classmethod
@@ -300,6 +325,13 @@ class ConfigOrchestratorOptions(FoamBOBaseModel):
     def parse_region_screening(cls, v):
         if isinstance(v, dict | DictConfig):
             return RegionScreeningOptions.model_validate(dict(v))
+        return v
+
+    @field_validator("saasbo", mode="before")
+    @classmethod
+    def parse_saasbo(cls, v):
+        if isinstance(v, dict | DictConfig):
+            return SaasboOptions.model_validate(dict(v))
         return v
 
     @field_validator("global_stopping_strategy", mode="before")
@@ -1218,12 +1250,31 @@ class StoreOptions(FoamBOBaseModel):
             return JSONBackendOptions.model_validate({k: val for k, val in v.items() if k != "url"})
         return v
 
-    def load(self) -> Client:
+    def load(self, missing_ok: bool = False) -> Client:
+        """Restore the Ax ``Client`` from the configured backend.
+
+        Args:
+            missing_ok: When ``True`` and ``read_from == "json"`` but the state
+                file does not exist yet, return a fresh ``Client()`` instead of
+                raising (design D4). Used by the detached ``--step`` bootstrap:
+                the first step has no prior state to resume. Defaults to
+                ``False`` so explicit loads (``FoamBO.load``, archival) still
+                error on a missing experiment.
+        """
         if self.read_from == "nowhere":
             return Client()
         client = None
         if self.read_from == "json":
-            client = Client.load_from_json_file(filepath=f"artifacts/{get_experiment_name()}_client_state.json")
+            filepath = f"artifacts/{get_experiment_name()}_client_state.json"
+            try:
+                client = Client.load_from_json_file(filepath=filepath)
+            except FileNotFoundError:
+                if not missing_ok:
+                    raise
+                get_logger(__name__).warning(
+                    "No state file at %s — starting a fresh experiment (first --step).",
+                    filepath)
+                return Client()
         if self.read_from == "sql":
             client = Client.load_from_database(experiment_name=get_experiment_name(),
                                   storage_config = StorageConfig(url=self.backend_options.url))
